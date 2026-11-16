@@ -1,0 +1,67 @@
+name: boykov-services
+services:
+  app:
+    build:
+      context: .
+      target: api
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      WORKER_URL: http://documents:8790
+      TZ: Europe/Moscow
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8089}:8787"
+    volumes:
+      - platform-data:/app/data
+      - ./.env.wordstat:/app/.env.wordstat:ro
+    depends_on:
+      documents:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+  documents:
+    build:
+      context: .
+      target: worker
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      TZ: Europe/Moscow
+    volumes:
+      - platform-data:/app/data
+      - ./.env.contracts:/app/.env.contracts:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8790/health',headers={'Authorization':'Bearer '+os.environ['WORKER_TOKEN']}),timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+volumes:
+  platform-data:

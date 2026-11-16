@@ -1,0 +1,136 @@
+# boykov-services
+
+Внутреннее рабочее пространство Бойков Групп: подготовка договоров с Yandex AI и сбор семантики Wordstat. React + Vite + TypeScript, общий Node.js API, отдельный Python-сервис документов, SQLite и файловое хранилище.
+
+## Что работает
+
+- Общий вход по паролю: scrypt-хеш, HttpOnly cookie, сессия 12 часов, ограничение попыток входа. Сессии переживают перезапуск API.
+- Договоры: пять исходных шаблонов, распознавание текста / Word / PDF / сканов / фотографий, редактирование реквизитов, проверка перед генерацией, нумерация и загрузка DOCM.
+- Wordstat: сбор по списку фраз, регион, популярные и похожие запросы, частотность, Excel, сохранение прогресса, продолжение после сбоя и ожидание квоты API.
+- Общая история, скачивание результатов, проверка подключений. Новые сервисы добавляются отдельными модулями.
+
+Интеграция документов использует непосредственно ядро `SpecEnergoRazvitie-bot`; Telegram и MAX не нужны. Результат соответствует исходному боту: Word-файл с шаблоном и заполненной таблицей автозамен. Макросы на сервере не исполняются. Проверьте документ перед использованием; действия в Word остаются такими же, как в исходном процессе.
+
+## Первый запуск на Windows
+
+Нужны **Node.js 24 LTS**, **Python 3.12** и Git. Откройте PowerShell в папке проекта. Активация Python-окружения не требуется; менять политику запуска PowerShell не нужно.
+
+```powershell
+npm ci
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r worker\requirements.txt
+npm run setup
+```
+
+`setup` попросит общий пароль (не менее 10 символов), сохранит только его хеш и создаст отдельный внутренний токен. Готового или универсального пароля в проекте нет.
+
+Затем скопируйте ваши существующие env-файлы:
+
+```powershell
+Copy-Item "C:\путь\к\боту\.env" .env.contracts
+Copy-Item "C:\путь\к\wordstat-exporter\server\.env" .env.wordstat
+npm run dev
+```
+
+Откройте **http://localhost:5173**. В дальнейшем запускайте проект командой **`npm run dev`**. Она одновременно запускает Vite, API и Python-сервис. `Ctrl+C` завершает все три процесса.
+
+Не запускайте `npm run dev` из `src`, `server` или `worker`: используйте корень проекта. Не меняйте в процессе работы адрес между `localhost` и `127.0.0.1`, поскольку это разные cookie-хранилища браузера.
+
+Формат старого DOC требует утилиту `antiword`; она уже включена в Docker-образ. Для локальной работы Windows используйте DOCX, DOCM, PDF, JPG или PNG, либо установите `antiword` в PATH. Для PDF со сканами отметьте «PDF содержит сканы»; для текстового PDF оставьте эту опцию выключенной.
+
+## macOS / Linux
+
+```bash
+npm ci
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r worker/requirements.txt
+npm run setup
+cp /path/to/bot/.env .env.contracts
+cp /path/to/wordstat/server/.env .env.wordstat
+npm run dev
+```
+
+## Env-файлы
+
+| Файл | Назначение |
+| --- | --- |
+| `.env` | Общий пароль, внутренний токен, origin, настройки cookie и хранения. Создаётся `npm run setup`. |
+| `.env.contracts` | Ключи исходного бота: `YANDEX_FOLDER_ID`, `YANDEX_API_KEY`, опционально `YANDEXGPT_API_KEY`. |
+| `.env.wordstat` | Ключи Wordstat: `YANDEX_FOLDER_ID`, `YANDEX_API_KEY`. Старый пароль Wordstat и его PORT игнорируются. |
+
+Ключи разных сервисов изолированы. Ключи в браузер не передаются; переменные `VITE_*` с секретами не используются. При необходимости можно передать Wordstat-ключи как `WORDSTAT_API_KEY` и `WORDSTAT_FOLDER_ID` через окружение, а ключи документов — напрямую Python-процессу. После изменения конфигурации перезапустите приложение.
+
+Права / квоты Yandex Cloud остаются такими же, как в исходных проектах. Наличие env-файла не подтверждает валидность ключа. Если Wordstat возвращает 401/403, ошибка отображается у конкретного запроса; сессия приложения остаётся активной.
+
+## Подготовка и первый push в GitHub
+
+Создайте пустой **приватный** репозиторий `boykov-services` без автоматически созданных README, `.gitignore` и лицензии. История исходных проектов в новый репозиторий не переносится. Из корня распакованного проекта:
+
+```powershell
+git init -b main
+git config user.name "ВАШЕ ИМЯ В GITHUB"
+git config user.email "ВАШ EMAIL ИЛИ NOREPLY ИЗ GITHUB"
+git add .
+git status --short
+git commit -m "feat: create boykov-services workspace"
+git remote add origin https://github.com/powder-rose/boykov-services.git
+git push -u origin main
+```
+
+Если Git уже настроен на ваше имя и email, два `git config` можно пропустить. Коммиты создаются от вашего имени; соавтор Codex не добавляется. Если origin уже существует, используйте `git remote set-url origin ...`.
+
+В Git идут исходники, шаблоны, локальные шрифты, `package-lock.json`, env-примеры, Docker и GitHub Actions. `.env`, `.env.contracts`, `.env.wordstat`, данные, SQLite, результаты, `node_modules` и `.venv` исключены.
+
+Перед коммитом можно проверить исключения:
+
+```powershell
+git check-ignore .env .env.contracts .env.wordstat data/example.sqlite
+npm run check
+```
+
+В репозитории настроен Quality Gate: TypeScript / production build, API и Wordstat-тесты, Python-тесты с генерацией всех шаблонов и сборка обоих Docker-образов. CI использует искусственные данные, реальные Yandex-ключи не нужны.
+
+## Docker и VPS
+
+Подробно: [docs/DEPLOY.md](docs/DEPLOY.md). Для production нужны домен, HTTPS и настройки `.env`:
+
+```dotenv
+NODE_ENV=production
+APP_ORIGINS=https://services.example.ru
+COOKIE_SECURE=true
+```
+
+Оставьте хеш и внутренний токен, созданные `npm run setup`. Затем:
+
+```bash
+docker compose up -d --build
+docker compose ps
+curl -f http://127.0.0.1:8089/healthz
+```
+
+Приложение слушает `127.0.0.1:8089` и публикуется через HTTPS reverse proxy. Python-сервис не имеет опубликованного порта. Не масштабируйте `documents` в несколько процессов: нумерация рассчитана на один worker. Все рабочие данные находятся в томе `boykov-services_platform-data`.
+
+## Проверки
+
+```powershell
+npm run check
+.\.venv\Scripts\python.exe -m pip install -r worker\requirements-dev.txt
+.\.venv\Scripts\python.exe -m unittest discover -s worker\tests -v
+```
+
+В Linux замените путь к Python на `.venv/bin/python`. `npm run test:worker` использует Python из PATH, поэтому подходит для активированного окружения или CI.
+
+Проверяются защита API и скачиваний, cookie, CSRF, ограничение входа, смена пароля и перезапуск, Wordstat-экспорт и восстановление, квоты, ошибки upstream, пять шаблонов DOCM, повторная отправка генерации, обязательные реквизиты, явный режим черновика, адаптер ИИ и очистка загрузок.
+
+## Хранение и особенности
+
+- `data/platform.sqlite` — сессии и ограничение входа.
+- `data/contracts/` — история документов, результаты, отдельные счётчики и журнал использования ИИ.
+- `data/wordstat/` — полные JSON-ответы API, контрольные точки и XLSX.
+- Номер договора формируется из первых двух букв фамилии в верхнем регистре, даты и порядкового номера: например, `ИВ161126-1`. Дополнительного префикса нет. Счётчики сайта отдельные от действующего Telegram/MAX-бота; автоматической синхронизации между приложениями нет.
+- Документ, прерванный перезапуском Python-процесса, помечается ошибкой; создайте новую задачу. Это предотвращает скрытую повторную генерацию и повторную выдачу номера. Wordstat после обычного сбоя можно продолжить, ожидание квоты возобновляется автоматически.
+- В истории показываются все документы и последние 30 завершённых сборов Wordstat. Старые Wordstat-файлы остаются на диске.
+- Пароль общий: персонального аудита сотрудников и разграничения ролей пока нет. Для внутренних данных следует использовать HTTPS, ограниченный доступ к серверу и резервное копирование.
+- Стоимость ИИ в настройках — оценка исходного ядра по заложенным в нём тарифам. Проверяйте фактические расходы в Yandex Cloud.
+
+Архитектура и добавление сервисов: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Источники: [THIRD_PARTY.md](THIRD_PARTY.md).

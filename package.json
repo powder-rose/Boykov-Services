@@ -1,0 +1,43 @@
+{
+  "name": "boykov-services",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "setup": "node scripts/setup.mjs",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.js",
+    "test": "node --test tests/*.test.js",
+    "test:worker": "python -m unittest discover -s worker/tests -v",
+    "check": "npm run build && npm test",
+    "preview": "vite preview",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"server/**/*.js\" \"scripts/*.mjs\" \"tests/*.js\" \"*.json\" \"*.js\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"server/**/*.js\" \"scripts/*.mjs\" \"tests/*.js\" \"*.json\" \"*.js\""
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "lucide-react": "^0.468.0",
+    "multer": "^2.0.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "prettier": "^3.7.4",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.2"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}
