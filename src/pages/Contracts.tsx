@@ -45,6 +45,12 @@ const defaultTerms = {
   object_name: "",
   email: "",
 };
+const newService = () => ({
+  name: "",
+  working_days: 10,
+  quantity: 1,
+  price: 15000,
+});
 function missingCompany(company: string[]) {
   const entrepreneur = /^(ип|индивидуальный предприниматель)$/i.test(
     company[0].trim(),
@@ -84,6 +90,7 @@ export default function Contracts({
   const [complects, setComplects] = useState(0);
   const [workplaces, setWorkplaces] = useState(1);
   const [terms, setTerms] = useState(defaultTerms);
+  const [services, setServices] = useState([newService()]);
   const [source, setSource] = useState("text");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -104,6 +111,22 @@ export default function Contracts({
   const isWorking = waiting(extraction) || waiting(generation) || busy;
   const missing = missingCompany(company);
   const templateInfo = templates.find((item) => item.id === template)!;
+  const serviceTotal = services.reduce(
+    (total, item) => total + item.quantity * item.price,
+    0,
+  );
+  const contractCost = template === "ser_one_time" ? serviceTotal : cost;
+  function updateService(
+    index: number,
+    field: keyof ReturnType<typeof newService>,
+    value: string | number,
+  ) {
+    setServices((current) =>
+      current.map((item, i) =>
+        i === index ? { ...item, [field]: value } : item,
+      ),
+    );
+  }
   useEffect(() => {
     const current = waiting(extraction)
       ? extraction
@@ -154,6 +177,17 @@ export default function Contracts({
   function nextFromTerms(event: React.FormEvent) {
     event.preventDefault();
     setError("");
+    if (
+      template === "ser_one_time" &&
+      services.some((item) => !item.name.trim())
+    ) {
+      setError("Укажите название каждой услуги.");
+      return;
+    }
+    if (template === "ser_one_time" && serviceTotal > 1000000000) {
+      setError("Общая стоимость услуг не должна превышать 1 000 000 000 ₽.");
+      return;
+    }
     setStep(1);
   }
   async function extract() {
@@ -207,11 +241,12 @@ export default function Contracts({
     const payload = {
       template,
       surname,
-      cost,
+      cost: contractCost,
       complects,
       workplaces_count: workplaces,
       company,
       ser_fields: terms,
+      one_time_services: template === "ser_one_time" ? services : [],
       allowIncomplete: draft,
     };
     const signature = JSON.stringify(payload);
@@ -356,7 +391,7 @@ export default function Contracts({
                     />
                     <small>По фамилии формируется код документа</small>
                   </label>
-                  {template !== "ser" && (
+                  {template !== "ser" && template !== "ser_one_time" && (
                     <label>
                       Стоимость услуги, ₽
                       <input
@@ -369,7 +404,7 @@ export default function Contracts({
                       />
                     </label>
                   )}
-                  {template === "specons" && (
+                  {["specons", "ser_one_time"].includes(template) && (
                     <label>
                       Количество комплектов
                       <input
@@ -525,6 +560,132 @@ export default function Contracts({
                     </>
                   )}
                 </div>
+                {template === "ser_one_time" && (
+                  <section
+                    className="service-specification"
+                    aria-label="Услуги в приложении №1"
+                  >
+                    <div className="section-heading">
+                      <div>
+                        <h3>Перечень услуг</h3>
+                        <p className="muted small">
+                          Приложение №1 · от 1 до 9 услуг
+                        </p>
+                      </div>
+                    </div>
+                    {services.map((item, index) => (
+                      <div className="service-item" key={index}>
+                        <div className="service-item-heading">
+                          <strong>Услуга {index + 1}</strong>
+                          <button
+                            className="icon-button"
+                            type="button"
+                            aria-label={`Удалить услугу ${index + 1}`}
+                            disabled={services.length === 1}
+                            onClick={() =>
+                              setServices((current) =>
+                                current.filter((_, i) => i !== index),
+                              )
+                            }
+                          >
+                            <X size={17} />
+                          </button>
+                        </div>
+                        <div className="field-grid">
+                          <label className="full-width">
+                            Наименование услуги
+                            <textarea
+                              required
+                              rows={2}
+                              maxLength={500}
+                              value={item.name}
+                              onChange={(e) =>
+                                updateService(index, "name", e.target.value)
+                              }
+                            />
+                          </label>
+                          <label>
+                            Срок, рабочих дней
+                            <input
+                              required
+                              type="number"
+                              min={1}
+                              max={3650}
+                              step={1}
+                              value={item.working_days}
+                              onChange={(e) =>
+                                updateService(
+                                  index,
+                                  "working_days",
+                                  Number(e.target.value),
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            Количество комплектов услуги
+                            <input
+                              required
+                              type="number"
+                              min={1}
+                              max={100000}
+                              step={1}
+                              value={item.quantity}
+                              onChange={(e) =>
+                                updateService(
+                                  index,
+                                  "quantity",
+                                  Number(e.target.value),
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            Цена за комплект, ₽
+                            <input
+                              required
+                              type="number"
+                              min={0}
+                              max={1000000000}
+                              step={1}
+                              value={item.price}
+                              onChange={(e) =>
+                                updateService(
+                                  index,
+                                  "price",
+                                  Number(e.target.value),
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            Сумма по услуге, ₽
+                            <input
+                              readOnly
+                              value={(
+                                item.quantity * item.price
+                              ).toLocaleString("ru-RU")}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={services.length >= 9}
+                      onClick={() =>
+                        setServices((current) => [...current, newService()])
+                      }
+                    >
+                      <Plus size={16} /> Добавить услугу
+                    </button>
+                    <p className="service-total">
+                      Итого по договору{" "}
+                      <strong>{serviceTotal.toLocaleString("ru-RU")} ₽</strong>
+                    </p>
+                  </section>
+                )}
                 <div className="form-actions">
                   <span className="muted small">Шаг 1 из 3</span>
                   <button className="button primary">
@@ -750,7 +911,7 @@ export default function Contracts({
                     <dd>
                       {(template === "ser"
                         ? terms.cost_month * terms.months_count
-                        : cost
+                        : contractCost
                       ).toLocaleString("ru-RU")}{" "}
                       ₽
                     </dd>
@@ -775,7 +936,20 @@ export default function Contracts({
                       <dd>{workplaces}</dd>
                     </div>
                   )}
-                  {template === "specons" && (
+                  {template === "ser_one_time" && (
+                    <div>
+                      <dt>Приложение №1</dt>
+                      <dd>
+                        {services
+                          .map(
+                            (item) =>
+                              `${item.name} · ${item.working_days} раб. дн. · ${item.quantity} компл.`,
+                          )
+                          .join("; ")}
+                      </dd>
+                    </div>
+                  )}
+                  {["specons", "ser_one_time"].includes(template) && (
                     <div>
                       <dt>Печать и доставка</dt>
                       <dd>

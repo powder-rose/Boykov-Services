@@ -22,9 +22,10 @@ from dotenv import load_dotenv, dotenv_values
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from num2words import num2words
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image
 from .vendor.core.misc import Miscellaneous, DocumentExtractionError, AIServiceError, MissingCompanyDetailsError
+from .ser_one_time import fill_service_specification
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
@@ -79,16 +80,39 @@ class Terms(BaseModel):
     object_name: str = Field(default='', max_length=500)
     email: str = Field(default='', max_length=254)
 
+class OneTimeService(BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    working_days: int = Field(ge=1, le=3650)
+    quantity: int = Field(ge=1, le=100000)
+    price: int = Field(ge=0, le=1_000_000_000)
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
 class Generation(BaseModel):
     requestId: str
-    template: Literal['passport_security', 'passport_security_agreed', 'sout', 'specons', 'ser']
+    template: Literal['passport_security', 'passport_security_agreed', 'sout', 'specons', 'ser', 'ser_one_time']
     surname: str = Field(min_length=2, max_length=80, pattern=r'^[А-Яа-яЁёA-Za-z][А-Яа-яЁёA-Za-z -]+$')
     cost: int = Field(default=0, ge=0, le=1_000_000_000)
     complects: int = Field(default=0, ge=0, le=100000)
     workplaces_count: int = Field(default=1, ge=1, le=100000)
     company: list[str] = Field(min_length=14, max_length=14)
     ser_fields: Terms = Field(default_factory=Terms)
+    one_time_services: list[OneTimeService] = Field(default_factory=list, max_length=9)
     allowIncomplete: bool = False
+
+    @model_validator(mode='after')
+    def service_total(self):
+        if self.template == 'ser_one_time':
+            if not self.one_time_services:
+                raise ValueError('Добавьте хотя бы одну услугу в приложение №1')
+            total = sum(item.quantity * item.price for item in self.one_time_services)
+            if total > 1_000_000_000:
+                raise ValueError('Общая стоимость услуг не должна превышать 1 000 000 000 ₽')
+            self.cost = total
+        return self
 
     @field_validator('requestId')
     @classmethod
@@ -258,8 +282,12 @@ def generate_document(data: Generation, job_id: str):
     else:
         invoice = core.get_bot_count_num(users, 1)
         args = [users, 1, data.company, contract_number, invoice, core.integer_texted(data.cost)]
-        if data.template == 'specons':
+        if data.template in {'specons', 'ser_one_time'}:
+            if data.template == 'ser_one_time':
+                kwargs['template_path'] = core.CORE_DIR / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ_РАЗОВЫЕ.docm'
             output = core.bot_insert_req(*args, core.integer_texted(user['count_sending']), **kwargs)
+            if data.template == 'ser_one_time':
+                fill_service_specification(output, [item.model_dump() for item in data.one_time_services])
         elif data.template == 'sout':
             output = core.bot_insert_req_sout(*args, str(data.workplaces_count), **kwargs)
         elif data.template == 'passport_security_agreed':

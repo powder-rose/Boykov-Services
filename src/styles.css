@@ -1139,6 +1139,29 @@ code {
   background: var(--line);
   margin: 25px 0;
 }
+.service-specification {
+  margin-top: 28px;
+}
+.service-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 14px;
+}
+.service-item-heading,
+.service-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.service-item-heading {
+  margin-bottom: 14px;
+}
+.service-total {
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
 .field-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

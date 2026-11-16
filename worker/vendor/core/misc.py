@@ -1765,11 +1765,12 @@ class Miscellaneous:
             way: str | Path | None = None,
             *,
             allow_incomplete: bool = False,
+            template_path: Path | None = None,
     ) -> Path:
         """
         Формирует НЕ договор, а заполненную таблицу автозамен.
 
-        Исходный template2.docm остаётся визуально неизменным:
+        Исходный шаблон (по умолчанию template2.docm) сохраняется:
         заполняется только колонка «ИНФОРМАЦИЯ ОТ ЗАКАЗЧИКА».
         Текст autozamena_001 ... autozamena_020 не меняется.
         """
@@ -1872,7 +1873,7 @@ class Miscellaneous:
         if not banco.strip():
             highlight_keys.add('autozamena_020')
 
-        template_path = self.CORE_DIR / 'template2.docm'
+        template_path = template_path or self.CORE_DIR / 'template2.docm'
         if not template_path.is_file():
             raise FileNotFoundError(
                 f'Не найден шаблон таблицы: {template_path}'
@@ -1888,6 +1889,7 @@ class Miscellaneous:
             template_path,
             output_path,
             replacements,
+            unwrap_input_controls=True,
             highlight_keys=highlight_keys,
         )
 
@@ -2502,11 +2504,7 @@ class Miscellaneous:
         простой список месяцев в формате "месяц год, месяц год, ...",
         как в примере-подсказке шаблона ("май 2024, июнь 2024, июль 2024").
 
-        Правило выбора стартового месяца:
-        - если день заполнения <= 15, этот месяц считается полным платным
-          и идёт первым в списке;
-        - если день заполнения > 15, остаток месяца — подарок, и список
-          начинается со следующего месяца.
+        Первым всегда идёт месяц начала договора, независимо от дня.
         Дальше перечисляются months_count месяцев подряд.
         """
         try:
@@ -2516,12 +2514,7 @@ class Miscellaneous:
         if months_count <= 0:
             return ''
 
-        day, month, year = start.day, start.month, start.year
-
-        if day <= 15:
-            cur_year, cur_month = year, month
-        else:
-            cur_year, cur_month = cls._add_months(year, month, 1)
+        cur_year, cur_month = start.year, start.month
 
         parts = [f'{cls.NOMINATIVUS[cur_month]} {cur_year}']
         for _ in range(months_count - 1):
@@ -2555,12 +2548,7 @@ class Miscellaneous:
         if months_count <= 0:
             return ''
 
-        day, month, year = start.day, start.month, start.year
-
-        if day <= 15:
-            cur_year, cur_month = year, month
-        else:
-            cur_year, cur_month = cls._add_months(year, month, 1)
+        cur_year, cur_month = start.year, start.month
 
         months = [(cur_year, cur_month)]
         for _ in range(months_count - 1):

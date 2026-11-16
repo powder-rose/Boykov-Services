@@ -7,6 +7,8 @@ from unittest.mock import patch
 from uuid import uuid4
 from zipfile import ZipFile
 import io
+from datetime import datetime
+from lxml import etree
 
 WORKSPACE = tempfile.TemporaryDirectory(prefix='boykov-worker-test-')
 os.environ['CONTRACTS_DATA_DIR'] = WORKSPACE.name
@@ -34,13 +36,27 @@ class WorkerTests(unittest.TestCase):
 
     def payload(self, template):
         return dict(requestId=str(uuid4()), template=template, surname='Тестовая', cost=15000, complects=2, workplaces_count=3, company=COMPANY,
+                    one_time_services=[dict(name='Проверка электроустановки', working_days=10, quantity=1, price=15000)] if template == 'ser_one_time' else [],
                     ser_fields=dict(object_address='Москва, Тестовая 1', object_name='Тестовый объект', email='test@example.com', cost_month=5200, months_count=3))
+
+    def replacement_values(self, archive):
+        ns = {'w': service.core.WORD_NS}
+        root = etree.fromstring(archive.read('word/document.xml'))
+        values = {}
+        for row in root.xpath('./w:body/w:tbl[1]/w:tr', namespaces=ns):
+            cells = row.findall('w:tc', ns)
+            if len(cells) == 5:
+                key = ''.join(cells[-1].xpath('.//w:t/text()', namespaces=ns))
+                if key.startswith('autozamena_'):
+                    values[key] = ''.join(cells[-2].xpath('.//w:t/text()', namespaces=ns))
+        return values
 
     def test_worker_is_private(self):
         self.assertEqual(TestClient(service.app).get('/health').status_code, 401)
         self.assertEqual(self.client.get('/health').status_code, 200)
 
-    def test_all_five_original_templates_generate_valid_word_files(self):
+    def test_all_six_templates_generate_valid_word_files(self):
+        self.assertEqual(len(service.TEMPLATE_IDS), 6)
         for template in service.TEMPLATE_IDS:
             with self.subTest(template=template):
                 payload = self.payload(template)
@@ -58,6 +74,70 @@ class WorkerTests(unittest.TestCase):
                     self.assertNotIn('WEB-', xml)
                     self.assertIn('7701234567', xml)
                     self.assertEqual(archive.testzip(), None)
+
+    def test_ser_period_always_includes_contract_month(self):
+        for day in (1, 15, 16, 30):
+            with self.subTest(day=day):
+                start = datetime(2026, 11, day)
+                self.assertEqual(service.core._build_ser_service_period(start, '3'), 'ноябрь 2026, декабрь 2026, январь 2027')
+                self.assertEqual(service.core._build_ser_invoice_period(start, '3'), 'за ноябрь, декабрь 2026 года, январь 2027 года')
+        for start, expected in [(datetime(2026, 12, 31), 'декабрь 2026, январь 2027'), (datetime(2028, 2, 29), 'февраль 2028, март 2028')]:
+            with self.subTest(start=start):
+                self.assertEqual(service.core._build_ser_service_period(start, '2'), expected)
+
+    def test_ser_november_16_document_and_invoice_use_the_same_period(self):
+        payload = self.payload('ser')
+        with patch('worker.vendor.core.misc.datetime') as clock:
+            clock.now.return_value = datetime(2026, 11, 16)
+            response = self.client.post('/generate', json=payload)
+            self.assertEqual(response.status_code, 202)
+            job = self.await_job(payload['requestId'])
+            self.assertEqual(job['status'], 'completed', job)
+        result = self.client.get('/files/' + job['id'])
+        with ZipFile(io.BytesIO(result.content)) as archive:
+            values = self.replacement_values(archive)
+        self.assertEqual(values['autozamena_002'], '16 ноября 2026 года')
+        self.assertEqual(values['autozamena_022'], 'ноябрь 2026, декабрь 2026, январь 2027')
+        self.assertEqual(values['autozamena_028'], 'за ноябрь, декабрь 2026 года, январь 2027 года')
+
+    def test_ser_one_time_fills_specification_and_keeps_the_macro_button(self):
+        payload = self.payload('ser_one_time')
+        payload['cost'] = 1  # The API calculates the authoritative total from the rows.
+        payload['one_time_services'] = [
+            dict(name='Проверка <щита> и изоляции', working_days=7, quantity=2, price=7500),
+            dict(name='Подготовка протокола', working_days=10, quantity=1, price=3500),
+        ]
+        self.assertEqual(self.client.post('/generate', json=payload).status_code, 202)
+        job = self.await_job(payload['requestId'])
+        self.assertEqual(job['status'], 'completed', job)
+        result = self.client.get('/files/' + job['id'])
+        ns = {'w': service.core.WORD_NS}
+        with ZipFile(io.BytesIO(result.content)) as archive, ZipFile(service.core.CORE_DIR / 'template2.docm') as donor:
+            root = etree.fromstring(archive.read('word/document.xml'))
+            specification = root.xpath('./w:body/w:tbl[contains(string(.), "Перечень оказываемых услуг")]', namespaces=ns)[0]
+            rows = specification.findall('w:tr', ns)
+            self.assertEqual(len(rows), 3)
+            first = [''.join(cell.xpath('.//w:t/text()', namespaces=ns)) for cell in rows[1].findall('w:tc', ns)]
+            self.assertEqual(first, ['1', 'Проверка <щита> и изоляции', '7', '2', 'компл.', '7500', '15000'])
+            self.assertEqual(self.replacement_values(archive)['autozamena_013'], '18500')
+            self.assertEqual(self.replacement_values(archive)['autozamena_014'], 'Восемнадцать тысяч пятьсот')
+            self.assertEqual(len(root.xpath('.//w:control[@w:name="CommandButton1"]', namespaces=ns)), 1)
+            self.assertEqual(archive.read('word/vbaProject.bin'), donor.read('word/vbaProject.bin'))
+            self.assertEqual(archive.read('word/activeX/activeX1.bin'), donor.read('word/activeX/activeX1.bin'))
+            self.assertNotIn('Выберите элемент.', ''.join(specification.xpath('.//w:t/text()', namespaces=ns)))
+
+    def test_ser_one_time_rejects_invalid_or_overflowing_service_rows(self):
+        variants = [[], [dict(name='   ', working_days=7, quantity=1, price=1)],
+                    [dict(name='Услуга', working_days=0, quantity=1, price=1)],
+                    [dict(name='Услуга', working_days=7, quantity=0, price=1)],
+                    [dict(name='Услуга', working_days=7, quantity=1, price=-1)],
+                    [dict(name='Услуга', working_days=7, quantity=2, price=1000000000)],
+                    [dict(name='Услуга', working_days=7, quantity=1, price=1)] * 10]
+        for rows in variants:
+            with self.subTest(rows=rows):
+                payload = self.payload('ser_one_time')
+                payload['one_time_services'] = rows
+                self.assertEqual(self.client.post('/generate', json=payload).status_code, 422)
 
     def test_duplicate_generation_does_not_issue_a_second_number(self):
         payload = self.payload('passport_security')
