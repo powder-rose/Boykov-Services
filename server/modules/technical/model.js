@@ -59,6 +59,12 @@ export function buildSnapshot(workbookRanges, accountingRows, updatedAt = new Da
       const code = tab.codeColumn === null ? '' : normalizeCode(r.values[tab.codeColumn]);
       if (code) codeCounts.set(code, (codeCounts.get(code) || 0) + 1);
     }
+    // Keep existing work rows authoritative for their code, and add an
+    // accounting-only row only when this code is absent from the work sheet.
+    // Notes/custom values survive its later appearance in ДОП.РАБОТЫ because
+    // the record key stays `code:${code}` instead of using the row number.
+    const workCodes = tab.id === TECH_TABS[0].id
+      ? new Set([...codeCounts.keys()]) : null;
     const seenIds = new Set();
     for (const r of rawRows) {
       const code = tab.codeColumn === null ? '' : normalizeCode(r.values[tab.codeColumn]);
@@ -79,6 +85,27 @@ export function buildSnapshot(workbookRanges, accountingRows, updatedAt = new Da
         : null;
       rows.push({ tabId: tab.id, key, rowNumber: r.index, code, values: r.values, accounting,
         matchStatus, accountingRow: matchStatus === 'linked' ? found[0].row : null });
+    }
+    if (tab.id === TECH_TABS[0].id) {
+      let appended = 0;
+      for (const [code, candidates] of matches) {
+        if (workCodes.has(code)) continue;
+        // Never guess which record is correct when accounting reuses a code.
+        // Ambiguous records require an explicit correction in the source.
+        if (candidates.length !== 1) continue;
+        const source = candidates[0];
+        const values = Array(width).fill('');
+        const accounting = Object.fromEntries(ACCOUNTING_FIELDS.map(field =>
+          [field.key, val(source.values[field.sourceIndex])]));
+        for (const field of ACCOUNTING_FIELDS) {
+          if (field.targetIndex !== null && field.targetIndex < width)
+            values[field.targetIndex] = accounting[field.key];
+        }
+        appended++;
+        rows.push({tabId: tab.id, key: `code:${code}`,
+          rowNumber: grid.length + appended, code, values, accounting,
+          matchStatus: 'linked', accountingRow: source.row });
+      }
     }
   }
   return { sheets, rows, updatedAt, counts: {

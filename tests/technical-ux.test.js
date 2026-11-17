@@ -20,7 +20,7 @@ const workbook = () => Object.fromEntries(TECH_TABS.map(t => {
 }));
 
 function stubRoutes(module) {
-  const routes = { get: new Map(), post: new Map(), patch: new Map() };
+  const routes = { get: new Map(), post: new Map(), patch: new Map(), delete: new Map() };
   for (const method of Object.keys(routes)) {
     routes[method].set = routes[method].set.bind(routes[method]);
   }
@@ -28,6 +28,7 @@ function stubRoutes(module) {
     get: (path, ...handlers) => routes.get.set(path, handlers),
     post: (path, ...handlers) => routes.post.set(path, handlers),
     patch: (path, ...handlers) => routes.patch.set(path, handlers),
+    delete: (path, ...handlers) => routes.delete.set(path, handlers),
   });
   return routes;
 }

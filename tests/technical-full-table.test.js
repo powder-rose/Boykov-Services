@@ -70,7 +70,13 @@ test('the table renders all supplied columns, has horizontal scrolling, pins two
   assert.match(component, /tech-horizontal-controls/);
   assert.match(component, /Комментарии Ирины/);
   assert.match(component, /tech-note-form/);
-  assert.match(component, /openDetail\(item, column\.index\)/);
+  assert.match(component, /openDetail\(item, column\)/);
+  assert.match(component, /onScroll=\{onTableScroll\}/);
+  assert.match(component, /tech-pagination/);
+  assert.match(component, /PAGE_SIZE = 100/);
+  assert.match(component, /tech-width-range/);
+  assert.match(component, /autoFitAllColumns/);
+  assert.match(component, /onResizeStart/);
   assert.match(css, /overflow-x:auto/);
   assert.match(css, /left:144px/);
   assert.match(css, /tech-table-full/);

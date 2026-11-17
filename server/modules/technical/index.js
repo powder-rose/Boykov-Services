@@ -112,6 +112,7 @@ export function createTechnicalModule(db, options = {}) {
       configured:configured(), syncMode:mode, sheets:store.snapshotSheets(), updatedAt:store.meta('updatedAt'),
       counts:store.meta('counts') ? JSON.parse(store.meta('counts')) : {total:0,linked:0,ambiguous:0},
       lastError:store.meta('lastError') || null, accountingFields:store.accountingFields,
+      columnColors:store.columnColors(),
       source: mode === 'apps-script' ? 'Google Apps Script → Boykov-services; только чтение' : 'Google Sheets → Boykov-services; только чтение',
     }));
     app.get('/api/technical/tabs/:id/rows',validateTab,(req,res)=>{
@@ -127,12 +128,38 @@ export function createTechnicalModule(db, options = {}) {
       if (!row) return res.status(404).json({error:'Запись не найдена'});
       return res.json(row);
     });
+    // И столбцы, и отдельные ячейки имеют общий цвет на сервере.
+    // Ширина остаётся личной настройкой браузера.
+    app.patch('/api/technical/tabs/:id/columns/color',validateTab,(req,res,next)=>{
+      try { res.json(store.setColumnColor(req.params.id,req.body?.columnKey,req.body?.color,req.body?.expectedColor)); }
+      catch(error) { next(error); }
+    });
+    app.patch('/api/technical/tabs/:id/rows/:key/color',validateTab,(req,res,next)=>{
+      try { res.json(store.setCellColor(req.params.id,req.params.key,req.body?.columnKey,req.body?.color,req.body?.expectedColor)); }
+      catch(error) { next(error); }
+    });
+    app.post('/api/technical/tabs/:id/columns',validateTab,(req,res,next)=>{
+      try { res.status(201).json(store.addCustomColumn(req.params.id,req.body?.title)); }
+      catch(error) { next(error); }
+    });
+    app.delete('/api/technical/tabs/:id/columns/:columnId',validateTab,(req,res,next)=>{
+      try { res.json(store.archiveCustomColumn(req.params.id,req.params.columnId,req.body?.expectedArchived)); }
+      catch(error) { next(error); }
+    });
+    app.post('/api/technical/tabs/:id/columns/:columnId/restore',validateTab,(req,res,next)=>{
+      try { res.json(store.restoreCustomColumn(req.params.id,req.params.columnId,req.body?.expectedArchived)); }
+      catch(error) { next(error); }
+    });
+    app.patch('/api/technical/tabs/:id/rows/:key/custom/:columnId',validateTab,(req,res,next)=>{
+      try { res.json(store.editCustomCell(req.params.id,req.params.key,req.params.columnId,req.body?.value,selfReportedPerson(req.body?.author),req.body?.expectedValue)); }
+      catch(error) {next(error);}
+    });
     app.post('/api/technical/tabs/:id/rows/:key/notes',validateTab,(req,res,next)=>{
       try { res.status(201).json(store.addNote(req.params.id,req.params.key,req.body?.body,selfReportedPerson(req.body?.author))); }
       catch(error) {next(error);}
     });
     app.patch('/api/technical/tabs/:id/rows/:key/cells',validateTab,(req,res,next)=>{
-      try { res.json(store.editCell(req.params.id,req.params.key,req.body?.columnIndex,req.body?.value,selfReportedPerson(req.body?.author))); }
+      try { res.json(store.editCell(req.params.id,req.params.key,req.body?.columnIndex,req.body?.value,selfReportedPerson(req.body?.author),req.body?.expectedValue)); }
       catch(error) {next(error);}
     });
 

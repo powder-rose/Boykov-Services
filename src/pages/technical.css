@@ -241,3 +241,621 @@
   .tech-horizontal-controls{align-items:flex-start;flex-direction:column;padding:10px 12px}
   .tech-horizontal-buttons{align-self:flex-end}
 }
+
+/* UX update: wrapped text, zebra rows, shared column colors and local widths. */
+.tech-table.tech-table-full thead th.tech-table-header{
+  position:sticky;
+  overflow:visible;
+  min-height:64px;
+  height:auto;
+  padding-right:43px;
+  vertical-align:middle;
+}
+.tech-table.tech-table-full .tech-column-title>span{
+  display:block;
+  overflow-wrap:anywhere;
+  white-space:normal;
+  -webkit-line-clamp:unset;
+  line-clamp:unset;
+  overflow:visible;
+  text-overflow:clip;
+}
+.tech-header-settings{
+  position:absolute;
+  top:calc(50% - 14px);
+  right:12px;
+  display:grid;
+  place-items:center;
+  width:27px;
+  height:28px;
+  border:1px solid transparent;
+  border-radius:7px;
+  color:#989da9;
+  background:transparent;
+  padding:0;
+  cursor:pointer;
+}
+.tech-header-settings:hover,.tech-header-settings:focus-visible,.tech-header-settings.active{
+  background:#fff;
+  border-color:#d8d8df;
+  color:#a36884;
+  outline:0;
+}
+.tech-header-resize{
+  position:absolute;
+  right:0;
+  top:0;
+  bottom:0;
+  width:9px;
+  cursor:col-resize;
+  touch-action:none;
+  z-index:8;
+}
+.tech-header-resize:hover,.tech-header-resize:focus-visible{background:#bf86932b;outline:0}
+.tech-header-resize:hover:after,.tech-header-resize:focus-visible:after{
+  content:"";position:absolute;top:5px;bottom:5px;right:3px;width:2px;
+  border-radius:2px;background:#b47796;
+}
+.tech-table.tech-table-full tbody td{
+  --tech-row-color:#fff;
+  box-sizing:border-box;
+  height:auto;
+  min-height:49px;
+  padding:10px 13px;
+  vertical-align:top;
+  background:var(--tech-row-color)!important;
+  transition:background-color .1s ease;
+}
+.tech-table.tech-table-full tbody tr:nth-child(even) td{--tech-row-color:#f1f3f6}
+.tech-table.tech-table-full tbody tr:hover td{--tech-row-color:#e9edf3}
+.tech-table.tech-table-full tbody td.tech-locked-cell{--tech-row-color:#f8f9fb}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-locked-cell{--tech-row-color:#eaedf1}
+.tech-table.tech-table-full tbody tr:hover td.tech-locked-cell{--tech-row-color:#e6e9ef}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-amber{--tech-row-color:#fff8e4}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-amber{--tech-row-color:#fcefc9}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-amber{--tech-row-color:#f6e6b3}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-blue{--tech-row-color:#eaf4fd}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-blue{--tech-row-color:#dcecf9}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-blue{--tech-row-color:#cfe4f4}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-green{--tech-row-color:#eaf6ed}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-green{--tech-row-color:#dcf0e3}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-green{--tech-row-color:#cce9d5}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-rose{--tech-row-color:#fcf0f5}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-rose{--tech-row-color:#f6e5ed}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-rose{--tech-row-color:#f0d7e3}
+.tech-table.tech-table-full thead th.tech-tone-amber{background:#f6e8bc!important}
+.tech-table.tech-table-full thead th.tech-tone-blue{background:#d6eaf9!important}
+.tech-table.tech-table-full thead th.tech-tone-green{background:#d8eedf!important}
+.tech-table.tech-table-full thead th.tech-tone-rose{background:#f5dfe9!important}
+.tech-table.tech-table-full td .tech-cell-text,
+.tech-table.tech-table-full td .tech-cell-link>span,
+.tech-table.tech-table-full td>span{
+  display:block;
+  max-width:100%;
+  white-space:pre-wrap;
+  overflow:visible;
+  text-overflow:clip;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+  line-height:1.52;
+}
+.tech-table.tech-table-full td .tech-cell-link{
+  min-height:28px;
+  height:auto;
+  align-items:flex-start;
+  white-space:normal;
+  overflow:visible;
+}
+.tech-table.tech-table-full td .tech-cell-pinned{align-items:flex-start}
+.tech-table.tech-table-full td .tech-cell-pinned>span{font-weight:650}
+.tech-table.tech-table-full td .tech-cell-pinned small{max-width:100%}
+.tech-table.tech-table-full td .tech-cell-editable .tech-pencil{margin-top:4px}
+.tech-cell-readmore{
+  display:flex;align-items:flex-start;gap:7px;
+  background:transparent;color:inherit;text-align:left;
+  border:0;padding:0;cursor:pointer;font:inherit;width:100%;
+}
+.tech-cell-readmore>.tech-cell-text{flex:1;min-width:0}
+.tech-cell-readmore svg{flex:none;margin-top:3px;color:#a2a6b2}
+.tech-cell-readmore:hover svg,.tech-cell-readmore:focus-visible svg{color:#b57695}
+.tech-cell-readmore:focus-visible{outline:2px solid #b57695;outline-offset:3px;border-radius:3px}
+.tech-table.tech-table-full td.tech-empty{--tech-row-color:#fff}
+
+.tech-column-toolbar{
+  display:flex;align-items:center;gap:13px;flex-wrap:wrap;
+  padding:10px 17px;border-top:1px solid #e8e9ed;border-bottom:1px solid #e8e9ed;
+  background:#faf9fb;
+}
+.tech-column-toolbar-heading{display:flex;align-items:center;gap:8px;max-width:250px;min-width:0;font-size:12px;font-weight:700;color:#434a58}
+.tech-column-toolbar-heading>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tech-column-toolbar-heading svg{color:#a8738c;flex:none}
+.tech-column-palette{display:flex;gap:6px;align-items:center}
+.tech-tone-button{width:25px;height:25px;border-radius:8px;border:1px solid #d7dbe2;cursor:pointer;padding:0;position:relative}
+.tech-tone-button-none{background:#fff}
+.tech-tone-button-none:after{content:"";height:1px;width:17px;position:absolute;top:12px;left:3px;background:#bd8698;transform:rotate(-45deg)}
+.tech-tone-button-amber{background:#ffe5a4}
+.tech-tone-button-blue{background:#d1e9fc}
+.tech-tone-button-green{background:#d2edda}
+.tech-tone-button-rose{background:#f5d5e3}
+.tech-tone-button.active{outline:2px solid #505668;outline-offset:2px}
+.tech-tone-button:hover,.tech-tone-button:focus-visible{border-color:#9a7789}
+.tech-column-width-controls{display:flex;gap:5px;align-items:center;margin-left:auto;flex-wrap:wrap}
+.tech-column-width-controls button{
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:7px 10px;border:1px solid #e2e4e9;border-radius:8px;
+  font:inherit;font-size:11px;color:#585f6e;background:#fff;cursor:pointer;
+}
+.tech-column-width-controls button:hover{border-color:#cda4b6;color:#a46483}
+.tech-column-toolbar-close{width:28px;height:28px;display:grid;place-items:center;border:0;background:transparent;color:#9698a4;cursor:pointer}
+.tech-column-toolbar-close:hover{color:#30343e}
+
+.tech-text-preview-backdrop{
+  position:fixed;inset:0;background:#24293676;z-index:75;
+  display:grid;place-items:center;padding:20px;box-sizing:border-box;
+}
+.tech-text-preview{
+  width:min(710px,100%);max-height:min(85vh,850px);display:flex;flex-direction:column;
+  border-radius:17px;background:white;overflow:hidden;box-shadow:0 18px 60px #14182235;
+}
+.tech-text-preview>header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:17px 22px;border-bottom:1px solid #eaebef;color:#363b48;font-weight:700}
+.tech-text-preview>header button{display:grid;place-items:center;width:32px;height:32px;background:#f5f5f7;border:0;border-radius:8px;cursor:pointer;color:#777e8b}
+.tech-text-preview>div{padding:21px 23px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;font-size:13px;color:#424958}
+.tech-text-preview>footer{padding:13px 22px;border-top:1px solid #eaebef;display:flex;justify-content:flex-end}
+@media(max-width:750px){
+  .tech-column-toolbar{gap:10px;padding:10px 12px}
+  .tech-column-width-controls{margin-left:0}
+  .tech-column-toolbar-heading{width:100%;max-width:100%}
+}
+
+/* Новые поля добавляются по запросу. Цвет сохраняется для команды, ширина — локально. */
+.tech-add-field{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  flex:none;min-height:42px;padding:0 14px;border-radius:10px;
+  border:1px solid #d9dce4;background:#fff;color:#414554;
+  font:inherit;font-size:12px;font-weight:680;white-space:nowrap;cursor:pointer;
+}
+.tech-add-field:hover:not(:disabled){border-color:#ba9dac;background:#fcf8fa;color:#935c77}
+.tech-add-field:focus-visible{outline:2px solid #a7678a;outline-offset:2px}
+.tech-add-field:disabled{opacity:.44;cursor:not-allowed}
+.tech-column-shared-hint{font-size:11px;color:#767c88;white-space:nowrap}
+.tech-new-field-dialog>form{padding:20px 23px;display:flex;flex-direction:column;gap:10px}
+.tech-new-field-dialog label{font-size:12px;font-weight:700;color:#454c58}
+.tech-new-field-dialog input{
+  padding:12px 14px;border:1px solid #dce0e8;border-radius:10px;
+  width:100%;min-width:0;box-sizing:border-box;font:inherit;
+  font-size:13px;color:#343b48;background:#fff;
+}
+.tech-new-field-dialog input:focus{outline:2px solid #c693ac;outline-offset:1px}
+.tech-new-field-dialog p{margin:1px 0 12px;color:#777f8e;font-size:12px;line-height:1.55}
+.tech-new-field-dialog footer{display:flex;align-items:center;justify-content:flex-end;gap:10px}
+@media(max-width:900px){
+  .tech-add-field{flex:1 0 auto}
+  .tech-column-shared-hint{width:100%;white-space:normal}
+}
+
+/* Строка управления: поиск + фильтр + действие + компактный счётчик. */
+.tech-toolbar{grid-template-columns:minmax(0,1fr) minmax(165px,210px) auto auto}
+.tech-toolbar:not(:has(.tech-filter)){grid-template-columns:minmax(0,1fr) auto auto}
+@media(max-width:1000px){
+  .tech-toolbar{grid-template-columns:minmax(0,1fr) minmax(150px,185px)}
+  .tech-toolbar:not(:has(.tech-filter)){grid-template-columns:minmax(0,1fr) auto}
+  .tech-toolbar>.tech-add-field{justify-self:start}
+  .tech-toolbar>.tech-result-count{justify-self:end;align-self:center;grid-column:auto}
+}
+@media(max-width:620px){
+  .tech-toolbar,.tech-toolbar:not(:has(.tech-filter)){grid-template-columns:minmax(0,1fr)}
+  .tech-toolbar>.tech-add-field{width:100%}
+  .tech-toolbar>.tech-result-count{justify-self:start}
+}
+
+/* Non-paginated table: the content scrolls vertically and horizontally in
+   the same region. Rows are appended automatically near the bottom. */
+.tech-continuous-status{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  min-height:48px;padding:11px 17px;border-top:1px solid #ebedf0;
+  background:#fafbfc;color:#777f8d;font-size:11px;
+}
+.tech-continuous-status span:first-child{font-weight:720;color:#4c5360;white-space:nowrap}
+.tech-continuous-status span:nth-child(2){text-align:center}
+.tech-continuous-status button{
+  background:#fff;border:1px solid #e0e2e7;border-radius:8px;
+  padding:7px 11px;color:#626876;font:inherit;cursor:pointer;white-space:nowrap
+}
+.tech-continuous-status button:hover{border-color:#bd9dac;color:#955a77}
+@media(max-width:750px){.tech-continuous-status{flex-wrap:wrap}.tech-continuous-status span:nth-child(2){text-align:left}}
+
+/* 2026-11: спокойная палитра Boykov-services.
+   Общая подсветка столбца остается доступной, а цвет конкретной ячейки
+   имеет над ней приоритет. Без ярких заливок и дополнительных градиентов. */
+.tech-table.tech-table-full tbody td{
+  --tech-row-color:#fff;
+  transition:none!important;
+}
+.tech-table.tech-table-full tbody tr:nth-child(even) td{--tech-row-color:#f7f7f9}
+.tech-table.tech-table-full tbody tr:hover td{--tech-row-color:#f1eff2}
+.tech-table.tech-table-full tbody td.tech-locked-cell{--tech-row-color:#faf9fa}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-locked-cell{--tech-row-color:#f2f2f5}
+.tech-table.tech-table-full tbody tr:hover td.tech-locked-cell{--tech-row-color:#eceaef}
+
+/* Существующие общие цвета: сохраняем ID для ранее окрашенных колонок. */
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-amber{--tech-row-color:#f7f3ec}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-amber{--tech-row-color:#f1ebdf}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-amber{--tech-row-color:#eae2d6}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-blue{--tech-row-color:#f0f1f5}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-blue{--tech-row-color:#e8eaf0}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-blue{--tech-row-color:#e1e3eb}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-green{--tech-row-color:#f1f4ef}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-green{--tech-row-color:#e8ede7}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-green{--tech-row-color:#e0e7df}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-tone-rose{--tech-row-color:#f7f0f3}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-tone-rose{--tech-row-color:#efe5ea}
+.tech-table.tech-table-full tbody tr:hover td.tech-tone-rose{--tech-row-color:#eadde4}
+
+/* Цвет отдельной ячейки перекрывает любой цвет столбца, включая hover. */
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-cell-tone-amber{--tech-row-color:#eee6d8}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-cell-tone-amber{--tech-row-color:#e8dfce}
+.tech-table.tech-table-full tbody tr:hover td.tech-cell-tone-amber{--tech-row-color:#e0d5c2}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-cell-tone-blue{--tech-row-color:#e3e5ed}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-cell-tone-blue{--tech-row-color:#dbe0e9}
+.tech-table.tech-table-full tbody tr:hover td.tech-cell-tone-blue{--tech-row-color:#d3d8e3}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-cell-tone-green{--tech-row-color:#e3eae1}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-cell-tone-green{--tech-row-color:#dbe5d8}
+.tech-table.tech-table-full tbody tr:hover td.tech-cell-tone-green{--tech-row-color:#d3dfd0}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-cell-tone-rose{--tech-row-color:#f0e1e8}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-cell-tone-rose{--tech-row-color:#ead8e1}
+.tech-table.tech-table-full tbody tr:hover td.tech-cell-tone-rose{--tech-row-color:#e1cfd8}
+
+.tech-table.tech-table-full thead th.tech-tone-amber{background:#ede6da!important}
+.tech-table.tech-table-full thead th.tech-tone-blue{background:#e1e4ec!important}
+.tech-table.tech-table-full thead th.tech-tone-green{background:#e3e9e0!important}
+.tech-table.tech-table-full thead th.tech-tone-rose{background:#efdee6!important}
+.tech-tone-button-amber{background:#e8dfcf}
+.tech-tone-button-blue{background:#d9dce7}
+.tech-tone-button-green{background:#dce5d9}
+.tech-tone-button-rose{background:#ebd9e1}
+.tech-tone-button-none:after{background:#b57a95}
+.tech-cell-toolbar{border-left:3px solid #ad7893;background:#faf7f9}
+.tech-cell-toolbar .tech-column-toolbar-heading{max-width:340px}
+.tech-cell-toolbar .tech-column-shared-hint{margin-left:auto}
+.tech-data-cell{position:relative}
+.tech-data-cell:hover{cursor:default}
+
+/* Страницы по 100 строк: DOM больше не растёт при вертикальной прокрутке. */
+.tech-pagination{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;
+  min-height:58px;padding:11px 17px;border-top:1px solid #e9e8ec;
+  background:#fcfbfc;color:#636675;font-size:12px;
+}
+.tech-pagination>span{font-variant-numeric:tabular-nums;font-weight:650;color:#505461}
+.tech-pagination-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.tech-pagination-actions button{
+  display:flex;align-items:center;justify-content:center;gap:5px;
+  border:1px solid #dedfe5;background:#fff;color:#3f4351;border-radius:9px;
+  padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;
+}
+.tech-pagination-actions button:hover:not(:disabled){background:#f4eff2;border-color:#cebac5;color:#8a5974}
+.tech-pagination-actions button:disabled{opacity:.4;cursor:default}
+.tech-pagination-actions label{display:flex;align-items:center;gap:8px;color:#737888;font-size:11px}
+.tech-pagination-actions select{height:34px;max-width:130px;padding:0 9px;border-radius:8px;border:1px solid #dcdee4;background:#fff;color:#3e4351;font:inherit;font-size:12px;cursor:pointer}
+@media(max-width:720px){
+  .tech-pagination{align-items:flex-start;flex-wrap:wrap}
+  .tech-pagination-actions{width:100%;justify-content:space-between}
+  .tech-cell-toolbar .tech-column-shared-hint{margin-left:0;white-space:normal}
+}
+
+
+/* Одна настройка для ширины всей таблицы. Изменение ширины персональное. */
+.tech-width-layout{
+  display:flex;align-items:center;gap:11px;flex-wrap:wrap;
+  min-height:46px;padding:9px 17px;
+  background:#faf9fa;border-bottom:1px solid #edecef;color:#535967;
+  font-size:11px;
+}
+.tech-width-title{display:inline-flex;gap:7px;align-items:center;font-weight:730;color:#474553;white-space:nowrap}
+.tech-width-title svg{color:#a56f8b}
+.tech-width-range-label{color:#777b85;font-size:11px;white-space:nowrap}
+.tech-width-range{width:145px;min-width:70px;accent-color:#a26e8b;cursor:ew-resize}
+.tech-width-layout output{font-weight:750;color:#6b5263;min-width:34px;font-variant-numeric:tabular-nums}
+.tech-width-layout button{
+  padding:7px 10px;border:1px solid #e0dde2;border-radius:8px;
+  color:#585361;background:#fff;cursor:pointer;font:inherit;font-weight:600;white-space:nowrap;
+}
+.tech-width-layout button:hover{border-color:#c9a8b9;background:#f8f2f5;color:#864e6d}
+.tech-width-help{margin-left:auto;color:#8c8992;font-size:10px}
+.tech-header-resize{width:12px}
+.tech-table.tech-table-full th.tech-table-header:hover .tech-header-resize:after{
+  content:"";position:absolute;top:10px;bottom:10px;right:4px;width:2px;
+  background:#b8a1b0;border-radius:3px;
+}
+.tech-header-resize:hover:after{background:#9e6c89!important}
+@media(max-width:850px){
+  .tech-width-help{flex-basis:100%;margin-left:0}
+}
+
+
+/* 2026-11: UX создания и безопасного удаления рабочих столбцов.
+   Никаких изменений в личном масштабе/ширине по умолчанию. */
+.tech-table-frame{position:relative;min-width:0}
+.tech-add-side{
+  position:absolute;right:14px;top:78px;z-index:10;
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:9px 12px;border:1px solid #cfd8d0;border-radius:10px;
+  background:#f4f8f4;color:#4c6658;box-shadow:0 3px 18px #263c2c15;
+  font:inherit;font-size:11px;font-weight:700;cursor:pointer;
+}
+.tech-add-side:hover:not(:disabled){background:#e9f1e9;border-color:#a6bbaa}
+.tech-add-side:disabled,.tech-add-bottom button:disabled{opacity:.42;cursor:default}
+.tech-add-bottom{
+  display:flex;align-items:center;gap:13px;flex-wrap:wrap;padding:10px 17px;
+  background:#fbfcfb;border-top:1px solid #e5eae5;
+}
+.tech-add-bottom>button:first-child{display:flex;align-items:center;gap:7px;
+  padding:10px 13px;border-radius:9px;border:1px dashed #a7b9aa;
+  color:#405c4a;background:#f4f8f3;cursor:pointer;font:inherit;font-weight:700;font-size:12px;}
+.tech-add-bottom>button:first-child:hover:not(:disabled){background:#ebf2e9;border-style:solid}
+.tech-add-bottom>span{font-size:11px;color:#8a9390;line-height:1.45}
+.tech-archived-trigger{margin-left:auto;border:0;background:transparent;color:#7d6270;cursor:pointer;font:inherit;font-size:11px;text-decoration:underline;text-underline-offset:3px}
+.tech-column-success{display:flex;align-items:center;gap:10px;padding:10px 17px;
+  background:#f2f7f1;border-bottom:1px solid #dce8dc;color:#45664e;font-size:12px;line-height:1.4}
+.tech-column-success>span{flex:1;min-width:0}
+.tech-column-success>button{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;cursor:pointer;color:#38674a;font-weight:700;font:inherit;font-size:11px}
+.tech-column-success .tech-column-success-close{padding:3px;color:#87988a}
+.tech-delete-field-button{display:inline-flex;align-items:center;gap:6px;margin-left:auto;
+  padding:8px 11px;border:1px solid #edd9de;border-radius:8px;background:#fbf5f6;
+  color:#96596a;cursor:pointer;font:inherit;font-size:11px;font-weight:700}
+.tech-delete-field-button:hover{background:#f8eaed;border-color:#dcb7c3}
+.tech-delete-field-dialog>p{margin:0;padding:18px 23px;white-space:normal;line-height:1.6;font-size:13px;color:#5e6670}
+.tech-delete-field-dialog>footer{display:flex;justify-content:flex-end;gap:9px;padding:12px 23px;border-top:1px solid #ebebef}
+.tech-confirm-delete{padding:9px 14px;border-radius:9px;background:#9d5d6c;color:#fff;
+  border:1px solid #9d5d6c;cursor:pointer;font:inherit;font-size:12px;font-weight:700}
+.tech-confirm-delete:disabled{opacity:.5}
+.tech-archived-list{display:flex;flex-direction:column;gap:9px;max-height:55vh;overflow-y:auto;padding:18px 23px}
+.tech-archived-list>div{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  border:1px solid #e7e9e8;border-radius:10px;padding:11px 12px;font-size:12px}
+.tech-archived-list>div>span{overflow-wrap:anywhere;color:#454c52}
+.tech-archived-list>div>button{border:1px solid #bfcdbe;border-radius:8px;background:#f6f9f5;
+  color:#4e6b56;padding:8px 11px;cursor:pointer;font:inherit;font-size:11px;font-weight:700}
+@media(max-width:740px){
+  .tech-add-bottom{align-items:flex-start;flex-direction:column}
+  .tech-archived-trigger{margin-left:0}
+  .tech-add-side{right:7px;top:70px;padding:8px}
+  .tech-add-side span{display:none}
+}
+
+/* Тихая 'зебра': еле заметный шалфей и пудровый розовый.
+   Явная подсветка выбранной ячейки/столбца имеет приоритет. */
+.tech-table.tech-table-full tbody tr:nth-child(odd) td:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#f7faf7}
+.tech-table.tech-table-full tbody tr:nth-child(even) td:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#fdf8fa}
+.tech-table.tech-table-full tbody tr:hover td:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#f0f1ef}
+.tech-table.tech-table-full tbody tr:nth-child(odd) td.tech-locked-cell:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#f5f8f6}
+.tech-table.tech-table-full tbody tr:nth-child(even) td.tech-locked-cell:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#fbf5f8}
+.tech-table.tech-table-full tbody tr:hover td.tech-locked-cell:not([class*="tech-tone-"]):not([class*="tech-cell-tone-"]){--tech-row-color:#ecefec}
+
+/* Удаление только пользовательских столбцов — прямо из их заголовка. */
+.tech-table.tech-table-full thead th.tech-table-header:has(.tech-header-remove){padding-right:76px}
+.tech-header-remove{position:absolute;right:11px;top:calc(50% - 14px);
+  display:grid;place-items:center;width:27px;height:28px;padding:0;border:1px solid transparent;
+  background:transparent;color:#aaa4a9;border-radius:7px;cursor:pointer}
+.tech-header-remove:hover,.tech-header-remove:focus-visible{background:#fcf0f2;border-color:#e9cfd6;color:#975568;outline:0}
+.tech-table.tech-table-full thead th.tech-table-header:has(.tech-header-remove) .tech-header-settings{right:40px}
+
+
+/* Техотдел — понятное управление цветом и навигацией (без изменения данных). */
+.tech-color-quickbar{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:10px 17px;border-top:1px solid #f0eff1;border-bottom:1px solid #e9e8ec;
+  background:#fcfbfc;min-height:52px;box-sizing:border-box;
+}
+.tech-color-quickbar.is-active{background:#faf5f8;border-bottom-color:#e9dce3}
+.tech-color-mode-button{
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;
+  flex:none;padding:10px 14px;min-height:38px;
+  border:1px solid #c8b2bf;border-radius:10px;
+  color:#644b5c;background:#fff;
+  font:inherit;font-size:12px;font-weight:750;cursor:pointer;
+  transition:background .14s,color .14s,border-color .14s;
+}
+.tech-color-mode-button svg{color:#a66e8b}
+.tech-color-mode-button:hover:not(.is-active){background:#f9f1f5;border-color:#b17b96}
+.tech-color-mode-button.is-active{background:#323440;border-color:#323440;color:#fff}
+.tech-color-mode-button.is-active svg{color:#f4e0e9}
+.tech-color-mode-button:focus-visible{outline:3px solid #dbb6c9;outline-offset:2px}
+.tech-color-quickbar-hint{font-size:12px;font-weight:550;line-height:1.5;color:#636470;flex:1;min-width:240px}
+.tech-color-quickbar-shared{font-size:11px;color:#827b84;white-space:nowrap;margin-left:auto}
+.tech-color-quickbar.is-active .tech-color-quickbar-hint{color:#68475b;font-weight:650}
+.tech-table-scroll.tech-paint-mode .tech-data-cell,
+.tech-table-scroll.tech-paint-mode .tech-data-cell button{cursor:cell!important}
+.tech-table-scroll.tech-paint-mode .tech-data-cell:hover{
+  box-shadow:inset 0 0 0 2px #b685a0;
+}
+.tech-table.tech-table-full tbody td.tech-selected-color-cell{
+  box-shadow:inset 0 0 0 2px #916078;
+}
+.tech-table-scroll.tech-paint-mode .tech-data-cell:focus-within{
+  box-shadow:inset 0 0 0 2px #8c5e78;
+}
+/* Панель выбора ячейки остаётся на виду при работе с длинной таблицей. */
+.tech-column-toolbar.tech-cell-toolbar{background:#faf5f8;border-left:3px solid #a7718d;padding:12px 17px}
+.tech-cell-toolbar .tech-column-toolbar-heading{font-size:12px;max-width:400px}
+.tech-cell-toolbar .tech-tone-button{width:28px;height:28px;border-radius:8px}
+
+/* Вместо длинной инструкции под таблицей — только кнопки горизонтальной навигации. */
+.tech-horizontal-controls{justify-content:flex-end;padding:8px 17px;background:#fcfcfd;border-top:1px solid #f0eff1;min-height:45px;box-sizing:border-box}
+.tech-horizontal-buttons{margin-left:auto}
+
+/* Единая спокойная панель перехода: диапазоны строк понятнее номеров страниц. */
+.tech-pagination{
+  display:flex;align-items:center;justify-content:space-between;gap:18px;
+  background:#fff;min-height:66px;padding:12px 17px;
+  border-top:1px solid #e9e8ec;
+}
+.tech-pagination-summary{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap;font-size:12px;color:#7d8190}
+.tech-pagination-summary strong{font-size:13px;font-weight:770;color:#303641;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tech-pagination-actions{display:flex;gap:9px;align-items:center;justify-content:flex-end;margin-left:auto;flex-wrap:nowrap}
+.tech-pagination-actions .tech-page-step{
+  display:inline-flex;align-items:center;justify-content:center;gap:5px;
+  height:38px;padding:0 12px;border:1px solid #e0e0e6;border-radius:10px;
+  background:#fff;color:#4a4c59;font:inherit;font-size:12px;font-weight:700;
+  white-space:nowrap;cursor:pointer;
+}
+.tech-pagination-actions .tech-page-step:hover:not(:disabled){background:#f8f4f6;color:#874d6c;border-color:#d2bac6}
+.tech-pagination-actions .tech-page-step:disabled{opacity:.4;cursor:default}
+.tech-pagination-actions .tech-page-step-next{background:#f6f2f4;border-color:#e3d5dd;color:#775066}
+.tech-page-range-picker{display:flex;align-items:center;gap:9px;font-size:12px;color:#747885;white-space:nowrap}
+.tech-page-range-picker>span:first-child{font-size:11px;font-weight:580;color:#848490}
+.tech-page-range-control{display:block;position:relative;min-width:124px}
+.tech-pagination-actions .tech-page-range-control select{
+  width:100%;min-width:124px;max-width:none;height:38px;appearance:none;-webkit-appearance:none;
+  border:1px solid #dedce3;border-radius:10px;background:#fff;
+  padding:0 33px 0 13px;box-sizing:border-box;
+  color:#333844;font:inherit;font-size:12px;font-weight:750;
+  text-align:left;cursor:pointer;outline:none;font-variant-numeric:tabular-nums;
+}
+.tech-page-range-control svg{pointer-events:none;position:absolute;right:11px;top:50%;transform:translateY(-50%);color:#8a8391}
+.tech-pagination-actions .tech-page-range-control select:focus-visible{border-color:#ae7895;box-shadow:0 0 0 3px #e8d4df}
+@media(max-width:880px){
+  .tech-color-quickbar-shared{display:none}
+  .tech-pagination{align-items:flex-start;flex-direction:column}
+  .tech-pagination-actions{width:100%;margin-left:0;justify-content:space-between}
+}
+@media(max-width:520px){
+  .tech-color-quickbar{gap:8px;padding:11px 12px}
+  .tech-color-quickbar-hint{flex-basis:100%;min-width:0}
+  .tech-page-range-picker>span:first-child{display:none}
+  .tech-pagination-actions{gap:6px}
+  .tech-pagination-actions .tech-page-step{padding:0 8px;min-width:40px}
+  .tech-pagination-actions .tech-page-step span{display:none}
+  .tech-page-range-control,.tech-pagination-actions .tech-page-range-control select{min-width:132px}
+}
+
+/* Отмена/повтор в том же стиле, что и остальные инструменты техотдела. */
+.tech-undo-redo{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.tech-undo-redo>button{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  min-height:36px;padding:7px 11px;border-radius:9px;
+  border:1px solid #ddd9df;background:#fff;color:#44434f;
+  font:inherit;font-size:12px;font-weight:700;cursor:pointer;
+}
+.tech-undo-redo>button svg{color:#806577}
+.tech-undo-redo>button:not(:disabled):hover{background:#f8f2f5;border-color:#ccb2c1;color:#744e64}
+.tech-undo-redo>button:focus-visible{outline:2px solid #bb92ac;outline-offset:2px}
+.tech-undo-redo>button:disabled{opacity:.42;cursor:default}
+.tech-undo-status{font-size:11px;color:#5e7764;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:920px){.tech-undo-status{flex-basis:100%;max-width:none}}
+@media(max-width:520px){.tech-undo-redo>button{padding:8px 9px}}
+
+/* BOYKOV_TECH_PAGER_ALIGNMENT_V1 — единая горизонтальная панель навигации */
+.tech-pagination > .tech-pagination-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 118px));
+  align-items: stretch;
+  justify-content: end;
+  gap: 8px;
+  width: auto;
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+.tech-pagination-actions .tech-page-range-picker {
+  display: block;
+  width: 100%;
+  height: 42px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+/* Видимой подписи над списком нет: select уже имеет aria-label. */
+.tech-pagination-actions .tech-page-range-picker > span:first-child {
+  display: none;
+}
+.tech-pagination-actions .tech-page-range-control {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+}
+.tech-pagination-actions .tech-page-step,
+.tech-pagination-actions .tech-page-range-control select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 42px;
+  margin: 0;
+  border: 1px solid #dfe1e6;
+  border-radius: 10px;
+  background: #fff;
+  color: #373c48;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 650;
+  box-shadow: none;
+}
+.tech-pagination-actions .tech-page-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+.tech-pagination-actions .tech-page-range-control select {
+  display: block;
+  padding: 0 31px 0 14px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font-variant-numeric: tabular-nums;
+}
+.tech-pagination-actions .tech-page-step-next {
+  background: #fff;
+  border-color: #dfe1e6;
+  color: #373c48;
+}
+.tech-pagination-actions .tech-page-step:hover:not(:disabled) {
+  background: #f6f4f5;
+  border-color: #c9c5ce;
+  color: #4c3d4b;
+}
+.tech-pagination-actions .tech-page-step:disabled {
+  opacity: .42;
+  cursor: default;
+}
+.tech-pagination-actions .tech-page-step span {
+  display: inline;
+}
+.tech-pagination-actions .tech-page-range-control svg {
+  top: 50%;
+  transform: translateY(-50%);
+  right: 11px;
+}
+@media (max-width: 880px) {
+  .tech-pagination > .tech-pagination-actions {
+    width: auto;
+    margin-left: auto;
+    grid-template-columns: repeat(3, minmax(0, 118px));
+  }
+}
+@media (max-width: 520px) {
+  .tech-pagination > .tech-pagination-actions {
+    width: 100%;
+    margin-left: 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .tech-pagination-actions .tech-page-step {
+    min-width: 0;
+    padding: 0 4px;
+  }
+  .tech-pagination-actions .tech-page-step span {
+    display: inline;
+  }
+  .tech-pagination-actions .tech-page-range-control select {
+    min-width: 0;
+    padding-left: 10px;
+    padding-right: 27px;
+  }
+}
+/* /BOYKOV_TECH_PAGER_ALIGNMENT_V1 */
+
