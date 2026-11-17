@@ -859,22 +859,114 @@
 }
 /* /BOYKOV_TECH_PAGER_ALIGNMENT_V1 */
 
-/* BOYKOV_TECH_SYNC_HEALTH_V1 — lightweight source-health indication */
-.tech-sync-overview{display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:0;flex:0 1 auto}
-.tech-sync-health{display:flex;align-items:center;gap:9px;border:1px solid #dfeae4;background:#f7faf8;border-radius:11px;padding:9px 13px;min-width:0;max-width:330px;color:#547562}
-.tech-sync-health svg{flex:0 0 auto}
-.tech-sync-health>div{display:flex;flex-direction:column;gap:3px;min-width:0}
-.tech-sync-health strong{font-size:11px;line-height:1.3;font-weight:700;color:inherit}
-.tech-sync-health span{font-size:10px;line-height:1.45;color:#68776f;white-space:normal}
-.tech-sync-health--stale,.tech-sync-health--pending{border-color:#e7dccc;background:#fcfaf6;color:#927046}
-.tech-sync-health--stale span,.tech-sync-health--pending span{color:#887c6e}
-.tech-sync-health--error{border-color:#eadadd;background:#fcf7f8;color:#a3616c}
-.tech-sync-health--error span{color:#93797d}
-.tech-sync-overview .tech-sync-label{font-size:10px;white-space:normal;justify-content:flex-end}
-@media (max-width: 860px){
-  .tech-heading{flex-wrap:wrap;align-items:flex-start}
-  .tech-sync-overview{align-items:flex-start;max-width:100%;width:100%}
-  .tech-sync-health{max-width:100%}
-  .tech-sync-overview .tech-sync-label{justify-content:flex-start}
+/* BOYKOV_TECH_SYNC_VISUAL_V2 — фирменная карточка состояния, без цветных алертов */
+.tech-sync-overview{
+  display:flex;
+  flex:0 0 auto;
+  align-items:stretch;
+  justify-content:flex-end;
+  min-width:0;
+  max-width:100%;
 }
-/* /BOYKOV_TECH_SYNC_HEALTH_V1 */
+.tech-sync-panel{
+  box-sizing:border-box;
+  display:flex;
+  align-items:flex-start;
+  gap:11px;
+  width:320px;
+  max-width:100%;
+  min-width:0;
+  padding:12px 13px;
+  border:1px solid #e6e3e8;
+  border-radius:13px;
+  background:#fff;
+  box-shadow:0 3px 12px rgba(40,44,55,.025);
+  color:#30323e;
+}
+.tech-sync-panel__mark{
+  flex:0 0 32px;
+  width:32px;
+  height:32px;
+  display:grid;
+  place-items:center;
+  border-radius:10px;
+  background:#f7edf2;
+  color:#ad728d;
+}
+.tech-sync-panel__body{flex:1 1 auto;min-width:0}
+.tech-sync-panel__top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:5px 7px;
+  min-height:24px;
+}
+.tech-sync-panel__title{
+  color:#30323e;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:-.01em;
+  line-height:1.3;
+}
+.tech-sync-panel__badge{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  flex:0 0 auto;
+  padding:4px 7px;
+  border-radius:7px;
+  background:#f7f2f5;
+  color:#935e79;
+  white-space:nowrap;
+  font-size:10px;
+  font-weight:650;
+  line-height:1.25;
+}
+.tech-sync-panel__dot{
+  flex:none;
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:currentColor;
+}
+.tech-sync-panel__details{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  margin-top:7px;
+}
+.tech-sync-panel__detail{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:8px;
+  min-width:0;
+  font-size:10px;
+  line-height:1.4;
+}
+.tech-sync-panel__detail>span:first-child{color:#9394a0;flex:0 0 auto}
+.tech-sync-panel__detail>span:last-child{
+  min-width:0;
+  overflow-wrap:anywhere;
+  text-align:right;
+  color:#606673;
+  font-variant-numeric:tabular-nums;
+}
+/* Статус окрашивает лишь точку и мини-бейдж, сама карточка всегда нейтральная. */
+.tech-sync-panel--ok .tech-sync-panel__badge{background:#eff6f1;color:#5b856b}
+.tech-sync-panel--stale .tech-sync-panel__badge{background:#faf0f3;color:#a2667b}
+.tech-sync-panel--error .tech-sync-panel__badge{background:#faedf1;color:#aa526c}
+.tech-sync-panel--pending .tech-sync-panel__badge{background:#f7f2f5;color:#935e79}
+@media (max-width:900px){
+  .tech-sync-overview{justify-content:flex-start;width:100%;align-items:stretch}
+}
+@media (max-width:410px){
+  .tech-sync-panel{width:100%;gap:9px;padding:11px}
+  .tech-sync-panel__mark{flex-basis:30px;width:30px;height:30px}
+  .tech-sync-panel__title{font-size:11px}
+  .tech-sync-panel__badge{font-size:9px;padding:4px 6px}
+  .tech-sync-panel__detail{font-size:10px}
+}
+/* /BOYKOV_TECH_SYNC_VISUAL_V2 */

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from "react";
 import {
-  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, CheckCircle2, AlertTriangle, LockKeyhole,
+  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, RefreshCw, LockKeyhole,
   MessageSquareText, PencilLine, Search, Send, SlidersHorizontal, X, Palette, RotateCcw, Eye, Plus, Trash2, Undo2, Redo2,
 } from "lucide-react";
 import { api, post, dateTime, errorText } from "../api";
@@ -732,28 +732,39 @@ export default function Technical() {
       </div>
       <div className="tech-sync-overview">
         {meta?.syncHealth && meta.syncHealth.level !== "disabled" &&
-          <div className={`tech-sync-health tech-sync-health--${metaFetchFailed ? "error" : meta.syncHealth.level}`}
+          <div className={`tech-sync-panel tech-sync-panel--${metaFetchFailed ? "error" : meta.syncHealth.level}`}
             role="status" aria-live="polite"
             title={`Бухгалтерия: контрольная сверка каждые 5 минут; предупреждение после ${meta.syncHealth.staleAfterMinutes} минут без успешной сверки.`}>
-            {metaFetchFailed || meta.syncHealth.level === "stale" || meta.syncHealth.level === "error"
-              ? <AlertTriangle size={16} aria-hidden="true"/>
-              : meta.syncHealth.level === "ok"
-                ? <CheckCircle2 size={16} aria-hidden="true"/>
-                : <Clock3 size={16} aria-hidden="true"/>}
-            <div>
-              <strong>{metaFetchFailed ? "Статус недоступен"
-                : meta.syncHealth.level === "ok" ? "Бухгалтерия синхронизирована"
-                : meta.syncHealth.level === "stale" ? "Нет свежей сверки бухгалтерии"
-                : meta.syncHealth.level === "error" ? "Ошибка синхронизации бухгалтерии"
-                : "Ожидаем контрольную сверку"}</strong>
-              <span>{meta.syncHealth.lastReconcileAt
-                ? `Последняя сверка: ${dateTime(meta.syncHealth.lastReconcileAt)}`
-                : meta.syncHealth.lastChangeAt
-                  ? `Последнее изменение: ${dateTime(meta.syncHealth.lastChangeAt)}`
-                  : meta.updatedAt ? `Последний снимок: ${dateTime(meta.updatedAt)}` : "Данных ещё нет"}</span>
+            <span className="tech-sync-panel__mark" aria-hidden="true"><RefreshCw size={16} strokeWidth={1.8}/></span>
+            <div className="tech-sync-panel__body">
+              <div className="tech-sync-panel__top">
+                <strong className="tech-sync-panel__title">Синхронизация</strong>
+                <span className="tech-sync-panel__badge">
+                  <span className="tech-sync-panel__dot" aria-hidden="true"/>
+                  {metaFetchFailed ? "Нет связи"
+                    : meta.syncHealth.level === "ok" ? "Актуально"
+                    : meta.syncHealth.level === "stale" ? "Нет сверки"
+                    : meta.syncHealth.level === "error" ? "Ошибка"
+                    : "Ожидание"}
+                </span>
+              </div>
+              <div className="tech-sync-panel__details">
+                <div className="tech-sync-panel__detail">
+                  <span>Бухгалтерия</span>
+                  <span>{meta.syncHealth.lastReconcileAt
+                    ? dateTime(meta.syncHealth.lastReconcileAt)
+                    : meta.syncHealth.lastChangeAt
+                      ? `Изменено ${dateTime(meta.syncHealth.lastChangeAt)}`
+                      : "Ожидаем сверку"}</span>
+                </div>
+                {meta.updatedAt && <div className="tech-sync-panel__detail">
+                  <span>Таблицы</span><span>{dateTime(meta.updatedAt)}</span>
+                </div>}
+              </div>
             </div>
           </div>}
-        {meta?.updatedAt && <span className="tech-sync-label"><Clock3 size={14}/> Таблицы: {dateTime(meta.updatedAt)}</span>}
+        {(!meta?.syncHealth || meta.syncHealth.level === "disabled") && meta?.updatedAt &&
+          <span className="tech-sync-label"><Clock3 size={14}/> Таблицы: {dateTime(meta.updatedAt)}</span>}
       </div>
     </div>
 
