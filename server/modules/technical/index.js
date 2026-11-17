@@ -75,8 +75,14 @@ export function createTechnicalModule(db, options = {}) {
   // Apps Script pushes only authenticated, structured data. This endpoint never
   // requests data from Google and never writes anything back to Sheets.
   function registerPushHooks(app) {
-    for (const action of ['start','chunk','commit','patch']) {
-      app.post(`/hooks/technical/import/${action}`, (req, res) => {
+    const routes = [
+      ['start', 'start'], ['chunk', 'chunk'], ['commit', 'commit'], ['patch', 'patch'],
+      ['accounting/start', 'startAccounting'],
+      ['accounting/chunk', 'accountingChunk'],
+      ['accounting/commit', 'commitAccounting'],
+    ];
+    for (const [route, action] of routes) {
+      app.post(`/hooks/technical/import/${route}`, (req, res) => {
         if (mode !== 'apps-script') return res.status(404).json({error:'Приём данных не настроен'});
         const authorization = String(req.headers.authorization || '');
         if (!authorization.startsWith('Bearer ') ||

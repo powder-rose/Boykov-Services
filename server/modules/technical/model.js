@@ -88,23 +88,34 @@ export function buildSnapshot(workbookRanges, accountingRows, updatedAt = new Da
     }
     if (tab.id === TECH_TABS[0].id) {
       let appended = 0;
-      for (const [code, candidates] of matches) {
-        if (workCodes.has(code)) continue;
-        // Never guess which record is correct when accounting reuses a code.
-        // Ambiguous records require an explicit correction in the source.
-        if (candidates.length !== 1) continue;
-        const source = candidates[0];
-        const values = Array(width).fill('');
+      // A new company may be entered before its code is assigned. Show it as
+      // "no-code" rather than silently dropping the row. Such provisional rows
+      // are not automatically joined to technical jobs: a unique code remains
+      // necessary to link records safely across the two source files.
+      for (let sourceIndex = 1; sourceIndex < accountingRows.length; sourceIndex++) {
+        const source = {row: sourceIndex + 1, values: accountingRows[sourceIndex]};
+        const code = normalizeCode(source.values[1]);
+        const candidates = code ? matches.get(code) || [] : [];
+        // Duplicate accounting codes are unsafe to mirror as distinct objects:
+        // they may belong to one customer but the source does not identify which.
+        if (code && candidates.length !== 1) continue;
+        if (code && workCodes.has(code)) continue;
+        const identity = [2, 16, 17].some(index => val(source.values[index]));
+        if (!code && !identity) continue; // do not make fake objects from blank separators
+        const uniqueCode = Boolean(code);
+        const matchStatus = code ? 'linked' : 'no-code';
         const accounting = Object.fromEntries(ACCOUNTING_FIELDS.map(field =>
           [field.key, val(source.values[field.sourceIndex])]));
+        const values = Array(width).fill('');
         for (const field of ACCOUNTING_FIELDS) {
           if (field.targetIndex !== null && field.targetIndex < width)
             values[field.targetIndex] = accounting[field.key];
         }
         appended++;
-        rows.push({tabId: tab.id, key: `code:${code}`,
+        rows.push({tabId: tab.id,
+          key: uniqueCode ? `code:${code}` : `accounting-row:${source.row}`,
           rowNumber: grid.length + appended, code, values, accounting,
-          matchStatus: 'linked', accountingRow: source.row });
+          matchStatus, accountingRow: source.row });
       }
     }
   }

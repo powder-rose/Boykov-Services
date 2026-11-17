@@ -56,7 +56,7 @@ function validateCounts(expected) {
 function snapshotFromSources(sources, at = new Date().toISOString()) {
   const accounting = sources[ACCOUNTING_KEY];
   const workbook = Object.fromEntries(TECH_TABS.map(tab => [tab.title, sources[WORKBOOK_PREFIX + tab.id]]));
-  if (!Array.isArray(accounting) || accounting.length < 2 ||
+  if (!Array.isArray(accounting) || accounting.length < 1 ||
       !Array.isArray(workbook[TECH_TABS[0].title]) || workbook[TECH_TABS[0].title].length < 2)
     throw forbidden('Нет бухгалтерского листа или основной вкладки; импорт отменён', 422);
   for (const [key, rows] of Object.entries(sources)) {
@@ -70,6 +70,13 @@ export function createTechnicalPushReceiver(store, env = process.env) {
   // One in-flight import per Node process; a restart discards only uncommitted data.
   // The last complete SQLite snapshot is never affected by a partial import.
   let active = null;
+  let activeAccounting = null;
+  // An interrupted HTTP import must not block every subsequent edit forever.
+  const expireStaleRuns = () => {
+    if (active && Date.now() - active.started >= RUN_LIFETIME_MS) active = null;
+    if (activeAccounting && Date.now() - activeAccounting.started >= RUN_LIFETIME_MS)
+      activeAccounting = null;
+  };
   const validateSourceKey = (key) => {
     if (!permittedKeys.includes(key)) throw forbidden('Неизвестный лист импорта');
     return key;
@@ -87,11 +94,14 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     return active;
   };
   const start = ({runId, expected}) => {
+    expireStaleRuns();
     validRunId(runId);
     const counts = validateCounts(expected);
     // A new authenticated run may replace an interrupted/incomplete one.
     // Unfinished chunks never change the saved snapshot.
     if (active?.id === runId) return {ok: true, alreadyStarted: true};
+    if (activeAccounting && Date.now() - activeAccounting.started < RUN_LIFETIME_MS)
+      throw forbidden('Идёт сверка бухгалтерии. Повторите полный импорт позже.', 409);
     active = {id: runId, started: Date.now(), expected: counts, parts: new Map()};
     return {ok: true, requiredSources: permittedKeys.length};
   };
@@ -129,13 +139,14 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
   };
   const patch = ({key, startRow, rows}) => {
+    expireStaleRuns();
     validateSourceKey(key);
     if (!Number.isInteger(startRow) || startRow < 1 || startRow > MAX_SOURCE_ROWS)
       throw forbidden('Некорректный номер строки');
     const normalized = normalizeRows(rows, 50);
     if (startRow + normalized.length - 1 > MAX_SOURCE_ROWS)
       throw forbidden('Превышен максимальный номер строки');
-    if (active) throw forbidden('Идёт полный импорт. Изменение будет включено в следующий снимок.', 409);
+    if (active || activeAccounting) throw forbidden('Идёт контрольная сверка. Изменение попадёт в следующий снимок.', 409);
     const sources = store.sourceSnapshot();
     if (!sources) throw forbidden('Сначала выполните полную первоначальную загрузку', 409);
     const existing = sources[key];
@@ -149,7 +160,64 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     store.commitSnapshot(snapshot, sources);
     return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
   };
-  return {start, chunk, commit, patch};
+  /**
+   * Partial full snapshot, strictly scoped to accounting: reconcile additions,
+   * moved rows, deleted rows and cleared cells without retransmitting seven
+   * independently edited technical tabs. Commit is atomic with the SQLite
+   * snapshot; a missing/expired chunk never modifies existing data.
+   */
+  const startAccounting = ({runId, expected}) => {
+    expireStaleRuns();
+    validRunId(runId);
+    if (!Number.isInteger(expected) || expected < 1 || expected > 210)
+      throw forbidden('Неверное число частей бухгалтерской сверки');
+    if (activeAccounting?.id === runId) return {ok: true, alreadyStarted: true};
+    if (active && Date.now() - active.started < RUN_LIFETIME_MS)
+      throw forbidden('Идёт полный импорт, повторите сверку позже.', 409);
+    activeAccounting = {id: runId, started: Date.now(), expected, parts: new Map()};
+    return {ok: true, expected};
+  };
+  const accountingChunk = ({runId, index, rows}) => {
+    validRunId(runId);
+    const run = activeAccounting;
+    if (!run || run.id !== runId || Date.now() - run.started > RUN_LIFETIME_MS)
+      throw forbidden('Сверка бухгалтерии не начата или устарела.', 409);
+    if (!Number.isInteger(index) || index < 0 || index >= run.expected)
+      throw forbidden('Неверный номер части бухгалтерской сверки');
+    const normalized = normalizeRows(rows);
+    if (normalized.some(row => row.length !== 26))
+      throw forbidden('Бухгалтерские строки должны содержать ровно 26 позиций');
+    const previous = run.parts.get(index);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(normalized))
+      throw forbidden('Повторная часть бухгалтерии отличается от исходной.', 409);
+    run.parts.set(index, normalized);
+    return {ok: true, index};
+  };
+  const commitAccounting = ({runId}) => {
+    validRunId(runId);
+    const run = activeAccounting;
+    if (!run || run.id !== runId || Date.now() - run.started > RUN_LIFETIME_MS)
+      throw forbidden('Сверка бухгалтерии не начата или устарела.', 409);
+    if (active) throw forbidden('Идёт полный импорт, повторите сверку позже.', 409);
+    if (run.parts.size !== run.expected)
+      throw forbidden('Не все части бухгалтерской сверки получены.', 422);
+    const rows = [];
+    for (let i = 0; i < run.expected; i++) {
+      if (!run.parts.has(i)) throw forbidden('Пропущена часть бухгалтерской сверки.', 422);
+      rows.push(...run.parts.get(i));
+    }
+    if (!rows.length || rows.length > MAX_SOURCE_ROWS)
+      throw forbidden('Некорректная бухгалтерская таблица.', 422);
+    const sources = store.sourceSnapshot();
+    if (!sources) throw forbidden('Сначала выполните первоначальную загрузку семи вкладок.', 409);
+    sources[ACCOUNTING_KEY] = rows;
+    const snapshot = snapshotFromSources(sources);
+    validateExisting(snapshot);
+    store.commitSnapshot(snapshot, sources);
+    activeAccounting = null;
+    return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
+  };
+  return {start, chunk, commit, patch, startAccounting, accountingChunk, commitAccounting};
 }
 
 export const technicalSourceKeys = () => [...permittedKeys];
