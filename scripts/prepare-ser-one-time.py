@@ -1,6 +1,6 @@
-"""Add the existing, manually launched macro button to the supplied SER DOCM.
+"""Add the existing, manually launched macro button to a 20-field DOCM.
 
-Usage: python scripts/prepare-ser-one-time.py SOURCE.docm
+Usage: python scripts/prepare-ser-one-time.py SOURCE.docm [DESTINATION.docm]
 The contract wording and existing 20 replacement tags are preserved.
 """
 from copy import deepcopy
@@ -18,8 +18,8 @@ REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 ns = {'w': WORD, 'r': REL}
 
 
-def prepare(source_path: Path) -> Path:
-    destination = CORE / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ_РАЗОВЫЕ.docm'
+def prepare(source_path: Path, destination: Path | None = None) -> Path:
+    destination = destination or CORE / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ_РАЗОВЫЕ.docm'
     with ZipFile(source_path) as source, ZipFile(CORE / 'template2.docm') as donor:
         files = {member.filename: (member, source.read(member)) for member in source.infolist()}
         document = etree.fromstring(source.read('word/document.xml'))
@@ -94,4 +94,4 @@ def prepare(source_path: Path) -> Path:
 
 
 if __name__ == '__main__':
-    print(prepare(Path(sys.argv[1])))
+    print(prepare(Path(sys.argv[1]), Path(sys.argv[2]) if len(sys.argv) > 2 else None))

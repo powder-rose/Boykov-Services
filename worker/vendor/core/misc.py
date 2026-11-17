@@ -395,7 +395,7 @@ class Miscellaneous:
             if value and not self._is_missing_company_value(value):
                 company[index] = value[0].upper() + value[1:]
 
-        return company
+        return self.normalize_company_roles(company)
 
 
 
@@ -1318,6 +1318,31 @@ class Miscellaneous:
             "Верни только результат, первое слово — с большой буквы."
         )
         return self._send_text_to_gpt(prompt, str(value))
+
+    @staticmethod
+    def normalize_company_roles(company: list[str | None]) -> list[str | None]:
+        """Исправляет известную опечатку ИИ только в полях должности.
+
+        Названия организаций и ФИО не изменяются. Представитель ИП может
+        иметь другую должность, поэтому целиком её не подменяем.
+        """
+        result = list(company)
+
+        def correct(match: re.Match) -> str:
+            word = 'индивидуальн' + match.group(1)
+            if match.group(0).isupper():
+                return word.upper()
+            return word.capitalize() if match.group(0)[0].isupper() else word
+
+        for index in (1, 2):
+            if index < len(result) and result[index]:
+                result[index] = re.sub(
+                    r'\bиндивидуательн(ого|ый)\b(?=\s+предпринимател(?:я|ь)\b)',
+                    correct,
+                    result[index],
+                    flags=re.IGNORECASE,
+                )
+        return result
 
     @staticmethod
     def is_individual_entrepreneur(organization_type: str | None) -> bool:

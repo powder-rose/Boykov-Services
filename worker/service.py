@@ -124,7 +124,7 @@ class Generation(BaseModel):
     def valid_company(cls, values):
         if any(len(value) > 2000 for value in values):
             raise ValueError('Реквизит не должен превышать 2000 символов')
-        return [value.strip() for value in values]
+        return core.normalize_company_roles([value.strip() for value in values])
 
 def public_job(row, detailed=False):
     result = json.loads(row['result']) if row['result'] else None

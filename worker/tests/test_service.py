@@ -85,6 +85,63 @@ class WorkerTests(unittest.TestCase):
             with self.subTest(start=start):
                 self.assertEqual(service.core._build_ser_service_period(start, '2'), expected)
 
+    def test_specons_uses_updated_vat_contract_and_existing_macro(self):
+        payload = self.payload('specons')
+        self.assertEqual(self.client.post('/generate', json=payload).status_code, 202)
+        job = self.await_job(payload['requestId'])
+        self.assertEqual(job['status'], 'completed', job)
+        ns = {'w': service.core.WORD_NS}
+        with ZipFile(io.BytesIO(self.client.get('/files/' + job['id']).content)) as archive:
+            root = etree.fromstring(archive.read('word/document.xml'))
+            text = ''.join(root.xpath('.//w:t/text()', namespaces=ns))
+            self.assertEqual(text.count('Итого, в том числе НДС (5%):'), 3)
+            self.assertIn('3 000 (три тысячи) рублей за 1 (один) человеко-час', text)
+            self.assertIn('Заказчик обязуется подписать Акт в течение 5 календарных дней', text)
+            values = self.replacement_values(archive)
+            self.assertEqual(set(values), {f'autozamena_{index:03d}' for index in range(1, 21)})
+            self.assertEqual(values['autozamena_013'], '15000')
+            self.assertEqual(len(root.xpath('.//w:control[@w:name="CommandButton1"]', namespaces=ns)), 1)
+            self.assertIn('word/activeX/activeX1.bin', archive.namelist())
+            with ZipFile(service.core.CORE_DIR / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ_РАЗОВЫЕ.docm') as previous:
+                self.assertEqual(archive.read('word/vbaProject.bin'), previous.read('word/vbaProject.bin'))
+
+    def test_ai_role_typo_is_corrected_before_returning_editable_fields(self):
+        company = COMPANY.copy()
+        company[0:5] = ['ИП', 'индивидуательного предпринимателя', 'индивидуальный предприниматель',
+                        'Привалова Андрея Евгеньевича', 'Привалов Андрей Евгеньевич']
+        job_id = str(uuid4())
+        with patch.object(service.core, '_send_text_to_gpt', return_value='\n'.join(company)), patch.object(service, 'ai_configured', return_value=True):
+            response = self.client.post('/extract', data={'requestId': job_id, 'mode': 'text', 'text': 'ИП Привалов Андрей Евгеньевич'})
+            self.assertEqual(response.status_code, 202)
+            job = self.await_job(job_id)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['result']['company'][1:3], ['Индивидуального предпринимателя', 'Индивидуальный предприниматель'])
+        self.assertEqual(job['result']['company'][3:], company[3:])
+
+    def test_saved_or_manually_entered_role_typo_is_corrected_in_document(self):
+        for role in ('Индивидуательного предпринимателя', 'Индивидуального предпринимателя'):
+            with self.subTest(role=role):
+                payload = self.payload('specons')
+                payload['company'] = COMPANY.copy()
+                payload['company'][0:5] = ['ИП', role, 'Индивидуальный предприниматель',
+                                          'Привалова Андрея Евгеньевича', 'Привалов Андрей Евгеньевич']
+                self.assertEqual(self.client.post('/generate', json=payload).status_code, 202)
+                job = self.await_job(payload['requestId'])
+                self.assertEqual(job['status'], 'completed', job)
+                with ZipFile(io.BytesIO(self.client.get('/files/' + job['id']).content)) as archive:
+                    self.assertEqual(self.replacement_values(archive)['autozamena_005'], 'Индивидуального предпринимателя')
+
+    def test_role_correction_preserves_representatives_names_and_other_fields(self):
+        company = COMPANY.copy()
+        company[1] = 'Представителя индивидуательного предпринимателя'
+        company[2] = 'Представитель по доверенности'
+        company[13] = 'Индивидуательного предпринимателя'  # A company name is not a role.
+        corrected = service.core.normalize_company_roles(company)
+        self.assertEqual(corrected[1], 'Представителя индивидуального предпринимателя')
+        self.assertEqual(corrected[2:], company[2:])
+        self.assertEqual(company[1], 'Представителя индивидуательного предпринимателя')
+        self.assertEqual(service.core.normalize_company_roles(COMPANY), COMPANY)
+
     def test_ser_november_16_document_and_invoice_use_the_same_period(self):
         payload = self.payload('ser')
         with patch('worker.vendor.core.misc.datetime') as clock:
