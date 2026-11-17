@@ -134,7 +134,7 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     }
     const snapshot = snapshotFromSources(sources);
     validateExisting(snapshot);
-    store.commitSnapshot(snapshot, sources);
+    store.commitSnapshot(snapshot, sources, { accountingReconciled: true });
     active = null;
     return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
   };
@@ -157,7 +157,7 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     sources[key] = updated;
     const snapshot = snapshotFromSources(sources);
     validateExisting(snapshot);
-    store.commitSnapshot(snapshot, sources);
+    store.commitSnapshot(snapshot, sources, { accountingUpdated: key === ACCOUNTING_KEY });
     return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
   };
   /**
@@ -213,7 +213,7 @@ export function createTechnicalPushReceiver(store, env = process.env) {
     sources[ACCOUNTING_KEY] = rows;
     const snapshot = snapshotFromSources(sources);
     validateExisting(snapshot);
-    store.commitSnapshot(snapshot, sources);
+    store.commitSnapshot(snapshot, sources, { accountingReconciled: true });
     activeAccounting = null;
     return {ok: true, counts: snapshot.counts, updatedAt: snapshot.updatedAt};
   };

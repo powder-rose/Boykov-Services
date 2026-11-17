@@ -3,6 +3,7 @@ import { createTechnicalStore } from './store.js';
 import { buildSnapshot, TECH_TABS } from './model.js';
 import { isGoogleConfigured, readTechnicalGoogleSheets } from './google.js';
 import { isPushConfigured, createTechnicalPushReceiver, samePushToken } from './push.js';
+import { technicalSyncHealth } from './sync-health.js';
 
 const sameSecret = (given, expected) => {
   const a = Buffer.from(String(given || ''));
@@ -44,11 +45,16 @@ export function createTechnicalModule(db, options = {}) {
         if (previousTotal > 20 && snapshot.rows.length < previousTotal * 0.3 && env.TECH_ALLOW_LARGE_REMOVAL !== 'true') {
           throw new Error('Количество строк резко сократилось. Импорт остановлен для защиты данных; проверьте исходные Google Таблицы.');
         }
-        if (!stopping) store.commitSnapshot(snapshot);
+        if (!stopping) store.commitSnapshot(snapshot, null, { accountingReconciled: true });
         console.log(`Техотдел: синхронизировано ${snapshot.counts.total} строк из 7 вкладок`);
         return snapshot.counts;
       } catch (error) {
-        if (!stopping) store.setMeta('lastError', String(error.message || error).slice(0, 500));
+        if (!stopping) {
+          const message = String(error.message || error).slice(0, 250);
+          store.setMeta('lastError', message);
+          store.setMeta('accountingLastError', message);
+          store.setMeta('accountingLastErrorAt', new Date().toISOString());
+        }
         console.error('Техотдел: ошибка синхронизации:', error.message);
         throw error;
       } finally { running = null; }
@@ -94,6 +100,13 @@ export function createTechnicalModule(db, options = {}) {
         catch (error) {
           const status = [400,403,409,422].includes(error.status) ? error.status : 500;
           if (status === 500) console.error('Техотдел: ошибка приёма данных:',error.name);
+          // Authenticated source errors only. Ordinary concurrency 409 is retried
+          // by Apps Script; avoid alarming employees for normal overlapping jobs.
+          if ((route.startsWith('accounting/') || action === 'commit') && status !== 409) {
+            store.setMeta('accountingLastError', status === 500
+              ? 'Ошибка приёма данных' : String(error.message || 'Ошибка импорта').slice(0, 250));
+            store.setMeta('accountingLastErrorAt', new Date().toISOString());
+          }
           return res.status(status).json({error:status === 500 ? 'Ошибка приёма данных' : error.message});
         }
       });
@@ -118,6 +131,7 @@ export function createTechnicalModule(db, options = {}) {
       configured:configured(), syncMode:mode, sheets:store.snapshotSheets(), updatedAt:store.meta('updatedAt'),
       counts:store.meta('counts') ? JSON.parse(store.meta('counts')) : {total:0,linked:0,ambiguous:0},
       lastError:store.meta('lastError') || null, accountingFields:store.accountingFields,
+      syncHealth:technicalSyncHealth(store, mode),
       columnColors:store.columnColors(),
       source: mode === 'apps-script' ? 'Google Apps Script → Boykov-services; только чтение' : 'Google Sheets → Boykov-services; только чтение',
     }));

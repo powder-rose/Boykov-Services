@@ -99,7 +99,7 @@ export function createTechnicalStore(db) {
   const setMeta = (key, value) => db.prepare(`INSERT INTO technical_meta VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, String(value));
 
-  function commitSnapshot(snapshot, sourceRows = null) {
+  function commitSnapshot(snapshot, sourceRows = null, { accountingUpdated = false, accountingReconciled = false } = {}) {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('DELETE FROM technical_rows; DELETE FROM technical_sheets;');
@@ -115,6 +115,14 @@ export function createTechnicalStore(db) {
       setMeta('updatedAt', snapshot.updatedAt);
       setMeta('counts', toJSON(snapshot.counts));
       setMeta('lastError', '');
+      if (accountingUpdated || accountingReconciled) {
+        setMeta('accountingLastSuccessAt', snapshot.updatedAt);
+      }
+      if (accountingReconciled) {
+        setMeta('accountingLastReconcileAt', snapshot.updatedAt);
+        setMeta('accountingLastError', '');
+        setMeta('accountingLastErrorAt', '');
+      }
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');

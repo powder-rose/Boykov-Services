@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from "react";
 import {
-  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, LockKeyhole,
+  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, CheckCircle2, AlertTriangle, LockKeyhole,
   MessageSquareText, PencilLine, Search, Send, SlidersHorizontal, X, Palette, RotateCcw, Eye, Plus, Trash2, Undo2, Redo2,
 } from "lucide-react";
 import { api, post, dateTime, errorText } from "../api";
@@ -31,6 +31,16 @@ type Detail = Item & {
 type Meta = {
   configured: boolean; syncMode?: string; sheets: Tab[]; updatedAt: string | null;
   lastError: string | null; accountingFields: Field[];
+  syncHealth?: {
+    level: "ok" | "stale" | "error" | "pending" | "disabled";
+    lastReconcileAt: string | null;
+    lastChangeAt: string | null;
+    lastError: string | null;
+    lastErrorAt: string | null;
+    ageMinutes: number | null;
+    staleAfterMinutes: number;
+    checkedAt: string;
+  };
   columnColors?: Record<string, ColumnTone>;
 };
 type ListData = { total: number; items: Item[] };
@@ -139,6 +149,7 @@ const status = (value: string) => {
 
 export default function Technical() {
   const [meta, setMeta] = useState<Meta | null>(null);
+  const [metaFetchFailed, setMetaFetchFailed] = useState(false);
   const [tab, setTab] = useState(MAIN_TAB);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -490,8 +501,13 @@ export default function Technical() {
   useEffect(() => { updateScrollLimits(); }, [tableWidth, updateScrollLimits]);
 
   const loadMeta = useCallback(async () => {
-    try { setMeta(await api<Meta>("/technical/meta")); }
-    catch (reason) { setError(errorText(reason)); }
+    try {
+      setMeta(await api<Meta>("/technical/meta"));
+      setMetaFetchFailed(false);
+    } catch (reason) {
+      setMetaFetchFailed(true);
+      setError(errorText(reason));
+    }
   }, []);
   // Запросы ограничены 100 строками. При смене страницы прошлые DOM-узлы
   // снимаются с экрана, поэтому длинные комментарии не замедляют прокрутку.
@@ -714,11 +730,40 @@ export default function Technical() {
         <h1>Техотдел<span>.</span></h1>
         <p>Объекты, дополнительные работы и заметки — всё в одном месте.</p>
       </div>
-      {meta?.updatedAt && <span className="tech-sync-label"><Clock3 size={15}/> Обновлено {dateTime(meta.updatedAt)}</span>}
+      <div className="tech-sync-overview">
+        {meta?.syncHealth && meta.syncHealth.level !== "disabled" &&
+          <div className={`tech-sync-health tech-sync-health--${metaFetchFailed ? "error" : meta.syncHealth.level}`}
+            role="status" aria-live="polite"
+            title={`Бухгалтерия: контрольная сверка каждые 5 минут; предупреждение после ${meta.syncHealth.staleAfterMinutes} минут без успешной сверки.`}>
+            {metaFetchFailed || meta.syncHealth.level === "stale" || meta.syncHealth.level === "error"
+              ? <AlertTriangle size={16} aria-hidden="true"/>
+              : meta.syncHealth.level === "ok"
+                ? <CheckCircle2 size={16} aria-hidden="true"/>
+                : <Clock3 size={16} aria-hidden="true"/>}
+            <div>
+              <strong>{metaFetchFailed ? "Статус недоступен"
+                : meta.syncHealth.level === "ok" ? "Бухгалтерия синхронизирована"
+                : meta.syncHealth.level === "stale" ? "Нет свежей сверки бухгалтерии"
+                : meta.syncHealth.level === "error" ? "Ошибка синхронизации бухгалтерии"
+                : "Ожидаем контрольную сверку"}</strong>
+              <span>{meta.syncHealth.lastReconcileAt
+                ? `Последняя сверка: ${dateTime(meta.syncHealth.lastReconcileAt)}`
+                : meta.syncHealth.lastChangeAt
+                  ? `Последнее изменение: ${dateTime(meta.syncHealth.lastChangeAt)}`
+                  : meta.updatedAt ? `Последний снимок: ${dateTime(meta.updatedAt)}` : "Данных ещё нет"}</span>
+            </div>
+          </div>}
+        {meta?.updatedAt && <span className="tech-sync-label"><Clock3 size={14}/> Таблицы: {dateTime(meta.updatedAt)}</span>}
+      </div>
     </div>
 
     {error && <Notice tone="error">{error}</Notice>}
-    {meta?.lastError && <Notice tone="error">Ошибка последней синхронизации: {meta.lastError}. Ранее загруженные данные сохранены.</Notice>}
+    {meta?.lastError && !meta.syncHealth?.lastError && <Notice tone="error">Ошибка последней синхронизации: {meta.lastError}. Ранее загруженные данные сохранены.</Notice>}
+    {meta?.syncHealth?.level === "stale" && !metaFetchFailed &&
+      <Notice tone="error">Бухгалтерия не проходила контрольную сверку более {meta.syncHealth.staleAfterMinutes} минут. Данные могут быть устаревшими. Сообщите ответственному за Google Apps Script: нужно проверить триггер boykovTechAccountingReconcile.</Notice>}
+    {meta?.syncHealth?.level === "error" && !metaFetchFailed &&
+      <Notice tone="error">Ошибка бухгалтерской синхронизации: {meta.syncHealth.lastError}. Последние сохранённые данные доступны. Проверьте журнал Apps Script и повторный запуск контрольной сверки.</Notice>}
+    {metaFetchFailed && <Notice tone="error">Не удалось получить актуальный статус синхронизации с сервера. Проверьте подключение к Boykov-services.</Notice>}
     {!meta?.configured && <Notice tone="info">Для загрузки данных настройте отправку из Google Apps Script на сервер Boykov-services.</Notice>}
     {meta?.configured && meta?.syncMode === "apps-script" && !meta.updatedAt &&
       <Notice tone="info">Данные появятся после первой успешной отправки из Google Apps Script.</Notice>}
