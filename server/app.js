@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { installAuth } from "./auth.js";
+import { createTechnicalModule } from "./modules/technical/index.js";
 import { workerClient } from "./worker-client.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
 import {
@@ -41,7 +42,12 @@ export async function createApp(options) {
   });
   app.get("/healthz", (req, res) => res.json({ ok: true }));
   app.use(express.json({ limit: "2mb", inflate: false }));
+  const technical = createTechnicalModule(db, options);
+  app.locals.technical = technical;
+  app.post("/hooks/technical/sync", technical.webhook);
+  technical.registerPushHooks(app);
   installAuth(app, { ...options, db });
+  technical.registerRoutes(app);
   const worker = options.worker || workerClient(options);
   const store = await createBatchStore({
     exportsDir: path.join(options.dataDir, "wordstat"),

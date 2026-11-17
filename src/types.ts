@@ -1,6 +1,7 @@
 export type Page =
   | "overview"
   | "contracts"
+  | "technical"
   | "wordstat"
   | "history"
   | "settings";

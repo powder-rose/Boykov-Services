@@ -6,6 +6,7 @@ import {
   CircleHelp,
   FileText,
   History as HistoryIcon,
+  ClipboardList,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -19,6 +20,7 @@ import { Loading, Notice, Status } from "./components/Common";
 import Login from "./pages/Login";
 import Overview from "./pages/Overview";
 import Contracts from "./pages/Contracts";
+import Technical from "./pages/Technical";
 import Wordstat from "./pages/Wordstat";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
@@ -31,6 +33,7 @@ const navigation = [
     icon: FileText,
     group: "СЕРВИСЫ КОМПАНИИ",
   },
+  { id: "technical", label: "Техотдел", icon: ClipboardList },
   { id: "wordstat", label: "Wordstat", icon: Search },
   {
     id: "history",
@@ -309,6 +312,9 @@ export default function App() {
           </div>
           <div hidden={page !== "contracts"} className="page">
             <Contracts system={system} onChange={refresh} />
+          </div>
+          <div hidden={page !== "technical"} className="page">
+            <Technical />
           </div>
           <div hidden={page !== "wordstat"} className="page">
             <Wordstat

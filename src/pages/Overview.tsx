@@ -2,6 +2,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   FileText,
+  ClipboardList,
   Search,
   Sparkles,
   MoveUpRight,
@@ -48,7 +49,7 @@ export default function Overview({
       </section>
       <div className="section-heading">
         <h2>
-          Сервисы компании <span>02</span>
+          Сервисы компании <span>03</span>
         </h2>
         <span className="muted small">Одно пространство. Разные задачи.</span>
       </div>
@@ -108,6 +109,16 @@ export default function Overview({
             </span>
             <ArrowRight size={20} />
           </div>
+        </button>
+        <button className="service-card service-pink" onClick={() => navigate("technical")}>
+          <div className="service-top">
+            <span className="service-icon"><ClipboardList size={25} strokeWidth={1.6} /></span>
+            <span className="card-tag">ТЕХОТДЕЛ</span>
+            <ArrowUpRight className="service-arrow" size={24} />
+          </div>
+          <h3>Объекты и допработы</h3>
+          <p>Семь рабочих разделов, сверка с бухгалтерией, заметки и история команды.</p>
+          <div className="service-bottom"><span className="availability">Данные из Google · правки внутри сервиса</span><ArrowRight size={20}/></div>
         </button>
       </section>
       <div className="metrics">
