@@ -1,0 +1,18 @@
+# Run on the SOURCE site server. SOURCE_DIRECTORY contains the existing lead storage.
+name: boykov-leads-agent
+services:
+  delivery:
+    image: node:24-bookworm-slim
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    command: ["node", "/agent/agent.mjs"]
+    env_file: .env.agent
+    volumes:
+      - ./agent.mjs:/agent/agent.mjs:ro
+      - ${SOURCE_DIRECTORY:?Set the source data directory}:/source:ro
+      - delivery-state:/state
+    logging:
+      options: { max-size: "5m", max-file: "3" }
+volumes:
+  delivery-state:

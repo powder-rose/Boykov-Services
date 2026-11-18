@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { installAuth } from "./auth.js";
 import { createTechnicalModule } from "./modules/technical/index.js";
+import { createLeadsModule } from "./modules/leads/index.js";
 import { workerClient } from "./worker-client.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
 import {
@@ -41,12 +42,17 @@ export async function createApp(options) {
     next();
   });
   app.get("/healthz", (req, res) => res.json({ ok: true }));
+  const leads = createLeadsModule(db, options);
+  app.use("/hooks/leads", express.json({ limit: "128kb", inflate: false }));
+  app.post("/hooks/leads/:siteId/heartbeat", leads.heartbeat);
+  app.post("/hooks/leads/:siteId", leads.receive);
   app.use(express.json({ limit: "2mb", inflate: false }));
   const technical = createTechnicalModule(db, options);
   app.locals.technical = technical;
   app.post("/hooks/technical/sync", technical.webhook);
   technical.registerPushHooks(app);
   installAuth(app, { ...options, db });
+  leads.register(app);
   technical.registerRoutes(app);
   const worker = options.worker || workerClient(options);
   const store = await createBatchStore({
@@ -103,6 +109,11 @@ export async function createApp(options) {
       events,
       documentsAvailable,
       stats: {
+        newLeads: db
+          .prepare(
+            "SELECT count(*) AS count FROM sales_leads WHERE status='new'",
+          )
+          .get().count,
         documents: jobs.filter(
           (job) => job.kind === "generate" && job.status === "completed",
         ).length,

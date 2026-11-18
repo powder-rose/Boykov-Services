@@ -6,6 +6,7 @@ import {
   Search,
   Sparkles,
   MoveUpRight,
+  Inbox,
 } from "lucide-react";
 import { Empty, EventList, PageHead } from "../components/Common";
 import { number } from "../api";
@@ -28,6 +29,17 @@ export default function Overview({
         title="Всё для работы. В одном месте."
         description="Инструменты Бойков Групп, которые берут рутину на себя."
       />
+      <button className="leads-overview-cta" onClick={() => navigate("leads")}>
+        <Inbox size={21} />
+        <span>
+          <b>Заявки со всех сайтов</b>
+          <small>
+            {dashboard.stats.newLeads || 0} новых · перейти к обращениям
+            клиентов
+          </small>
+        </span>
+        <ArrowRight size={20} />
+      </button>
       <section className="intro-banner">
         <div>
           <span className="banner-label">
@@ -110,15 +122,28 @@ export default function Overview({
             <ArrowRight size={20} />
           </div>
         </button>
-        <button className="service-card service-pink" onClick={() => navigate("technical")}>
+        <button
+          className="service-card service-pink"
+          onClick={() => navigate("technical")}
+        >
           <div className="service-top">
-            <span className="service-icon"><ClipboardList size={25} strokeWidth={1.6} /></span>
+            <span className="service-icon">
+              <ClipboardList size={25} strokeWidth={1.6} />
+            </span>
             <span className="card-tag">ТЕХОТДЕЛ</span>
             <ArrowUpRight className="service-arrow" size={24} />
           </div>
           <h3>Объекты и допработы</h3>
-          <p>Семь рабочих разделов, сверка с бухгалтерией, заметки и история команды.</p>
-          <div className="service-bottom"><span className="availability">Данные из Google · правки внутри сервиса</span><ArrowRight size={20}/></div>
+          <p>
+            Семь рабочих разделов, сверка с бухгалтерией, заметки и история
+            команды.
+          </p>
+          <div className="service-bottom">
+            <span className="availability">
+              Данные из Google · правки внутри сервиса
+            </span>
+            <ArrowRight size={20} />
+          </div>
         </button>
       </section>
       <div className="metrics">

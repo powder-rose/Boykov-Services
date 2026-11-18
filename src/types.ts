@@ -1,6 +1,7 @@
 export type Page =
   | "overview"
   | "contracts"
+  | "leads"
   | "technical"
   | "wordstat"
   | "history"
@@ -24,7 +25,12 @@ export interface Job {
 export interface Dashboard {
   events: Job[];
   documentsAvailable: boolean;
-  stats: { documents: number; batches: number; active: number };
+  stats: {
+    documents: number;
+    batches: number;
+    active: number;
+    newLeads?: number;
+  };
 }
 export interface System {
   documents: {

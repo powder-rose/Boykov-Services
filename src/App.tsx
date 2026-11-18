@@ -7,6 +7,7 @@ import {
   FileText,
   History as HistoryIcon,
   ClipboardList,
+  Inbox,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -21,6 +22,7 @@ import Login from "./pages/Login";
 import Overview from "./pages/Overview";
 import Contracts from "./pages/Contracts";
 import Technical from "./pages/Technical";
+import Leads from "./pages/Leads";
 import Wordstat from "./pages/Wordstat";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
@@ -34,6 +36,7 @@ const navigation = [
     group: "СЕРВИСЫ КОМПАНИИ",
   },
   { id: "technical", label: "Техотдел", icon: ClipboardList },
+  { id: "leads", label: "Заявки", icon: Inbox },
   { id: "wordstat", label: "Wordstat", icon: Search },
   {
     id: "history",
@@ -234,6 +237,14 @@ export default function App() {
               >
                 <item.icon size={19} strokeWidth={1.7} />
                 <span>{item.label}</span>
+                {item.id === "leads" && Boolean(dashboard.stats.newLeads) && (
+                  <span
+                    className="nav-counter"
+                    aria-label={`Новых заявок: ${dashboard.stats.newLeads}`}
+                  >
+                    {dashboard.stats.newLeads}
+                  </span>
+                )}
                 {page === item.id && <span className="nav-dot" />}
               </button>
             </div>
@@ -315,6 +326,9 @@ export default function App() {
           </div>
           <div hidden={page !== "technical"} className="page">
             <Technical />
+          </div>
+          <div hidden={page !== "leads"} className="page">
+            <Leads active={page === "leads"} onChange={refresh} />
           </div>
           <div hidden={page !== "wordstat"} className="page">
             <Wordstat

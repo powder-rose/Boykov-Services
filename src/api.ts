@@ -36,8 +36,9 @@ export const post = <T>(url: string, body: unknown) =>
   api<T>(url, { method: "POST", body: JSON.stringify(body) });
 export const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Не удалось выполнить запрос";
-export const dateTime = (date: string) =>
+export const dateTime = (date: string, includeYear = false) =>
   new Intl.DateTimeFormat("ru", {
+    ...(includeYear ? { year: "numeric" as const } : {}),
     day: "numeric",
     month: "short",
     hour: "2-digit",

@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.py text eol=lf
 *.docm binary
+# Empty unified-diff context lines contain a required single-space marker.
+integrations/leads/patches/*.patch whitespace=-blank-at-eol
