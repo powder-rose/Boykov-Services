@@ -3,6 +3,7 @@ export type Page =
   | "overview"
   | "contracts"
   | "leads"
+  | "statistics"
   | "technical"
   | "wordstat"
   | "history"

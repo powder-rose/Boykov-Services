@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { installAuth } from "./auth.js";
 import { createTechnicalModule } from "./modules/technical/index.js";
 import { createLeadsModule } from "./modules/leads/index.js";
+import { createStatisticsModule } from "./modules/statistics/index.js";
 import { createPersonalModule } from "./personal.js";
 import { workerClient } from "./worker-client.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
@@ -65,6 +66,9 @@ export async function createApp(options) {
   app.post("/hooks/technical/sync", technical.webhook);
   technical.registerPushHooks(app);
   installAuth(app, { ...options, db });
+  const statistics = await createStatisticsModule(db, options);
+  app.locals.statistics = statistics;
+  statistics.register(app);
   leads.register(app);
   technical.registerRoutes(app);
   const worker = options.worker || workerClient(options);

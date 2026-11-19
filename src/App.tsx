@@ -18,6 +18,7 @@ import {
   UsersRound,
   UserRound,
   X,
+  BarChart3,
 } from "lucide-react";
 import { api, post, errorText, dateTime } from "./api";
 import { Loading, Notice, Status } from "./components/Common";
@@ -31,6 +32,7 @@ import History from "./pages/History";
 import Settings from "./pages/Settings";
 import Accounts from "./pages/Accounts";
 import Cabinet from "./pages/Cabinet";
+import Statistics from "./pages/Statistics";
 import type { Dashboard, Job, Page, System, Session } from "./types";
 const navigation = [
   { id: "cabinet", label: "Мой кабинет", icon: UserRound },
@@ -43,6 +45,7 @@ const navigation = [
   },
   { id: "technical", label: "Техотдел", icon: ClipboardList },
   { id: "leads", label: "Заявки", icon: Inbox },
+  { id: "statistics", label: "Статистика", icon: BarChart3 },
   { id: "wordstat", label: "Wordstat", icon: Search },
   {
     id: "history",
@@ -380,6 +383,9 @@ export default function App() {
           </div>
           <div hidden={page !== "technical"} className="page">
             <Technical />
+          </div>
+          <div hidden={page !== "statistics"} className="page">
+            <Statistics active={page === "statistics"} />
           </div>
           <div hidden={page !== "leads"} className="page">
             <Leads
