@@ -148,7 +148,8 @@
   background: #afb3ab;
   flex-shrink: 0;
 }
-.connection-online i {
+.connection-online i,
+.connection-webhook i {
   background: #668452;
 }
 .connection-offline,

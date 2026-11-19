@@ -1,0 +1,1236 @@
+diff --git a/docs/LEADS.md b/docs/LEADS.md
+index 493433d..5ac950b 100644
+--- a/docs/LEADS.md
++++ b/docs/LEADS.md
+@@ -23,18 +23,18 @@
+ 
+ Патч меняет Boykov Services и добавляет исходники коннекторов. Он не подключает
+ формы удалённых сайтов автоматически и не меняет их сервера при локальной
+-установке. Три сайта добавлены заранее. До настройки источник показывает
++установке. Четыре сайта добавлены заранее, включая boykovgroup.ru на Tilda. До настройки источник показывает
+ «Не подключён». Создание ключа само по себе не подтверждает подключение.
+ 
+ Ключ создаётся в карточке подключения нужного сайта и показывается один раз.
+ В базе хранится только SHA-256 ключа. Создавайте рабочие ключи на боевом
+-Boykov Services после его обновления. Ключ находится только на сервере сайта,
+-в закрытом конфигурационном файле. Для каждого сайта используется свой ключ.
++Boykov Services после его обновления. Ключ находится только на сервере сайта в закрытом конфигурационном файле
++или в настройках приёмщика Tilda. Для каждого сайта используется свой ключ.
+ Новый ключ сразу заменяет предыдущий и требует обновления агента.
+ 
+ Добавление ещё одного сайта доступно через «Добавить сайт»: название, домен,
+-новый отдельный ключ. Домен вводится без протокола и пути. Затем подключается
+-серверный отправитель по описанному ниже протоколу.
++новый отдельный ключ. Домен вводится без протокола и пути. Выберите способ подключения: серверный агент или Webhook Tilda.
++Для Tilda используйте [отдельную инструкцию](TILDA.md).
+ 
+ ## Приём и контроль доставки
+ 
+diff --git a/docs/TILDA.md b/docs/TILDA.md
+new file mode 100644
+index 0000000..3af1dbf
+--- /dev/null
++++ b/docs/TILDA.md
+@@ -0,0 +1,92 @@
++# Boykov Group на Tilda
++
++## Обновление Boykov Services
++
++После установки локального патча выполните `npm run check`, закоммитьте и
++отправьте изменения в свой GitHub. На VPS Boykov Services (cv8356425):
++
++```bash
++umask 022
++cd /opt/boykov-services
++git pull --ff-only
++bash scripts/deploy-tilda.sh
++```
++
++Скрипт делает онлайн-снимок `platform.sqlite` и сохраняет предыдущий Docker-образ,
++затем собирает и перезапускает только `app`. После запуска проверяются healthcheck,
++миграция, источник boykovgroup.ru и ответ 401 без ключа. Данные трёх действующих
++подключений сохраняются. Результат: `TILDA_DEPLOY=OK` и путь `BACKUP`.
++В каталоге резервной копии создаётся `rollback-app.sh`: он возвращает предыдущий
++образ приложения, сохраняя текущую базу и поступившие после обновления заявки.
++
++## Настройка Tilda
++
++1. В боевом Boykov Services откройте «Заявки» → «Бойков Групп» →
++   «Создать ключ подключения». Сохраните показанные адрес и API Key.
++   Ключ отображается один раз; при замене старый сразу перестаёт работать.
++2. В Tilda откройте **boykovgroup.ru → Настройки сайта → Формы → Webhook**.
++3. Укажите **Webhook URL** из Boykov Services. Обычно это
++   `https://boykov-services.ru/hooks/tilda/boykovgroup`; если домен уже был
++   добавлен вручную, используйте адрес из карточки, его ID может отличаться.
++4. В дополнительных настройках передачи API-ключа:
++
++   | Поле | Значение |
++   | --- | --- |
++   | API Method | HEADER — передача в заголовках |
++   | API Name | Authorization |
++   | API Key | Значение из Boykov Services целиком: `Bearer ` и 64 символа ключа |
++
++5. Название в списке: **Boykov Services — заявки**. Отправку Cookie оставьте
++   выключенной. «Отправлять только после оплаты» тоже выключите, чтобы
++   получать обращения до покупки. Поддерживаются стандартная отправка формы и JSON.
++6. Сохраните приёмщик. Tilda отправит `test=test`, сервис ответит 200, а карточка
++   сменится на «Webhook подтверждён». Этот тест не создаёт заявку.
++7. Назначьте приёмщик всем нужным формам. Если Tilda предложит назначить его всем
++   формам сразу, воспользуйтесь этим. Проверьте чекбокс Webhook в «Контенте»
++   каждой формы, включая попапы, корзину, квизы и формы на отдельных страницах.
++8. Опубликуйте затронутые страницы, затем отправьте пробную заявку с каждой
++   формы. В Boykov Services проверьте контакты, дополнительные поля и сайт.
++   Не отключайте существующую доставку на почту или в CRM.
++
++Пароль Tilda и ключ не нужно присылать в переписку. Ключ вводится в настройках
++приёмщика, в публичный код формы он не добавляется.
++
++## Что сохраняется
++
++Идентификатор — `tilda:` + `tranid` из Tilda. Контакты, услуга, сообщение и
++название формы распознаются по распространённым русским и английским именам
++переменных. Все остальные поля остаются в карточке с исходным именем, включая
++UTM и товары. Массивы и вложенные объекты сохраняются как JSON с устойчивым
++порядком ключей. Cookie исключены. Нестандартные имена переменных не теряют
++значения: если контакт не распознан в кратком списке, он доступен в полях формы.
++Длинные значения остаются в дополнительных полях; краткие поля ограничены
++размерами действующей модели (имя 200, телефон 80, сообщение 12000 символов).
++Максимум — 100 полей по 16000 символов и тело 128 КБ. Превышение возвращает
++ошибку; оно не подтверждается как успешная доставка.
++
++Дата для сортировки — время первого приёма в Boykov Services: документированный
++Webhook Tilda не содержит отдельного обязательного времени отправки. В интерфейсе
++время показывается по Москве. Адрес страницы берётся из Referer только своего
++домена; при его отсутствии используется главная страница сайта.
++
++Ответ 200 отправляется после COMMIT SQLite с `synchronous=FULL`. Повтор по
++`tranid` возвращает ту же заявку, не меняет время первого приёма, статусы,
++комментарии и историю отдела продаж. Другие данные под тем же `tranid` дают 409,
++сохранённое обращение не перезаписывается. Разные номера не склеиваются по
++телефону или почте. Ошибка формата или конфликт показываются в подключении;
++следующая успешная доставка снимает предупреждение.
++
++## Контроль доставки
++
++«Webhook подтверждён» означает, что приёмщик принял авторизованную проверку
++или заявку. Это не постоянный мониторинг Tilda и не проверка назначения всем
++формам. У Tilda нет heartbeat агента, поэтому простой без заявок не вызывает
++ложную ошибку «Нет сигнала». В карточке отдельно видно последнее поступление.
++
++Tilda ожидает ответ за пять секунд. После неудачи она делает ещё две попытки
++через минуту; это ограниченное число повторов. Долгая недоступность VPS требует
++сверки раздела «Заявки» и журнала ошибок в Tilda с Boykov Services. Сохраняйте
++штатные уведомления как резерв. Новые формы тоже нужно назначать приёмщику и
++проверять после публикации. Старые заявки Tilda автоматически не импортируются.
++
++Официальная документация: https://help-ru.tilda.cc/forms/webhook.
+diff --git a/scripts/deploy-tilda.sh b/scripts/deploy-tilda.sh
+new file mode 100644
+index 0000000..662bd24
+--- /dev/null
++++ b/scripts/deploy-tilda.sh
+@@ -0,0 +1,70 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo 'TILDA_DEPLOY_REQUIRES_ROOT'; exit 1; }
++[[ -f server/modules/leads/tilda.js && -f .env ]] || { echo 'TILDA_SOURCE_OR_ENV_MISSING'; exit 1; }
++[[ -z "$(git status --porcelain --untracked-files=no)" ]] || { echo 'TILDA_DEPLOY_STOPPED_TRACKED_LOCAL_CHANGES'; exit 1; }
++mkdir -p /root/boykov-services-backups
++backup=$(mktemp -d /root/boykov-services-backups/pre-tilda-XXXXXXXX)
++chmod 700 "$backup"
++previous=$(docker inspect boykov-services-app-1 --format '{{.Image}}')
++previous_tag="boykov-services-app:pre-tilda-$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
++docker image tag "$previous" "$previous_tag"
++printf '%s\n' "$previous_tag" > "$backup/previous-image.txt"
++git rev-parse HEAD > "$backup/source-commit.txt"
++printf 'BACKUP=%s\n' "$backup"
++trap 'code=$?; if [[ "$code" != 0 ]]; then printf "TILDA_DEPLOY_FAILED BACKUP=%s\n" "$backup"; fi' EXIT
++docker compose exec -T app node --input-type=module - <<'DB_BACKUP' > "$backup/database-backup.json"
++import { DatabaseSync } from 'node:sqlite';
++import { mkdirSync, chmodSync } from 'node:fs';
++import { randomUUID } from 'node:crypto';
++const directory = '/app/data/backups/pre-tilda-' + randomUUID();
++mkdirSync(directory, { recursive: true, mode: 0o700 });
++const db = new DatabaseSync('/app/data/platform.sqlite');
++try {
++  db.exec('PRAGMA busy_timeout=5000');
++  const destination = directory + '/platform.sqlite';
++  db.exec("VACUUM INTO '" + destination.replaceAll("'", "''") + "'");
++  chmodSync(destination, 0o600);
++  const snapshot = new DatabaseSync(destination, { readOnly: true });
++  try { if (snapshot.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('BACKUP_INTEGRITY_FAILED'); }
++  finally { snapshot.close(); }
++  console.log(JSON.stringify({ database: destination }));
++} finally { db.close(); }
++DB_BACKUP
++cat > "$backup/rollback-app.sh" <<ROLLBACK
++#!/usr/bin/env bash
++set -Eeuo pipefail
++cd /opt/boykov-services
++docker image tag '$previous_tag' boykov-services-app:latest
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++ROLLBACK
++chmod 700 "$backup/rollback-app.sh"
++docker compose build app
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++docker compose exec -T app node --input-type=module - <<'VERIFY_TILDA'
++import { DatabaseSync } from 'node:sqlite';
++const db = new DatabaseSync('/app/data/platform.sqlite', { readOnly: true });
++let site;
++try {
++  if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('DATABASE_CHECK_FAILED');
++  site = db.prepare("SELECT id,delivery_mode FROM sales_sites WHERE host='boykovgroup.ru'").get();
++  if (!site || site.delivery_mode !== 'tilda') throw new Error('TILDA_SITE_NOT_READY');
++} finally { db.close(); }
++const health = await fetch('http://127.0.0.1:8787/healthz');
++if (!health.ok || (await health.json()).ok !== true) throw new Error('HEALTH_FAILED');
++const test = await fetch('http://127.0.0.1:8787/hooks/tilda/' + site.id, {
++  method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'test=test',
++});
++if (test.status !== 401) throw new Error('TILDA_AUTH_CHECK_FAILED');
++const publicProbe = await fetch('https://boykov-services.ru/hooks/tilda/' + site.id, {
++  method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'test=test',
++  redirect: 'error', signal: AbortSignal.timeout(10000),
++});
++if (publicProbe.status !== 401 || (await publicProbe.json()).error !== 'Нет доступа к приёму заявок.')
++  throw new Error('TILDA_PUBLIC_ROUTE_CHECK_FAILED');
++console.log('TILDA_MODULE=OK\nTILDA_AUTH=OK\nTILDA_PUBLIC_AUTH=OK\nTILDA_SITE_ID=' + site.id);
++VERIFY_TILDA
++docker compose ps
++printf 'TILDA_DEPLOY=OK\nBACKUP=%s\n' "$backup"
+diff --git a/server/app.js b/server/app.js
+index 52f03e3..90e0b87 100644
+--- a/server/app.js
++++ b/server/app.js
+@@ -43,6 +43,18 @@ export async function createApp(options) {
+   });
+   app.get("/healthz", (req, res) => res.json({ ok: true }));
+   const leads = createLeadsModule(db, options);
++  app.post(
++    "/hooks/tilda/:siteId",
++    express.urlencoded({
++      extended: true,
++      limit: "128kb",
++      parameterLimit: 500,
++      depth: 8,
++      inflate: false,
++    }),
++    express.json({ limit: "128kb", inflate: false }),
++    leads.receiveTilda,
++  );
+   app.use("/hooks/leads", express.json({ limit: "128kb", inflate: false }));
+   app.post("/hooks/leads/:siteId/heartbeat", leads.heartbeat);
+   app.post("/hooks/leads/:siteId", leads.receive);
+diff --git a/server/modules/leads/index.js b/server/modules/leads/index.js
+index 21c43e4..4ac0deb 100644
+--- a/server/modules/leads/index.js
++++ b/server/modules/leads/index.js
+@@ -4,6 +4,7 @@ import {
+   randomUUID,
+   timingSafeEqual,
+ } from "node:crypto";
++import { mapTildaLead, tildaEventId } from "./tilda.js";
+ 
+ const statuses = ["new", "working", "processed"];
+ const digest = (value) => createHash("sha256").update(value).digest("hex");
+@@ -112,6 +113,19 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+       .some((column) => column.name === "token_issued_at")
+   )
+     db.exec("ALTER TABLE sales_sites ADD COLUMN token_issued_at TEXT");
++  const siteColumns = new Set(
++    db
++      .prepare("PRAGMA table_info(sales_sites)")
++      .all()
++      .map((column) => column.name),
++  );
++  for (const [name, definition] of [
++    ["delivery_mode", "TEXT NOT NULL DEFAULT 'agent'"],
++    ["webhook_verified_at", "TEXT"],
++    ["webhook_error", "TEXT"],
++  ])
++    if (!siteColumns.has(name))
++      db.exec(`ALTER TABLE sales_sites ADD COLUMN ${name} ${definition}`);
+   const iso = () => new Date(now()).toISOString();
+   const seed = db.prepare(
+     "INSERT OR IGNORE INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
+@@ -120,8 +134,13 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+     ["nwd", "NWD Electricity", "nwdelectricity.ru"],
+     ["accessibility", "Паспорт доступности", "pasport-dostupnosty.ru"],
+     ["security", "Паспорт безопасности", "pasport-bezopasnosty.ru"],
++    ["boykovgroup", "Бойков Групп", "boykovgroup.ru"],
+   ])
+     seed.run(...site, iso());
++  // Preserve the key and ID if the administrator already added this domain.
++  db.prepare(
++    "UPDATE sales_sites SET delivery_mode='tilda' WHERE host='boykovgroup.ru'",
++  ).run();
+ 
+   const wrap = (action) => (req, res, next) => {
+     res.set("Cache-Control", "no-store");
+@@ -161,63 +180,118 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+   function get(id) {
+     return present(db.prepare("SELECT * FROM sales_leads WHERE id=?").get(id));
+   }
++  function saveLead(site, payload, receivedAt) {
++    const encoded = JSON.stringify(payload),
++      hash = digest(encoded);
++    const existing = db
++      .prepare(
++        "SELECT id,payload_hash FROM sales_leads WHERE site_id=? AND event_id=?",
++      )
++      .get(site.id, payload.eventId);
++    if (existing) {
++      if (existing.payload_hash !== hash)
++        throw bad("Этот идентификатор уже сохранён с другими данными.", 409);
++      return { id: existing.id, duplicate: true };
++    }
++    const id = randomUUID();
++    const search = [
++      payload.name,
++      payload.phone,
++      payload.email,
++      payload.service,
++      payload.message,
++      ...payload.fields.flatMap((f) => [f.label, f.value]),
++    ]
++      .join(" ")
++      .toLocaleLowerCase("ru");
++    db.prepare(
++      `INSERT INTO sales_leads(id,site_id,event_id,payload_hash,payload,search_text,created_at,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
++    ).run(
++      id,
++      site.id,
++      payload.eventId,
++      hash,
++      encoded,
++      search,
++      payload.createdAt,
++      receivedAt,
++      receivedAt,
++    );
++    db.prepare(
++      "INSERT INTO sales_history(lead_id,created_at,status,note,version) VALUES(?,?,'new','',1)",
++    ).run(id, receivedAt);
++    db.prepare("UPDATE sales_sites SET last_received_at=? WHERE id=?").run(
++      receivedAt,
++      site.id,
++    );
++    return { id, duplicate: false };
++  }
+   const receive = wrap((req, res) => {
+-    const site = authorize(req),
+-      payload = normalizeLead(req.body),
+-      encoded = JSON.stringify(payload);
+-    const hash = digest(encoded),
+-      receivedAt = iso();
+-    const result = transaction(db, () => {
+-      const existing = db
+-        .prepare(
+-          "SELECT id,payload_hash FROM sales_leads WHERE site_id=? AND event_id=?",
+-        )
+-        .get(site.id, payload.eventId);
+-      if (existing) {
+-        if (existing.payload_hash !== hash)
+-          throw bad("Этот идентификатор уже сохранён с другими данными.", 409);
+-        return { id: existing.id, duplicate: true };
+-      }
+-      const id = randomUUID();
+-      const search = [
+-        payload.name,
+-        payload.phone,
+-        payload.email,
+-        payload.service,
+-        payload.message,
+-        ...payload.fields.flatMap((f) => [f.label, f.value]),
+-      ]
+-        .join(" ")
+-        .toLocaleLowerCase("ru");
+-      db.prepare(
+-        `INSERT INTO sales_leads(id,site_id,event_id,payload_hash,payload,search_text,created_at,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+-      ).run(
+-        id,
+-        site.id,
+-        payload.eventId,
+-        hash,
+-        encoded,
+-        search,
+-        payload.createdAt,
+-        receivedAt,
+-        receivedAt,
+-      );
+-      db.prepare(
+-        "INSERT INTO sales_history(lead_id,created_at,status,note,version) VALUES(?,?,'new','',1)",
+-      ).run(id, receivedAt);
+-      db.prepare("UPDATE sales_sites SET last_received_at=? WHERE id=?").run(
+-        receivedAt,
+-        site.id,
+-      );
+-      return { id, duplicate: false };
+-    });
++    const site = authorize(req);
++    if (site.delivery_mode !== "agent")
++      throw bad("Для этого сайта используйте адрес приёма Tilda.");
++    const payload = normalizeLead(req.body);
++    const result = transaction(db, () => saveLead(site, payload, iso()));
+     res
+       .status(result.duplicate ? 200 : 201)
+       .json({ ok: true, siteId: site.id, eventId: payload.eventId, ...result });
+   });
++  const receiveTilda = wrap((req, res) => {
++    const site = authorize(req);
++    if (site.delivery_mode !== "tilda")
++      throw bad("Этот сайт не настроен для приёма заявок Tilda.");
++    if (!req.is(["application/json", "application/x-www-form-urlencoded"]))
++      throw bad("Используйте JSON или стандартную отправку формы Tilda.", 415);
++    // The connection probe is authenticated, but never becomes a sales lead.
++    if (req.body?.test === "test" && Object.keys(req.body).length === 1) {
++      db.prepare("UPDATE sales_sites SET webhook_verified_at=? WHERE id=?").run(
++        iso(),
++        site.id,
++      );
++      return res.json({ ok: true, test: true, siteId: site.id });
++    }
++    try {
++      const eventId = tildaEventId(req.body);
++      const result = transaction(db, () => {
++        const existing = db
++          .prepare(
++            "SELECT payload FROM sales_leads WHERE site_id=? AND event_id=?",
++          )
++          .get(site.id, eventId);
++        const receivedAt = iso();
++        // Tilda has no documented submission timestamp. Keep first receipt time
++        // on replay, including after restart, so the fingerprint stays stable.
++        const payload = normalizeLead(
++          mapTildaLead(req.body, {
++            createdAt: existing
++              ? JSON.parse(existing.payload).createdAt
++              : receivedAt,
++            host: site.host,
++            referer: req.get("referer"),
++          }),
++        );
++        const saved = saveLead(site, payload, receivedAt);
++        db.prepare(
++          "UPDATE sales_sites SET webhook_verified_at=?,webhook_error=NULL WHERE id=?",
++        ).run(receivedAt, site.id);
++        return saved;
++      });
++      // Tilda expects HTTP 200, including the first successful delivery.
++      res.json({ ok: true, siteId: site.id, eventId, ...result });
++    } catch (error) {
++      if ([400, 409].includes(error.status))
++        db.prepare("UPDATE sales_sites SET webhook_error=? WHERE id=?").run(
++          error.message,
++          site.id,
++        );
++      throw error;
++    }
++  });
+   const heartbeat = wrap((req, res) => {
+     const site = authorize(req),
+       input = req.body;
++    if (site.delivery_mode !== "agent")
++      throw bad("Tilda использует Webhook без отчётов агента.");
+     if (
+       !input ||
+       !Number.isSafeInteger(input.pending) ||
+@@ -254,7 +328,13 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+         for (const count of counts.filter((c) => c.site_id === row.id))
+           stats[count.status] = count.count;
+         let connection = "unconfigured";
+-        if (row.token_hash) {
++        if (row.token_hash && row.delivery_mode === "tilda") {
++          connection = row.webhook_error
++            ? "attention"
++            : row.webhook_verified_at
++              ? "webhook"
++              : "webhook_waiting";
++        } else if (row.token_hash) {
+           connection = !row.last_heartbeat_at
+             ? now() - Date.parse(row.token_issued_at || row.created_at) > 120000
+               ? "offline"
+@@ -273,6 +353,9 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+           name: row.name,
+           host: row.host,
+           configured: Boolean(row.token_hash),
++          deliveryMode: row.delivery_mode,
++          webhookVerifiedAt: row.webhook_verified_at,
++          webhookError: row.webhook_error,
+           connection,
+           stats,
+           lastReceivedAt: row.last_received_at,
+@@ -288,12 +371,20 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+     if (
+       !db
+         .prepare(
+-          "UPDATE sales_sites SET token_hash=?,token_issued_at=?,last_heartbeat_at=NULL WHERE id=?",
++          "UPDATE sales_sites SET token_hash=?,token_issued_at=?,last_heartbeat_at=NULL,webhook_verified_at=NULL,webhook_error=NULL WHERE id=?",
+         )
+         .run(digest(token), iso(), siteId).changes
+     )
+       throw bad("Сайт не найден.", 404);
+-    return { token, endpoint: `/hooks/leads/${siteId}`, siteId };
++    const { delivery_mode: deliveryMode } = db
++      .prepare("SELECT delivery_mode FROM sales_sites WHERE id=?")
++      .get(siteId);
++    return {
++      token,
++      endpoint: `/hooks/${deliveryMode === "tilda" ? "tilda" : "leads"}/${siteId}`,
++      siteId,
++      deliveryMode,
++    };
+   }
+   function register(app) {
+     app.get(
+@@ -306,6 +397,9 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+         const name = text(req.body?.name, 120, true),
+           input = text(req.body?.host, 253, true);
+         const host = input.toLowerCase().replace(/^www\./, "");
++        const deliveryMode = req.body?.deliveryMode ?? "agent";
++        if (!["agent", "tilda"].includes(deliveryMode))
++          throw bad("Выберите способ подключения сайта.");
+         if (
+           !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)
+         )
+@@ -315,8 +409,8 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+         const result = transaction(db, () => {
+           const id = randomUUID();
+           db.prepare(
+-            "INSERT INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
+-          ).run(id, name, host, iso());
++            "INSERT INTO sales_sites(id,name,host,created_at,delivery_mode) VALUES(?,?,?,?,?)",
++          ).run(id, name, host, iso(), deliveryMode);
+           return issueToken(id);
+         });
+         res.status(201).json(result);
+@@ -444,5 +538,5 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
+       }),
+     );
+   }
+-  return { receive, heartbeat, register };
++  return { receive, receiveTilda, heartbeat, register };
+ }
+diff --git a/server/modules/leads/tilda.js b/server/modules/leads/tilda.js
+new file mode 100644
+index 0000000..64cc7e2
+--- /dev/null
++++ b/server/modules/leads/tilda.js
+@@ -0,0 +1,88 @@
++const invalid = (message) => Object.assign(new Error(message), { status: 400 });
++const keyName = (key) => key.toLocaleLowerCase("ru").replace(/[\s_-]/g, "");
++
++// Sort object keys so JSON and URL-encoded retries have the same fingerprint.
++function stable(value, depth = 0) {
++  if (depth > 8) throw invalid("Слишком сложные поля заявки Tilda.");
++  if (Array.isArray(value)) return value.map((item) => stable(item, depth + 1));
++  if (value && typeof value === "object")
++    return Object.fromEntries(
++      Object.keys(value)
++        .sort()
++        .map((key) => [key, stable(value[key], depth + 1)]),
++    );
++  if (!["string", "number", "boolean"].includes(typeof value) && value !== null)
++    throw invalid("Некорректное поле заявки Tilda.");
++  return value;
++}
++
++export function tildaEventId(input) {
++  if (!input || typeof input !== "object" || Array.isArray(input))
++    throw invalid("Не удалось прочитать заявку Tilda.");
++  if (
++    typeof input.tranid !== "string" ||
++    !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,149}$/.test(input.tranid)
++  )
++    throw invalid("Tilda не передала корректный номер заявки tranid.");
++  return "tilda:" + input.tranid;
++}
++
++export function mapTildaLead(input, { createdAt, host, referer }) {
++  const eventId = tildaEventId(input);
++  const keys = Object.keys(input).filter(
++    (key) => key.toUpperCase() !== "COOKIES",
++  );
++  if (keys.length > 100) throw invalid("Слишком много полей заявки Tilda.");
++  const fields = keys.sort().map((label) => {
++    const raw = input[label];
++    const value = typeof raw === "string" ? raw : JSON.stringify(stable(raw));
++    if (
++      !label.trim() ||
++      label.length > 200 ||
++      label.includes("\0") ||
++      value.length > 16000 ||
++      value.includes("\0")
++    )
++      throw invalid("Проверьте состав и длину полей заявки Tilda.");
++    return { label, value };
++  });
++  const pick = (names, limit) => {
++    for (const name of names) {
++      const found = fields.find((field) => keyName(field.label) === name);
++      if (found?.value.trim()) return found.value.trim().slice(0, limit);
++    }
++    return "";
++  };
++  let pageUrl = `https://${host}/`;
++  try {
++    const url = new URL(referer);
++    if (
++      /^https?:$/.test(url.protocol) &&
++      !url.username &&
++      !url.password &&
++      url.hostname.replace(/^www\./, "") === host &&
++      url.href.length <= 2000
++    )
++      pageUrl = url.href;
++  } catch {
++    // A missing Referer does not make an otherwise valid sale disappear.
++  }
++  return {
++    eventId,
++    createdAt,
++    name: pick(["name", "fullname", "имя", "фио", "вашеимя"], 200),
++    phone: pick(
++      ["phone", "telephone", "tel", "телефон", "номертелефона", "ваштелефон"],
++      80,
++    ),
++    email: pick(["email", "mail", "почта", "электроннаяпочта"], 254),
++    service: pick(["service", "услуга", "услуги", "subject", "тема"], 500),
++    message: pick(
++      ["comments", "comment", "message", "сообщение", "комментарий", "вопрос"],
++      12000,
++    ),
++    form: pick(["formname", "formid"], 300) || "Форма Tilda",
++    fields,
++    pageUrl,
++  };
++}
+diff --git a/src/pages/Leads.css b/src/pages/Leads.css
+index c8427a8..9160119 100644
+--- a/src/pages/Leads.css
++++ b/src/pages/Leads.css
+@@ -148,7 +148,8 @@
+   background: #afb3ab;
+   flex-shrink: 0;
+ }
+-.connection-online i {
++.connection-online i,
++.connection-webhook i {
+   background: #668452;
+ }
+ .connection-offline,
+diff --git a/src/pages/Leads.tsx b/src/pages/Leads.tsx
+index 40184ed..89de7c2 100644
+--- a/src/pages/Leads.tsx
++++ b/src/pages/Leads.tsx
+@@ -15,11 +15,20 @@ import { Empty, Loading, Notice, PageHead } from "../components/Common";
+ import "./Leads.css";
+ 
+ type State = "new" | "working" | "processed";
++type DeliveryMode = "agent" | "tilda";
++type ConnectionSecret = {
++  token: string;
++  endpoint: string;
++  deliveryMode: DeliveryMode;
++};
+ type Site = {
+   id: string;
+   name: string;
+   host: string;
+   configured: boolean;
++  deliveryMode: DeliveryMode;
++  webhookVerifiedAt: string | null;
++  webhookError: string | null;
+   connection: string;
+   stats: Record<State, number>;
+   pending: number;
+@@ -79,6 +88,8 @@ const connections: Record<string, string> = {
+   online: "Доставка работает",
+   offline: "Нет сигнала доставки",
+   attention: "Проверьте доставку",
++  webhook: "Webhook подтверждён",
++  webhook_waiting: "Ожидаем проверку Tilda",
+ };
+ const states: State[] = ["new", "working", "processed"];
+ const empty: Result = { leads: [], total: 0, page: 1, pages: 1 };
+@@ -112,9 +123,8 @@ export default function Leads({
+     [reviewing, setReviewing] = useState(false),
+     [discard, setDiscard] = useState(false);
+   const [connectSite, setConnectSite] = useState<Site | "new" | null>(null),
+-    [secret, setSecret] = useState<{ token: string; endpoint: string } | null>(
+-      null,
+-    );
++    [secret, setSecret] = useState<ConnectionSecret | null>(null);
++  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("agent");
+   const [sourceName, setSourceName] = useState(""),
+     [host, setHost] = useState(""),
+     [sourceError, setSourceError] = useState(""),
+@@ -263,6 +273,7 @@ export default function Leads({
+     setSourceError("");
+     setSourceName("");
+     setHost("");
++    setDeliveryMode("agent");
+     setCopied(false);
+   }
+   async function connect() {
+@@ -272,11 +283,12 @@ export default function Leads({
+     try {
+       const value =
+         connectSite === "new"
+-          ? await post<{ token: string; endpoint: string }>("/leads/sites", {
++          ? await post<ConnectionSecret>("/leads/sites", {
+               name: sourceName,
+               host,
++              deliveryMode,
+             })
+-          : await post<{ token: string; endpoint: string }>(
++          : await post<ConnectionSecret>(
+               `/leads/sites/${connectSite.id}/token`,
+               {},
+             );
+@@ -330,8 +342,8 @@ export default function Leads({
+       {problematic.length > 0 && (
+         <Notice tone="error">
+           Нет подтверждения исправной доставки:{" "}
+-          {problematic.map((s) => s.host).join(", ")}. Новые обращения могут
+-          находиться в очереди на сайтах. Проверьте подключения.
++          {problematic.map((s) => s.host).join(", ")}. Проверьте подключения и
++          журнал отправок на сайтах.
+         </Notice>
+       )}
+       <section className="leads-stats" aria-label="Статусы заявок">
+@@ -519,7 +531,7 @@ export default function Leads({
+             text={
+               sites.some((s) => s.configured)
+                 ? "Новые заявки появятся после доставки с подключённых сайтов. Статусы подключений указаны выше."
+-                : "Подключите сайты через их серверы. До подключения формы ещё не передают обращения в этот раздел."
++                : "Настройте подключение сайтов. После этого обращения из форм будут появляться в этом разделе."
+             }
+           />
+         )}
+@@ -763,8 +775,10 @@ export default function Leads({
+           {secret ? (
+             <>
+               <Notice>
+-                Сохраните ключ сейчас: повторно он не показывается. Установите
+-                его только на сервере сайта.
++                Сохраните ключ сейчас: повторно он не показывается.{" "}
++                {secret.deliveryMode === "tilda"
++                  ? "Укажите его в настройках Webhook в Tilda."
++                  : "Установите его только на сервере сайта."}
+               </Notice>
+               <label className="lead-secret">
+                 Адрес приёма
+@@ -775,10 +789,16 @@ export default function Leads({
+                 />
+               </label>
+               <label className="lead-secret">
+-                Ключ доставки
++                {secret.deliveryMode === "tilda"
++                  ? "API Key для Tilda"
++                  : "Ключ доставки"}
+                 <input
+                   readOnly
+-                  value={secret.token}
++                  value={
++                    secret.deliveryMode === "tilda"
++                      ? `Bearer ${secret.token}`
++                      : secret.token
++                  }
+                   onFocus={(e) => e.target.select()}
+                 />
+               </label>
+@@ -786,7 +806,11 @@ export default function Leads({
+                 className="button secondary"
+                 onClick={async () => {
+                   try {
+-                    await navigator.clipboard.writeText(secret.token);
++                    await navigator.clipboard.writeText(
++                      secret.deliveryMode === "tilda"
++                        ? `Bearer ${secret.token}`
++                        : secret.token,
++                    );
+                     setCopied(true);
+                   } catch {
+                     setSourceError("Выделите ключ и скопируйте его вручную.");
+@@ -797,8 +821,9 @@ export default function Leads({
+                 {copied ? "Скопировано" : "Скопировать ключ"}
+               </button>
+               <p className="muted small">
+-                Сайт считается подключённым после первого отчёта агента
+-                доставки. Одного создания ключа недостаточно.
++                {secret.deliveryMode === "tilda"
++                  ? "В Tilda: Настройки сайта → Формы → Webhook. API Method — HEADER, API Name — Authorization, API Key — значение выше целиком, включая Bearer. Сохраните, назначьте Webhook всем формам и опубликуйте страницы."
++                  : "Сайт считается подключённым после первого отчёта агента доставки. Одного создания ключа недостаточно."}
+               </p>
+             </>
+           ) : (
+@@ -823,20 +848,57 @@ export default function Leads({
+                       placeholder="example.ru"
+                     />
+                   </label>
++                  <label>
++                    Способ подключения
++                    <select
++                      value={deliveryMode}
++                      onChange={(e) =>
++                        setDeliveryMode(e.target.value as DeliveryMode)
++                      }
++                    >
++                      <option value="agent">Агент на сервере сайта</option>
++                      <option value="tilda">Tilda — Webhook</option>
++                    </select>
++                  </label>
+                 </div>
+               ) : (
+                 <>
+                   <p className="muted">{connectSite.host}</p>
+                   <p>
+-                    Ключ нужен серверу сайта для безопасной передачи заявок. Он
+-                    не должен попадать в код публичной формы.
++                    {connectSite.deliveryMode === "tilda"
++                      ? "Ключ указывается в настройках Webhook в Tilda: API Method — HEADER, API Name — Authorization. В API Key вставьте Bearer и ключ через пробел."
++                      : "Ключ нужен серверу сайта для безопасной передачи заявок. Он не должен попадать в код публичной формы."}
+                   </p>
+                   {connectSite.configured && (
+                     <Notice>
+-                      Новый ключ заменит текущий. После этого обновите ключ в
+-                      агенте на сервере сайта.
++                      Новый ключ заменит текущий. После этого обновите ключ{" "}
++                      {connectSite.deliveryMode === "tilda"
++                        ? "в настройках Webhook в Tilda."
++                        : "в агенте на сервере сайта."}
+                     </Notice>
+                   )}
++                  {connectSite.deliveryMode === "tilda" && (
++                    <>
++                      <p className="small muted">
++                        {connectSite.webhookVerifiedAt
++                          ? `Приём Webhook подтверждён: ${dateTime(connectSite.webhookVerifiedAt, true)} · МСК.`
++                          : "Tilda ещё не подтвердила подключение Webhook."}
++                        <br />
++                        {connectSite.lastReceivedAt
++                          ? `Последняя заявка: ${dateTime(connectSite.lastReceivedAt, true)} · МСК.`
++                          : "Заявки через Webhook пока не поступали."}
++                      </p>
++                      <p className="small muted">
++                        Проверьте отправку из каждой формы после публикации.
++                        Состояние Webhook не проверяет назначение приёмщика всем
++                        формам. Ошибки отправки доступны в разделе «Заявки» в
++                        Tilda.
++                      </p>
++                      {connectSite.webhookError && (
++                        <Notice tone="error">{connectSite.webhookError}</Notice>
++                      )}
++                    </>
++                  )}
+                   {connectSite.lastHeartbeatAt && (
+                     <p className="small muted">
+                       Последний сигнал:{" "}
+diff --git a/tests/leads-tilda.test.js b/tests/leads-tilda.test.js
+new file mode 100644
+index 0000000..63517e1
+--- /dev/null
++++ b/tests/leads-tilda.test.js
+@@ -0,0 +1,399 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { randomUUID } from "node:crypto";
++import { DatabaseSync } from "node:sqlite";
++import { createApp } from "../server/app.js";
++import { hashPassword } from "../server/auth.js";
++import { createLeadsModule } from "../server/modules/leads/index.js";
++
++const password = "tilda-fixture-password",
++  passwordHash = await hashPassword(password);
++const sample = () => ({
++  tranid: "467251:8442970",
++  formid: "form48844953",
++  Name: "Анна Петрова",
++  Phone: "+7 999 123-45-67",
++  Email: "sale@example.ru",
++  Comments: "Нужен расчёт",
++  Service: "Охрана труда",
++});
++async function fixture(t) {
++  const directory = await mkdtemp(join(tmpdir(), "boykov-tilda-"));
++  let clock = Date.parse("2026-11-19T10:00:00Z"),
++    app,
++    server,
++    base,
++    cookie;
++  async function start() {
++    app = await createApp({
++      dataDir: directory,
++      passwordHash,
++      secureCookies: false,
++      allowedOrigins: [],
++      now: () => clock,
++      worker: async () => Response.json({ jobs: [] }),
++      isConfigured: () => false,
++    });
++    server = app.listen(0, "127.0.0.1");
++    await new Promise((resolve) => server.once("listening", resolve));
++    base = "http://127.0.0.1:" + server.address().port;
++    const login = await fetch(base + "/api/auth/login", {
++      method: "POST",
++      headers: { "Content-Type": "application/json", "X-Boykov-Request": "1" },
++      body: JSON.stringify({ password }),
++    });
++    cookie = login.headers.get("set-cookie").split(";")[0];
++  }
++  async function stop() {
++    await new Promise((resolve) => server.close(resolve));
++    app.locals.db.close();
++  }
++  await start();
++  t.after(async () => {
++    await stop();
++    await rm(directory, { recursive: true, force: true });
++  });
++  const api = (path, method = "GET", body) =>
++    fetch(base + "/api/leads" + path, {
++      method,
++      headers: {
++        "Content-Type": "application/json",
++        "X-Boykov-Request": "1",
++        Cookie: cookie,
++      },
++      ...(body ? { body: JSON.stringify(body) } : {}),
++    });
++  const token = async (id = "boykovgroup") =>
++    (await (await api(`/sites/${id}/token`, "POST", {})).json()).token;
++  const send = (
++    body,
++    key,
++    {
++      json = false,
++      site = "boykovgroup",
++      referer = "https://boykovgroup.ru/ot/",
++      contentType,
++      route = "tilda",
++    } = {},
++  ) =>
++    fetch(`${base}/hooks/${route}/${site}`, {
++      method: "POST",
++      headers: {
++        "Content-Type":
++          contentType ||
++          (json ? "application/json" : "application/x-www-form-urlencoded"),
++        ...(key ? { Authorization: "Bearer " + key } : {}),
++        Referer: referer,
++      },
++      body: json ? JSON.stringify(body) : new URLSearchParams(body).toString(),
++    });
++  return {
++    api,
++    token,
++    send,
++    get app() {
++      return app;
++    },
++    directory,
++    advance: (ms) => {
++      clock += ms;
++    },
++    restart: async () => {
++      await stop();
++      await start();
++    },
++    site: async () =>
++      (await (await api("/sites")).json()).sites.find(
++        (s) => s.host === "boykovgroup.ru",
++      ),
++  };
++}
++
++test("Tilda probe needs its own key; body keys, other sources and generic intake cannot bypass authentication", async (t) => {
++  const s = await fixture(t),
++    key = await s.token(),
++    other = await s.token("security");
++  assert.equal((await s.send({ test: "test" })).status, 401);
++  assert.equal((await s.send({ test: "test", token: key })).status, 401);
++  assert.equal((await s.send({ test: "test" }, other)).status, 401);
++  assert.equal(
++    (await s.send(sample(), key, { route: "leads", json: true })).status,
++    400,
++  );
++  assert.equal(
++    (await s.send(sample(), other, { site: "security" })).status,
++    400,
++  );
++  assert.equal((await (await s.api("")).json()).total, 0);
++});
++
++test("Tilda confirmation never creates a lead or falsely expires during an idle period; rotation requires a fresh probe", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  s.advance(86400000);
++  await s.restart();
++  assert.equal((await s.site()).connection, "webhook_waiting");
++  assert.equal((await s.send({ test: "test" }, key)).status, 200);
++  assert.equal((await s.site()).connection, "webhook");
++  assert.equal((await s.site()).lastReceivedAt, null);
++  s.advance(86400000);
++  await s.restart();
++  assert.equal((await s.site()).connection, "webhook");
++  assert.equal((await (await s.api("")).json()).total, 0);
++  const next = await s.token();
++  assert.notEqual(next, key);
++  assert.equal((await s.site()).connection, "webhook_waiting");
++  assert.equal((await s.send({ test: "test" }, key)).status, 401);
++  assert.equal((await s.send({ test: "test" }, next)).status, 200);
++});
++
++test("URL-encoded Tilda fields keep Cyrillic, plus signs, custom values and page attribution, with no double decoding", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  const response = await s.send(
++    {
++      ...sample(),
++      Город: "Москва",
++      Метка: "%2B remains literal",
++      COOKIES: "private-cookie",
++      "Опции[]": "Да",
++    },
++    key,
++  );
++  assert.equal(response.status, 200);
++  const ack = await response.json();
++  const { lead } = await (await s.api("/" + ack.id)).json();
++  assert.equal(lead.eventId, "tilda:467251:8442970");
++  assert.equal(lead.name, "Анна Петрова");
++  assert.equal(lead.phone, "+7 999 123-45-67");
++  assert.equal(lead.email, "sale@example.ru");
++  assert.equal(lead.service, "Охрана труда");
++  assert.equal(lead.message, "Нужен расчёт");
++  assert.equal(lead.pageUrl, "https://boykovgroup.ru/ot/");
++  assert.equal(
++    lead.fields.find((f) => f.label === "Метка").value,
++    "%2B remains literal",
++  );
++  assert.equal(lead.fields.find((f) => f.label === "Опции").value, '["Да"]');
++  assert.ok(!JSON.stringify(lead).includes("private-cookie"));
++  const observer = new DatabaseSync(join(s.directory, "platform.sqlite"), {
++    readOnly: true,
++  });
++  try {
++    assert.equal(
++      observer.prepare("SELECT id FROM sales_leads WHERE id=?").get(ack.id).id,
++      ack.id,
++    );
++  } finally {
++    observer.close();
++  }
++});
++
++test("delayed JSON replay after restart keeps one lead, its original time, sales status and notes; conflicts are visible", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  const body = { ...sample(), products: [{ price: 500, name: "Услуга" }] };
++  const first = await (await s.send(body, key, { json: true })).json();
++  const before = (await (await s.api("/" + first.id)).json()).lead;
++  await s.api("/" + first.id, "PATCH", {
++    requestId: randomUUID(),
++    version: 1,
++    status: "processed",
++    note: "Договор подписан",
++  });
++  s.advance(3600000);
++  await s.restart();
++  const reordered = Object.fromEntries(Object.entries(body).reverse());
++  reordered.products = [{ name: "Услуга", price: 500 }];
++  const again = await (await s.send(reordered, key, { json: true })).json();
++  assert.equal(again.id, first.id);
++  assert.equal(again.duplicate, true);
++  assert.equal(
++    (await s.send({ ...body, Phone: "changed" }, key, { json: true })).status,
++    409,
++  );
++  assert.equal((await s.site()).connection, "attention");
++  assert.equal((await s.send({ test: "test" }, key)).status, 200);
++  assert.equal((await s.site()).connection, "attention");
++  assert.equal((await s.send(body, key, { json: true })).status, 200);
++  assert.equal((await s.site()).connection, "webhook");
++  const { lead, history } = await (await s.api("/" + first.id)).json();
++  assert.equal(lead.createdAt, before.createdAt);
++  assert.equal(lead.note, "Договор подписан");
++  assert.equal(lead.status, "processed");
++  assert.equal(history.length, 2);
++  assert.equal((await (await s.api("")).json()).total, 1);
++});
++
++test("Tilda capture rolls back on storage failure and acknowledges only a committed retry", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  s.app.locals.db.exec(
++    "CREATE TRIGGER fail_tilda_history BEFORE INSERT ON sales_history BEGIN SELECT RAISE(FAIL,'disk failure'); END",
++  );
++  assert.equal((await s.send(sample(), key)).status, 500);
++  assert.equal((await (await s.api("")).json()).total, 0);
++  assert.equal((await s.site()).webhookVerifiedAt, null);
++  s.app.locals.db.exec("DROP TRIGGER fail_tilda_history");
++  assert.equal((await s.send(sample(), key)).status, 200);
++});
++
++test("distinct Tilda transaction IDs never merge by phone; malformed requests cannot be acknowledged", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  const responses = await Promise.all(
++    Array.from({ length: 12 }, (_, i) =>
++      s.send({ ...sample(), tranid: "project:" + i }, key),
++    ),
++  );
++  assert.ok(responses.every((r) => r.status === 200));
++  assert.equal((await (await s.api("")).json()).total, 12);
++  for (const bad of [
++    { ...sample(), tranid: "" },
++    { Name: "No ID" },
++    { ...sample(), tranid: ["a", "b"] },
++    { ...sample(), Note: "x".repeat(16001) },
++    {
++      ...sample(),
++      ...Object.fromEntries(
++        Array.from({ length: 101 }, (_, i) => ["field" + i, "x"]),
++      ),
++    },
++  ]) {
++    assert.equal((await s.send(bad, key, { json: true })).status, 400);
++  }
++  assert.equal(
++    (await s.send(sample(), key, { contentType: "text/plain" })).status,
++    415,
++  );
++  assert.equal(
++    (await s.send({ ...sample(), Comments: "x".repeat(150000) }, key)).status,
++    413,
++  );
++  assert.equal((await (await s.api("")).json()).total, 12);
++});
++
++test("custom Tilda fields survive JSON intake even without contacts or a trustworthy Referer", async (t) => {
++  const s = await fixture(t),
++    key = await s.token();
++  const body = {
++    tranid: "custom:1",
++    formname: "Консультация",
++    "Ваше имя": "Ольга",
++    "Ваш телефон": "+79990000000",
++    custom: { b: 2, a: 1 },
++  };
++  const ack = await (
++    await s.send(body, key, {
++      json: true,
++      referer: "https://attacker.example/",
++    })
++  ).json();
++  const { lead } = await (await s.api("/" + ack.id)).json();
++  assert.equal(lead.name, "Ольга");
++  assert.equal(lead.phone, "+79990000000");
++  assert.equal(lead.form, "Консультация");
++  assert.equal(lead.pageUrl, "https://boykovgroup.ru/");
++  assert.equal(
++    lead.fields.find((f) => f.label === "custom").value,
++    '{"a":1,"b":2}',
++  );
++  assert.equal(
++    (
++      await s.send({ tranid: "custom:2", arbitrary: "Manual review" }, key, {
++        json: true,
++      })
++    ).status,
++    200,
++  );
++});
++
++test("new Tilda sites get the proper endpoint and do not alter existing agent integrations", async (t) => {
++  const s = await fixture(t);
++  const response = await s.api("/sites", "POST", {
++    name: "Ещё Tilda",
++    host: "another-site.ru",
++    deliveryMode: "tilda",
++  });
++  assert.equal(response.status, 201);
++  const created = await response.json();
++  assert.equal(created.endpoint, "/hooks/tilda/" + created.siteId);
++  assert.equal(
++    (await s.send(sample(), created.token, { site: created.siteId })).status,
++    200,
++  );
++  const key = await s.token("nwd");
++  assert.equal(
++    (
++      await s.send(
++        { eventId: "nwd:1", createdAt: "2026-11-19T10:00:00Z" },
++        key,
++        { route: "leads", site: "nwd", json: true },
++      )
++    ).status,
++    201,
++  );
++  assert.equal(
++    (
++      await s.api("/sites", "POST", {
++        name: "Bad",
++        host: "bad.ru",
++        deliveryMode: "unknown",
++      })
++    ).status,
++    400,
++  );
++});
++
++test("schema upgrade preserves a pre-existing Boykov Group ID, token and all agent connection data", () => {
++  const db = new DatabaseSync(":memory:");
++  try {
++    db.exec(
++      "CREATE TABLE sales_sites(id TEXT PRIMARY KEY,name TEXT NOT NULL,host TEXT NOT NULL UNIQUE,token_hash TEXT,created_at TEXT NOT NULL,last_received_at TEXT,last_heartbeat_at TEXT,pending_count INTEGER NOT NULL DEFAULT 0,rejected_count INTEGER NOT NULL DEFAULT 0,oldest_pending_at TEXT,scan_ok INTEGER NOT NULL DEFAULT 1)",
++    );
++    db.prepare(
++      "INSERT INTO sales_sites(id,name,host,token_hash,created_at,last_heartbeat_at,pending_count) VALUES(?,?,?,?,?,?,?)",
++    ).run(
++      "custom-id",
++      "Бойков",
++      "boykovgroup.ru",
++      "hash",
++      "2026-11-18T00:00:00Z",
++      null,
++      0,
++    );
++    db.prepare(
++      "INSERT INTO sales_sites(id,name,host,token_hash,created_at,last_heartbeat_at,pending_count) VALUES(?,?,?,?,?,?,?)",
++    ).run(
++      "nwd",
++      "NWD",
++      "nwdelectricity.ru",
++      "nwd-hash",
++      "2026-11-18T00:00:00Z",
++      "2026-11-19T10:00:00Z",
++      12,
++    );
++    createLeadsModule(db);
++    createLeadsModule(db);
++    const group = db
++      .prepare("SELECT * FROM sales_sites WHERE host='boykovgroup.ru'")
++      .get();
++    assert.equal(group.id, "custom-id");
++    assert.equal(group.token_hash, "hash");
++    assert.equal(group.delivery_mode, "tilda");
++    const nwd = db.prepare("SELECT * FROM sales_sites WHERE id='nwd'").get();
++    assert.equal(nwd.token_hash, "nwd-hash");
++    assert.equal(nwd.pending_count, 12);
++    assert.equal(nwd.last_heartbeat_at, "2026-11-19T10:00:00Z");
++    assert.equal(nwd.delivery_mode, "agent");
++    assert.equal(
++      db.prepare("SELECT count(*) AS n FROM sales_sites").get().n,
++      4,
++    );
++  } finally {
++    db.close();
++  }
++});

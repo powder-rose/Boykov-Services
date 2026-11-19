@@ -15,11 +15,20 @@ import { Empty, Loading, Notice, PageHead } from "../components/Common";
 import "./Leads.css";
 
 type State = "new" | "working" | "processed";
+type DeliveryMode = "agent" | "tilda";
+type ConnectionSecret = {
+  token: string;
+  endpoint: string;
+  deliveryMode: DeliveryMode;
+};
 type Site = {
   id: string;
   name: string;
   host: string;
   configured: boolean;
+  deliveryMode: DeliveryMode;
+  webhookVerifiedAt: string | null;
+  webhookError: string | null;
   connection: string;
   stats: Record<State, number>;
   pending: number;
@@ -79,6 +88,8 @@ const connections: Record<string, string> = {
   online: "Доставка работает",
   offline: "Нет сигнала доставки",
   attention: "Проверьте доставку",
+  webhook: "Webhook подтверждён",
+  webhook_waiting: "Ожидаем проверку Tilda",
 };
 const states: State[] = ["new", "working", "processed"];
 const empty: Result = { leads: [], total: 0, page: 1, pages: 1 };
@@ -112,9 +123,8 @@ export default function Leads({
     [reviewing, setReviewing] = useState(false),
     [discard, setDiscard] = useState(false);
   const [connectSite, setConnectSite] = useState<Site | "new" | null>(null),
-    [secret, setSecret] = useState<{ token: string; endpoint: string } | null>(
-      null,
-    );
+    [secret, setSecret] = useState<ConnectionSecret | null>(null);
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("agent");
   const [sourceName, setSourceName] = useState(""),
     [host, setHost] = useState(""),
     [sourceError, setSourceError] = useState(""),
@@ -263,6 +273,7 @@ export default function Leads({
     setSourceError("");
     setSourceName("");
     setHost("");
+    setDeliveryMode("agent");
     setCopied(false);
   }
   async function connect() {
@@ -272,11 +283,12 @@ export default function Leads({
     try {
       const value =
         connectSite === "new"
-          ? await post<{ token: string; endpoint: string }>("/leads/sites", {
+          ? await post<ConnectionSecret>("/leads/sites", {
               name: sourceName,
               host,
+              deliveryMode,
             })
-          : await post<{ token: string; endpoint: string }>(
+          : await post<ConnectionSecret>(
               `/leads/sites/${connectSite.id}/token`,
               {},
             );
@@ -330,8 +342,8 @@ export default function Leads({
       {problematic.length > 0 && (
         <Notice tone="error">
           Нет подтверждения исправной доставки:{" "}
-          {problematic.map((s) => s.host).join(", ")}. Новые обращения могут
-          находиться в очереди на сайтах. Проверьте подключения.
+          {problematic.map((s) => s.host).join(", ")}. Проверьте подключения и
+          журнал отправок на сайтах.
         </Notice>
       )}
       <section className="leads-stats" aria-label="Статусы заявок">
@@ -519,7 +531,7 @@ export default function Leads({
             text={
               sites.some((s) => s.configured)
                 ? "Новые заявки появятся после доставки с подключённых сайтов. Статусы подключений указаны выше."
-                : "Подключите сайты через их серверы. До подключения формы ещё не передают обращения в этот раздел."
+                : "Настройте подключение сайтов. После этого обращения из форм будут появляться в этом разделе."
             }
           />
         )}
@@ -763,8 +775,10 @@ export default function Leads({
           {secret ? (
             <>
               <Notice>
-                Сохраните ключ сейчас: повторно он не показывается. Установите
-                его только на сервере сайта.
+                Сохраните ключ сейчас: повторно он не показывается.{" "}
+                {secret.deliveryMode === "tilda"
+                  ? "Укажите его в настройках Webhook в Tilda."
+                  : "Установите его только на сервере сайта."}
               </Notice>
               <label className="lead-secret">
                 Адрес приёма
@@ -775,10 +789,16 @@ export default function Leads({
                 />
               </label>
               <label className="lead-secret">
-                Ключ доставки
+                {secret.deliveryMode === "tilda"
+                  ? "API Key для Tilda"
+                  : "Ключ доставки"}
                 <input
                   readOnly
-                  value={secret.token}
+                  value={
+                    secret.deliveryMode === "tilda"
+                      ? `Bearer ${secret.token}`
+                      : secret.token
+                  }
                   onFocus={(e) => e.target.select()}
                 />
               </label>
@@ -786,7 +806,11 @@ export default function Leads({
                 className="button secondary"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(secret.token);
+                    await navigator.clipboard.writeText(
+                      secret.deliveryMode === "tilda"
+                        ? `Bearer ${secret.token}`
+                        : secret.token,
+                    );
                     setCopied(true);
                   } catch {
                     setSourceError("Выделите ключ и скопируйте его вручную.");
@@ -797,8 +821,9 @@ export default function Leads({
                 {copied ? "Скопировано" : "Скопировать ключ"}
               </button>
               <p className="muted small">
-                Сайт считается подключённым после первого отчёта агента
-                доставки. Одного создания ключа недостаточно.
+                {secret.deliveryMode === "tilda"
+                  ? "В Tilda: Настройки сайта → Формы → Webhook. API Method — HEADER, API Name — Authorization, API Key — значение выше целиком, включая Bearer. Сохраните, назначьте Webhook всем формам и опубликуйте страницы."
+                  : "Сайт считается подключённым после первого отчёта агента доставки. Одного создания ключа недостаточно."}
               </p>
             </>
           ) : (
@@ -823,19 +848,56 @@ export default function Leads({
                       placeholder="example.ru"
                     />
                   </label>
+                  <label>
+                    Способ подключения
+                    <select
+                      value={deliveryMode}
+                      onChange={(e) =>
+                        setDeliveryMode(e.target.value as DeliveryMode)
+                      }
+                    >
+                      <option value="agent">Агент на сервере сайта</option>
+                      <option value="tilda">Tilda — Webhook</option>
+                    </select>
+                  </label>
                 </div>
               ) : (
                 <>
                   <p className="muted">{connectSite.host}</p>
                   <p>
-                    Ключ нужен серверу сайта для безопасной передачи заявок. Он
-                    не должен попадать в код публичной формы.
+                    {connectSite.deliveryMode === "tilda"
+                      ? "Ключ указывается в настройках Webhook в Tilda: API Method — HEADER, API Name — Authorization. В API Key вставьте Bearer и ключ через пробел."
+                      : "Ключ нужен серверу сайта для безопасной передачи заявок. Он не должен попадать в код публичной формы."}
                   </p>
                   {connectSite.configured && (
                     <Notice>
-                      Новый ключ заменит текущий. После этого обновите ключ в
-                      агенте на сервере сайта.
+                      Новый ключ заменит текущий. После этого обновите ключ{" "}
+                      {connectSite.deliveryMode === "tilda"
+                        ? "в настройках Webhook в Tilda."
+                        : "в агенте на сервере сайта."}
                     </Notice>
+                  )}
+                  {connectSite.deliveryMode === "tilda" && (
+                    <>
+                      <p className="small muted">
+                        {connectSite.webhookVerifiedAt
+                          ? `Приём Webhook подтверждён: ${dateTime(connectSite.webhookVerifiedAt, true)} · МСК.`
+                          : "Tilda ещё не подтвердила подключение Webhook."}
+                        <br />
+                        {connectSite.lastReceivedAt
+                          ? `Последняя заявка: ${dateTime(connectSite.lastReceivedAt, true)} · МСК.`
+                          : "Заявки через Webhook пока не поступали."}
+                      </p>
+                      <p className="small muted">
+                        Проверьте отправку из каждой формы после публикации.
+                        Состояние Webhook не проверяет назначение приёмщика всем
+                        формам. Ошибки отправки доступны в разделе «Заявки» в
+                        Tilda.
+                      </p>
+                      {connectSite.webhookError && (
+                        <Notice tone="error">{connectSite.webhookError}</Notice>
+                      )}
+                    </>
                   )}
                   {connectSite.lastHeartbeatAt && (
                     <p className="small muted">

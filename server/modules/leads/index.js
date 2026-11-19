@@ -4,6 +4,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import { mapTildaLead, tildaEventId } from "./tilda.js";
 
 const statuses = ["new", "working", "processed"];
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -112,6 +113,19 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
       .some((column) => column.name === "token_issued_at")
   )
     db.exec("ALTER TABLE sales_sites ADD COLUMN token_issued_at TEXT");
+  const siteColumns = new Set(
+    db
+      .prepare("PRAGMA table_info(sales_sites)")
+      .all()
+      .map((column) => column.name),
+  );
+  for (const [name, definition] of [
+    ["delivery_mode", "TEXT NOT NULL DEFAULT 'agent'"],
+    ["webhook_verified_at", "TEXT"],
+    ["webhook_error", "TEXT"],
+  ])
+    if (!siteColumns.has(name))
+      db.exec(`ALTER TABLE sales_sites ADD COLUMN ${name} ${definition}`);
   const iso = () => new Date(now()).toISOString();
   const seed = db.prepare(
     "INSERT OR IGNORE INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
@@ -120,8 +134,13 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     ["nwd", "NWD Electricity", "nwdelectricity.ru"],
     ["accessibility", "Паспорт доступности", "pasport-dostupnosty.ru"],
     ["security", "Паспорт безопасности", "pasport-bezopasnosty.ru"],
+    ["boykovgroup", "Бойков Групп", "boykovgroup.ru"],
   ])
     seed.run(...site, iso());
+  // Preserve the key and ID if the administrator already added this domain.
+  db.prepare(
+    "UPDATE sales_sites SET delivery_mode='tilda' WHERE host='boykovgroup.ru'",
+  ).run();
 
   const wrap = (action) => (req, res, next) => {
     res.set("Cache-Control", "no-store");
@@ -161,63 +180,118 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
   function get(id) {
     return present(db.prepare("SELECT * FROM sales_leads WHERE id=?").get(id));
   }
+  function saveLead(site, payload, receivedAt) {
+    const encoded = JSON.stringify(payload),
+      hash = digest(encoded);
+    const existing = db
+      .prepare(
+        "SELECT id,payload_hash FROM sales_leads WHERE site_id=? AND event_id=?",
+      )
+      .get(site.id, payload.eventId);
+    if (existing) {
+      if (existing.payload_hash !== hash)
+        throw bad("Этот идентификатор уже сохранён с другими данными.", 409);
+      return { id: existing.id, duplicate: true };
+    }
+    const id = randomUUID();
+    const search = [
+      payload.name,
+      payload.phone,
+      payload.email,
+      payload.service,
+      payload.message,
+      ...payload.fields.flatMap((f) => [f.label, f.value]),
+    ]
+      .join(" ")
+      .toLocaleLowerCase("ru");
+    db.prepare(
+      `INSERT INTO sales_leads(id,site_id,event_id,payload_hash,payload,search_text,created_at,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      id,
+      site.id,
+      payload.eventId,
+      hash,
+      encoded,
+      search,
+      payload.createdAt,
+      receivedAt,
+      receivedAt,
+    );
+    db.prepare(
+      "INSERT INTO sales_history(lead_id,created_at,status,note,version) VALUES(?,?,'new','',1)",
+    ).run(id, receivedAt);
+    db.prepare("UPDATE sales_sites SET last_received_at=? WHERE id=?").run(
+      receivedAt,
+      site.id,
+    );
+    return { id, duplicate: false };
+  }
   const receive = wrap((req, res) => {
-    const site = authorize(req),
-      payload = normalizeLead(req.body),
-      encoded = JSON.stringify(payload);
-    const hash = digest(encoded),
-      receivedAt = iso();
-    const result = transaction(db, () => {
-      const existing = db
-        .prepare(
-          "SELECT id,payload_hash FROM sales_leads WHERE site_id=? AND event_id=?",
-        )
-        .get(site.id, payload.eventId);
-      if (existing) {
-        if (existing.payload_hash !== hash)
-          throw bad("Этот идентификатор уже сохранён с другими данными.", 409);
-        return { id: existing.id, duplicate: true };
-      }
-      const id = randomUUID();
-      const search = [
-        payload.name,
-        payload.phone,
-        payload.email,
-        payload.service,
-        payload.message,
-        ...payload.fields.flatMap((f) => [f.label, f.value]),
-      ]
-        .join(" ")
-        .toLocaleLowerCase("ru");
-      db.prepare(
-        `INSERT INTO sales_leads(id,site_id,event_id,payload_hash,payload,search_text,created_at,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-      ).run(
-        id,
-        site.id,
-        payload.eventId,
-        hash,
-        encoded,
-        search,
-        payload.createdAt,
-        receivedAt,
-        receivedAt,
-      );
-      db.prepare(
-        "INSERT INTO sales_history(lead_id,created_at,status,note,version) VALUES(?,?,'new','',1)",
-      ).run(id, receivedAt);
-      db.prepare("UPDATE sales_sites SET last_received_at=? WHERE id=?").run(
-        receivedAt,
-        site.id,
-      );
-      return { id, duplicate: false };
-    });
+    const site = authorize(req);
+    if (site.delivery_mode !== "agent")
+      throw bad("Для этого сайта используйте адрес приёма Tilda.");
+    const payload = normalizeLead(req.body);
+    const result = transaction(db, () => saveLead(site, payload, iso()));
     res
       .status(result.duplicate ? 200 : 201)
       .json({ ok: true, siteId: site.id, eventId: payload.eventId, ...result });
   });
+  const receiveTilda = wrap((req, res) => {
+    const site = authorize(req);
+    if (site.delivery_mode !== "tilda")
+      throw bad("Этот сайт не настроен для приёма заявок Tilda.");
+    if (!req.is(["application/json", "application/x-www-form-urlencoded"]))
+      throw bad("Используйте JSON или стандартную отправку формы Tilda.", 415);
+    // The connection probe is authenticated, but never becomes a sales lead.
+    if (req.body?.test === "test" && Object.keys(req.body).length === 1) {
+      db.prepare("UPDATE sales_sites SET webhook_verified_at=? WHERE id=?").run(
+        iso(),
+        site.id,
+      );
+      return res.json({ ok: true, test: true, siteId: site.id });
+    }
+    try {
+      const eventId = tildaEventId(req.body);
+      const result = transaction(db, () => {
+        const existing = db
+          .prepare(
+            "SELECT payload FROM sales_leads WHERE site_id=? AND event_id=?",
+          )
+          .get(site.id, eventId);
+        const receivedAt = iso();
+        // Tilda has no documented submission timestamp. Keep first receipt time
+        // on replay, including after restart, so the fingerprint stays stable.
+        const payload = normalizeLead(
+          mapTildaLead(req.body, {
+            createdAt: existing
+              ? JSON.parse(existing.payload).createdAt
+              : receivedAt,
+            host: site.host,
+            referer: req.get("referer"),
+          }),
+        );
+        const saved = saveLead(site, payload, receivedAt);
+        db.prepare(
+          "UPDATE sales_sites SET webhook_verified_at=?,webhook_error=NULL WHERE id=?",
+        ).run(receivedAt, site.id);
+        return saved;
+      });
+      // Tilda expects HTTP 200, including the first successful delivery.
+      res.json({ ok: true, siteId: site.id, eventId, ...result });
+    } catch (error) {
+      if ([400, 409].includes(error.status))
+        db.prepare("UPDATE sales_sites SET webhook_error=? WHERE id=?").run(
+          error.message,
+          site.id,
+        );
+      throw error;
+    }
+  });
   const heartbeat = wrap((req, res) => {
     const site = authorize(req),
       input = req.body;
+    if (site.delivery_mode !== "agent")
+      throw bad("Tilda использует Webhook без отчётов агента.");
     if (
       !input ||
       !Number.isSafeInteger(input.pending) ||
@@ -254,7 +328,13 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
         for (const count of counts.filter((c) => c.site_id === row.id))
           stats[count.status] = count.count;
         let connection = "unconfigured";
-        if (row.token_hash) {
+        if (row.token_hash && row.delivery_mode === "tilda") {
+          connection = row.webhook_error
+            ? "attention"
+            : row.webhook_verified_at
+              ? "webhook"
+              : "webhook_waiting";
+        } else if (row.token_hash) {
           connection = !row.last_heartbeat_at
             ? now() - Date.parse(row.token_issued_at || row.created_at) > 120000
               ? "offline"
@@ -273,6 +353,9 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           name: row.name,
           host: row.host,
           configured: Boolean(row.token_hash),
+          deliveryMode: row.delivery_mode,
+          webhookVerifiedAt: row.webhook_verified_at,
+          webhookError: row.webhook_error,
           connection,
           stats,
           lastReceivedAt: row.last_received_at,
@@ -288,12 +371,20 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     if (
       !db
         .prepare(
-          "UPDATE sales_sites SET token_hash=?,token_issued_at=?,last_heartbeat_at=NULL WHERE id=?",
+          "UPDATE sales_sites SET token_hash=?,token_issued_at=?,last_heartbeat_at=NULL,webhook_verified_at=NULL,webhook_error=NULL WHERE id=?",
         )
         .run(digest(token), iso(), siteId).changes
     )
       throw bad("Сайт не найден.", 404);
-    return { token, endpoint: `/hooks/leads/${siteId}`, siteId };
+    const { delivery_mode: deliveryMode } = db
+      .prepare("SELECT delivery_mode FROM sales_sites WHERE id=?")
+      .get(siteId);
+    return {
+      token,
+      endpoint: `/hooks/${deliveryMode === "tilda" ? "tilda" : "leads"}/${siteId}`,
+      siteId,
+      deliveryMode,
+    };
   }
   function register(app) {
     app.get(
@@ -306,6 +397,9 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
         const name = text(req.body?.name, 120, true),
           input = text(req.body?.host, 253, true);
         const host = input.toLowerCase().replace(/^www\./, "");
+        const deliveryMode = req.body?.deliveryMode ?? "agent";
+        if (!["agent", "tilda"].includes(deliveryMode))
+          throw bad("Выберите способ подключения сайта.");
         if (
           !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)
         )
@@ -315,8 +409,8 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
         const result = transaction(db, () => {
           const id = randomUUID();
           db.prepare(
-            "INSERT INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
-          ).run(id, name, host, iso());
+            "INSERT INTO sales_sites(id,name,host,created_at,delivery_mode) VALUES(?,?,?,?,?)",
+          ).run(id, name, host, iso(), deliveryMode);
           return issueToken(id);
         });
         res.status(201).json(result);
@@ -444,5 +538,5 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
       }),
     );
   }
-  return { receive, heartbeat, register };
+  return { receive, receiveTilda, heartbeat, register };
 }

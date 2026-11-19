@@ -43,6 +43,18 @@ export async function createApp(options) {
   });
   app.get("/healthz", (req, res) => res.json({ ok: true }));
   const leads = createLeadsModule(db, options);
+  app.post(
+    "/hooks/tilda/:siteId",
+    express.urlencoded({
+      extended: true,
+      limit: "128kb",
+      parameterLimit: 500,
+      depth: 8,
+      inflate: false,
+    }),
+    express.json({ limit: "128kb", inflate: false }),
+    leads.receiveTilda,
+  );
   app.use("/hooks/leads", express.json({ limit: "128kb", inflate: false }));
   app.post("/hooks/leads/:siteId/heartbeat", leads.heartbeat);
   app.post("/hooks/leads/:siteId", leads.receive);
