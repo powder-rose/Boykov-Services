@@ -145,6 +145,32 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
   db.exec(
     "CREATE INDEX IF NOT EXISTS sales_leads_deleted ON sales_leads(deleted_at,created_at DESC)",
   );
+  for (const [table, names] of [
+    [
+      "sales_leads",
+      [
+        "assignee_id",
+        "assignee_name",
+        "assignee_kind",
+        "assigned_at",
+        "processed_by_id",
+        "processed_by_name",
+        "processed_by_kind",
+        "processed_at",
+      ],
+    ],
+    ["sales_history", ["actor_id", "actor_name", "actor_kind"]],
+  ]) {
+    const columns = new Set(
+      db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((c) => c.name),
+    );
+    for (const name of names)
+      if (!columns.has(name))
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} TEXT`);
+  }
   const iso = () => new Date(now()).toISOString();
   const seed = db.prepare(
     "INSERT OR IGNORE INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
@@ -195,10 +221,33 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
       receivedAt: row.received_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at,
+      assignee: row.assignee_name
+        ? {
+            id: row.assignee_id,
+            name: row.assignee_name,
+            kind: row.assignee_kind,
+          }
+        : null,
+      assignedAt: row.assigned_at,
+      processedBy: row.processed_by_name
+        ? {
+            id: row.processed_by_id,
+            name: row.processed_by_name,
+            kind: row.processed_by_kind,
+          }
+        : null,
+      processedAt: row.processed_at,
     };
   }
   function get(id) {
     return present(db.prepare("SELECT * FROM sales_leads WHERE id=?").get(id));
+  }
+  function actor(req) {
+    return {
+      id: req.actor?.id || null,
+      name: req.actor?.name || "Общий доступ",
+      kind: req.actor?.id ? "account" : "shared",
+    };
   }
   function saveLead(site, payload, receivedAt) {
     const encoded = JSON.stringify(payload),
@@ -414,6 +463,46 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     };
   }
   function register(app) {
+    app.get(
+      "/api/me/leads",
+      wrap((req, res) => {
+        const status = req.query.status ?? "working",
+          page = req.query.page ?? "1";
+        if (
+          !["working", "processed"].includes(status) ||
+          typeof page !== "string" ||
+          !/^[1-9]\d{0,5}$/.test(page)
+        )
+          throw bad("Некорректный фильтр личных заявок.");
+        const identity = req.actor?.id || null;
+        const kind = identity ? "account" : "shared";
+        const own = (state) =>
+          state === "working"
+            ? "assignee_id IS ? AND assignee_kind=?"
+            : "processed_by_id IS ? AND processed_by_kind=?";
+        const counts = {};
+        for (const state of ["working", "processed"])
+          counts[state] = db
+            .prepare(
+              `SELECT count(*) AS n FROM sales_leads WHERE deleted_at IS NULL AND status=? AND ${own(state)}`,
+            )
+            .get(state, identity, kind).n;
+        const rows = db
+          .prepare(
+            `SELECT * FROM sales_leads WHERE deleted_at IS NULL AND status=? AND ${own(status)} ORDER BY updated_at DESC,id DESC LIMIT 30 OFFSET ?`,
+          )
+          .all(status, identity, kind, (Number(page) - 1) * 30)
+          .map(present);
+        res.json({
+          status,
+          leads: rows,
+          counts,
+          total: counts[status],
+          page: Number(page),
+          pages: Math.max(1, Math.ceil(counts[status] / 30)),
+        });
+      }),
+    );
     app.post(
       "/api/leads/trash",
       wrap((req, res) => {
@@ -452,7 +541,8 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
               throw bad("Идентификатор изменения уже использован.", 409);
             return true;
           }
-          const updatedAt = iso();
+          const updatedAt = iso(),
+            who = actor(req);
           for (const target of targets) {
             const lead = get(target.id);
             if (
@@ -479,7 +569,7 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
                 409,
               );
             db.prepare(
-              "INSERT INTO sales_history(lead_id,created_at,status,note,version,action) VALUES(?,?,?,?,?,?)",
+              "INSERT INTO sales_history(lead_id,created_at,status,note,version,action,actor_id,actor_name,actor_kind) VALUES(?,?,?,?,?,?,?,?,?)",
             ).run(
               target.id,
               updatedAt,
@@ -487,6 +577,9 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
               lead.note,
               target.version + 1,
               action,
+              who.id,
+              who.name,
+              who.kind,
             );
           }
           db.prepare("INSERT INTO sales_actions VALUES(?,?,?)").run(
@@ -605,7 +698,7 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           lead: get(req.params.id),
           history: db
             .prepare(
-              "SELECT created_at AS createdAt,status,note,version,action FROM sales_history WHERE lead_id=? ORDER BY id DESC",
+              "SELECT created_at AS createdAt,status,note,version,action,actor_id AS actorId,actor_name AS actorName,actor_kind AS actorKind FROM sales_history WHERE lead_id=? ORDER BY id DESC",
             )
             .all(req.params.id),
         }),
@@ -614,17 +707,25 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     app.patch(
       "/api/leads/:id",
       wrap((req, res) => {
-        const { requestId, version, status } = req.body ?? {},
+        const { requestId, version, status, claim = false } = req.body ?? {},
           note = text(req.body?.note, 12000);
         if (
           !/^[a-f0-9-]{36}$/.test(requestId || "") ||
           !Number.isSafeInteger(version) ||
           version < 1 ||
+          typeof claim !== "boolean" ||
+          (claim && status !== "working") ||
           !statuses.includes(status)
         )
           throw bad("Некорректное изменение заявки.");
         const hash = digest(
-          JSON.stringify({ id: req.params.id, version, status, note }),
+          JSON.stringify({
+            id: req.params.id,
+            version,
+            status,
+            note,
+            ...(claim ? { claim: true } : {}),
+          }),
         );
         transaction(db, () => {
           const previous = db
@@ -638,9 +739,11 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
               throw bad("Идентификатор изменения уже использован.", 409);
             return;
           }
-          if (get(req.params.id).deletedAt)
+          const previousLead = get(req.params.id);
+          if (previousLead.deletedAt)
             throw bad("Заявка в корзине. Сначала восстановите её.", 409);
-          const updatedAt = iso();
+          const updatedAt = iso(),
+            who = actor(req);
           if (
             !db
               .prepare(
@@ -652,9 +755,43 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
               "Заявку уже изменил другой сотрудник. Обновите карточку и проверьте изменения.",
               409,
             );
+          if (status === "new" && previousLead.status !== "new") {
+            db.prepare(
+              "UPDATE sales_leads SET assignee_id=NULL,assignee_name=NULL,assignee_kind=NULL,assigned_at=NULL,processed_by_id=NULL,processed_by_name=NULL,processed_by_kind=NULL,processed_at=NULL WHERE id=?",
+            ).run(req.params.id);
+          } else {
+            if (
+              (status === "working" &&
+                (claim || previousLead.status !== "working")) ||
+              (status === "processed" &&
+                previousLead.status !== "processed" &&
+                !previousLead.assignee)
+            )
+              db.prepare(
+                "UPDATE sales_leads SET assignee_id=?,assignee_name=?,assignee_kind=?,assigned_at=? WHERE id=?",
+              ).run(who.id, who.name, who.kind, updatedAt, req.params.id);
+            if (status === "processed" && previousLead.status !== "processed")
+              db.prepare(
+                "UPDATE sales_leads SET processed_by_id=?,processed_by_name=?,processed_by_kind=?,processed_at=? WHERE id=?",
+              ).run(who.id, who.name, who.kind, updatedAt, req.params.id);
+            if (status === "working" && previousLead.status !== "working")
+              db.prepare(
+                "UPDATE sales_leads SET processed_by_id=NULL,processed_by_name=NULL,processed_by_kind=NULL,processed_at=NULL WHERE id=?",
+              ).run(req.params.id);
+          }
           db.prepare(
-            "INSERT INTO sales_history(lead_id,created_at,status,note,version) VALUES(?,?,?,?,?)",
-          ).run(req.params.id, updatedAt, status, note, version + 1);
+            "INSERT INTO sales_history(lead_id,created_at,status,note,version,action,actor_id,actor_name,actor_kind) VALUES(?,?,?,?,?,?,?,?,?)",
+          ).run(
+            req.params.id,
+            updatedAt,
+            status,
+            note,
+            version + 1,
+            claim ? "claim" : "update",
+            who.id,
+            who.name,
+            who.kind,
+          );
           db.prepare("INSERT INTO sales_actions VALUES(?,?,?)").run(
             requestId,
             req.params.id,

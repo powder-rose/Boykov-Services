@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { installAuth } from "./auth.js";
 import { createTechnicalModule } from "./modules/technical/index.js";
 import { createLeadsModule } from "./modules/leads/index.js";
+import { createPersonalModule } from "./personal.js";
 import { workerClient } from "./worker-client.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
 import {
@@ -67,6 +68,8 @@ export async function createApp(options) {
   leads.register(app);
   technical.registerRoutes(app);
   const worker = options.worker || workerClient(options);
+  const personal = createPersonalModule(db, { worker, now: options.now });
+  personal.register(app);
   const store = await createBatchStore({
     exportsDir: path.join(options.dataDir, "wordstat"),
     requestWordstat: options.requestWordstat || requestWordstatTop,
@@ -97,7 +100,7 @@ export async function createApp(options) {
     let jobs = [],
       documentsAvailable = true;
     try {
-      jobs = (await workerJSON("/jobs")).jobs;
+      jobs = (await workerJSON("/jobs")).jobs.map(personal.annotate);
     } catch {
       documentsAvailable = false;
     }
@@ -137,12 +140,12 @@ export async function createApp(options) {
     });
   });
   app.get("/api/contracts/jobs", async (req, res) =>
-    res.json(await workerJSON("/jobs")),
+    res.json({ jobs: (await workerJSON("/jobs")).jobs.map(personal.annotate) }),
   );
   app.get("/api/contracts/jobs/:id", async (req, res) => {
     if (!validId(req.params.id))
       return res.status(404).json({ error: "Задача не найдена" });
-    res.json(await workerJSON(`/jobs/${req.params.id}`));
+    res.json(personal.annotate(await workerJSON(`/jobs/${req.params.id}`)));
   });
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -172,15 +175,15 @@ export async function createApp(options) {
     },
   );
   app.post("/api/contracts/generate", async (req, res) => {
-    res.status(202).json(
-      await (
-        await worker("/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(req.body),
-        })
-      ).json(),
-    );
+    await personal.reserve(req);
+    const job = await (
+      await worker("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req.body),
+      })
+    ).json();
+    res.status(202).json(personal.annotate(job));
   });
   app.get("/api/contracts/files/:id", async (req, res) => {
     if (!validId(req.params.id))

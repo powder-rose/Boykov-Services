@@ -1,12 +1,30 @@
 export type Page =
+  | "cabinet"
   | "overview"
   | "contracts"
   | "leads"
   | "technical"
   | "wordstat"
   | "history"
-  | "settings";
+  | "settings"
+  | "accounts";
+export interface AccountIdentity {
+  id: string | null;
+  login: string | null;
+  name: string;
+  role: "admin" | "sales" | "shared";
+}
+export interface Session {
+  authenticated: boolean;
+  configured: boolean;
+  account?: AccountIdentity;
+}
 export interface Job {
+  createdBy?: {
+    id: string | null;
+    name: string;
+    kind: "account" | "shared";
+  } | null;
   id: string;
   kind?: string;
   service?: string;

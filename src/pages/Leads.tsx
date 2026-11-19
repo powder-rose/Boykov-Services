@@ -1,3 +1,4 @@
+import { initials } from "../identity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
@@ -10,13 +11,27 @@ import {
   RotateCcw,
   Search,
   Trash2,
+  UserCheck,
   X,
 } from "lucide-react";
 import { api, ApiError, dateTime, errorText, post } from "../api";
 import { Empty, Loading, Notice, PageHead } from "../components/Common";
 import "./Leads.css";
+import type { AccountIdentity } from "../types";
 
 type State = "new" | "working" | "processed";
+type Person = { id: string | null; name: string; kind: "account" | "shared" };
+function PersonBadge({ person, label }: { person: Person; label: string }) {
+  return (
+    <span
+      className={`lead-person ${person.kind === "shared" ? "shared" : ""}`}
+      title={`${label}: ${person.name}`}
+    >
+      <span aria-hidden="true">{initials(person.name)}</span>
+      <span>{person.name}</span>
+    </span>
+  );
+}
 type DeliveryMode = "agent" | "tilda";
 type ConnectionSecret = {
   token: string;
@@ -59,6 +74,10 @@ type Lead = {
   note: string;
   version: number;
   deletedAt: string | null;
+  assignee: Person | null;
+  assignedAt: string | null;
+  processedBy: Person | null;
+  processedAt: string | null;
 };
 type Detail = {
   lead: Lead;
@@ -67,7 +86,10 @@ type Detail = {
     status: State;
     note: string;
     version: number;
-    action: "update" | "delete" | "restore";
+    action: "update" | "delete" | "restore" | "claim";
+    actorId: string | null;
+    actorName: string | null;
+    actorKind: "account" | "shared" | null;
   }[];
 };
 type Result = {
@@ -88,6 +110,7 @@ type Change = {
   version: number;
   status: State;
   note: string;
+  claim?: boolean;
 };
 const labels: Record<State, string> = {
   new: "Новая",
@@ -114,9 +137,15 @@ const empty: Result = { leads: [], total: 0, page: 1, pages: 1, trashTotal: 0 };
 export default function Leads({
   active,
   onChange,
+  account,
+  requestedId,
+  onRequestedOpen,
 }: {
   active: boolean;
   onChange: () => void;
+  account?: AccountIdentity;
+  requestedId?: string | null;
+  onRequestedOpen?: () => void;
 }) {
   const [sites, setSites] = useState<Site[]>([]),
     [result, setResult] = useState<Result>(empty);
@@ -236,6 +265,12 @@ export default function Leads({
       if (sequence === detailSequence.current) setDetailError(errorText(err));
     }
   }
+  useEffect(() => {
+    if (active && requestedId) {
+      openLead(requestedId);
+      onRequestedOpen?.();
+    }
+  }, [active, requestedId]);
   function openLead(id: string) {
     setSelected(id);
     setDetail(null);
@@ -272,13 +307,14 @@ export default function Leads({
     setDetail(null);
     pending.current = null;
   }
-  async function save() {
+  async function save(claim = false) {
     if (!detail || detail.lead.deletedAt || saving) return;
     pending.current ??= {
       requestId: crypto.randomUUID(),
       version: detail.lead.version,
-      status: draftStatus,
+      status: claim ? "working" : draftStatus,
       note,
+      ...(claim ? { claim: true } : {}),
     };
     setSaving(true);
     setDetailError("");
@@ -733,6 +769,22 @@ export default function Leads({
                         <i />
                         {labels[lead.status]}
                       </span>
+                      {(lead.status === "processed"
+                        ? lead.processedBy
+                        : lead.assignee) && (
+                        <PersonBadge
+                          person={
+                            (lead.status === "processed"
+                              ? lead.processedBy
+                              : lead.assignee)!
+                          }
+                          label={
+                            lead.status === "processed"
+                              ? "Обработано"
+                              : "Ответственный"
+                          }
+                        />
+                      )}
                     </td>
                     <td>
                       <button
@@ -851,6 +903,39 @@ export default function Leads({
                 {selectedSite?.name} · {dateTime(detail.lead.createdAt, true)} ·
                 МСК
               </p>
+              <div className="lead-people">
+                <div>
+                  <span className="lead-person-label">Ответственный</span>
+                  {detail.lead.assignee ? (
+                    <PersonBadge
+                      person={detail.lead.assignee}
+                      label="Ответственный"
+                    />
+                  ) : (
+                    <span className="small muted">Пока не назначен</span>
+                  )}
+                </div>
+                {detail.lead.status === "processed" && (
+                  <div>
+                    <span className="lead-person-label">Обработано</span>
+                    {detail.lead.processedBy ? (
+                      <>
+                        <PersonBadge
+                          person={detail.lead.processedBy}
+                          label="Обработано"
+                        />
+                        {detail.lead.processedAt && (
+                          <time className="small muted">
+                            {dateTime(detail.lead.processedAt, true)} · МСК
+                          </time>
+                        )}
+                      </>
+                    ) : (
+                      <span className="small muted">Аккаунт не был указан</span>
+                    )}
+                  </div>
+                )}
+              </div>
               {detail.lead.deletedAt && (
                 <Notice>
                   В корзине с {dateTime(detail.lead.deletedAt, true)} · МСК. Для
@@ -858,6 +943,24 @@ export default function Leads({
                 </Notice>
               )}
               <div className="lead-trash-actions">
+                {!detail.lead.deletedAt &&
+                  (detail.lead.status === "new" ||
+                    (detail.lead.status === "working" &&
+                      (!detail.lead.assignee ||
+                        (account?.id
+                          ? detail.lead.assignee.id !== account.id
+                          : detail.lead.assignee.kind !== "shared")))) && (
+                    <button
+                      className="button primary"
+                      disabled={saving || uncertain}
+                      onClick={() => void save(true)}
+                    >
+                      <UserCheck size={16} />
+                      {detail.lead.status === "working"
+                        ? "Взять себе"
+                        : "Взять в работу"}
+                    </button>
+                  )}
                 <button
                   className={`button secondary ${detail.lead.deletedAt ? "" : "lead-delete"}`}
                   disabled={saving || uncertain || detailDirty}
@@ -1003,8 +1106,20 @@ export default function Leads({
                           ? "Перемещена в корзину"
                           : h.action === "restore"
                             ? "Восстановлена"
-                            : labels[h.status]}
+                            : h.action === "claim"
+                              ? "Взята в работу"
+                              : labels[h.status]}
                       </span>
+                      {h.actorName && (
+                        <PersonBadge
+                          person={{
+                            id: h.actorId,
+                            name: h.actorName,
+                            kind: h.actorKind || "shared",
+                          }}
+                          label="Действие выполнил"
+                        />
+                      )}
                       <time>{dateTime(h.createdAt, true)} · МСК</time>
                       {h.note && <p>{h.note}</p>}
                     </li>

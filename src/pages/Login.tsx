@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { post, errorText } from "../api";
 import { Notice } from "../components/Common";
+import "./Accounts.css";
 export default function Login({
   onLogin,
   configured,
@@ -17,6 +18,8 @@ export default function Login({
   configured: boolean;
 }) {
   const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"personal" | "shared">("personal");
+  const [login, setLogin] = useState("");
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -25,7 +28,10 @@ export default function Login({
     setError("");
     setBusy(true);
     try {
-      await post("/auth/login", { password });
+      await post("/auth/login", {
+        password,
+        ...(mode === "personal" ? { login } : {}),
+      });
       setPassword("");
       onLogin();
     } catch (error) {
@@ -71,15 +77,59 @@ export default function Login({
           </span>
           <div className="eyebrow">РАДЫ ВАС ВИДЕТЬ</div>
           <h2>За работу.</h2>
-          <p className="muted">Введите пароль команды, чтобы продолжить.</p>
-          {!configured && (
+          <p className="muted">
+            {mode === "personal"
+              ? "Войдите под своим именем, чтобы сохранять историю работы."
+              : "Продолжите работу с общим паролем команды."}
+          </p>
+          <div className="login-modes" role="group" aria-label="Способ входа">
+            <button
+              type="button"
+              aria-pressed={mode === "personal"}
+              onClick={() => {
+                setMode("personal");
+                setPassword("");
+                setError("");
+              }}
+            >
+              Личный аккаунт
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "shared"}
+              onClick={() => {
+                setMode("shared");
+                setPassword("");
+                setError("");
+              }}
+            >
+              Общий вход
+            </button>
+          </div>
+          {!configured && mode === "shared" && (
             <Notice>
               Первый запуск: задайте пароль командой <code>npm run setup</code>{" "}
               и перезапустите приложение.
             </Notice>
           )}
           <form onSubmit={submit}>
-            <label htmlFor="password">Пароль пространства</label>
+            {mode === "personal" && (
+              <label htmlFor="login">
+                Логин
+                <input
+                  id="login"
+                  value={login}
+                  onChange={(e) => setLogin(e.target.value)}
+                  autoComplete="username"
+                  maxLength={64}
+                  required
+                  placeholder="name.surname"
+                />
+              </label>
+            )}
+            <label htmlFor="password">
+              {mode === "personal" ? "Пароль аккаунта" : "Пароль пространства"}
+            </label>
             <div className="password-input">
               <input
                 id="password"
@@ -104,7 +154,7 @@ export default function Login({
             {error && <Notice tone="error">{error}</Notice>}
             <button
               className="button primary login-submit"
-              disabled={busy || !configured}
+              disabled={busy || (mode === "shared" && !configured)}
             >
               {busy ? (
                 <LoaderCircle size={18} className="spin" />

@@ -1,3 +1,4 @@
+import { initials } from "./identity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
@@ -14,6 +15,8 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  UsersRound,
+  UserRound,
   X,
 } from "lucide-react";
 import { api, post, errorText, dateTime } from "./api";
@@ -26,8 +29,11 @@ import Leads from "./pages/Leads";
 import Wordstat from "./pages/Wordstat";
 import History from "./pages/History";
 import Settings from "./pages/Settings";
-import type { Dashboard, Job, Page, System } from "./types";
+import Accounts from "./pages/Accounts";
+import Cabinet from "./pages/Cabinet";
+import type { Dashboard, Job, Page, System, Session } from "./types";
 const navigation = [
+  { id: "cabinet", label: "Мой кабинет", icon: UserRound },
   { id: "overview", label: "Обзор", icon: LayoutDashboard },
   {
     id: "contracts",
@@ -45,6 +51,7 @@ const navigation = [
     group: "ПРОСТРАНСТВО",
   },
   { id: "settings", label: "Подключения", icon: Settings2 },
+  { id: "accounts", label: "Аккаунты", icon: UsersRound },
 ] as const;
 const getPage = (): Page =>
   navigation.some((n) => n.id === location.hash.slice(1))
@@ -56,11 +63,9 @@ const emptyDashboard: Dashboard = {
   stats: { documents: 0, batches: 0, active: 0 },
 };
 export default function App() {
-  const [session, setSession] = useState<{
-    authenticated: boolean;
-    configured: boolean;
-  } | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [page, setPage] = useState<Page>(getPage);
+  const [requestedLead, setRequestedLead] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard>(emptyDashboard);
   const [system, setSystem] = useState<System | null>(null);
   const [initialError, setInitialError] = useState("");
@@ -73,9 +78,7 @@ export default function App() {
   const sessionRef = useRef(false);
   const checkSession = useCallback(async () => {
     try {
-      const value = await api<{ authenticated: boolean; configured: boolean }>(
-        "/auth/session",
-      );
+      const value = await api<Session>("/auth/session");
       setSession(value);
       setInitialError("");
     } catch (error) {
@@ -114,10 +117,24 @@ export default function App() {
   useEffect(() => {
     sessionRef.current = Boolean(session?.authenticated);
     if (!session?.authenticated) return;
+    if (session.account?.id && getPage() === "overview") {
+      location.hash = "cabinet";
+      setPage("cabinet");
+    }
     void refresh();
     const timer = setInterval(refresh, 10000);
     return () => clearInterval(timer);
-  }, [session?.authenticated, refresh]);
+  }, [session?.authenticated, session?.account?.id, refresh]);
+  useEffect(() => {
+    if (
+      session?.authenticated &&
+      session.account?.role !== "admin" &&
+      page === "accounts"
+    ) {
+      location.hash = "leads";
+      setPage("leads");
+    }
+  }, [session, page]);
   function navigate(next: Page) {
     location.hash = next;
     setPage(next);
@@ -227,28 +244,35 @@ export default function App() {
           <ShieldCheck size={16} />
         </div>
         <nav aria-label="Главная навигация">
-          {navigation.map((item) => (
-            <div key={item.id}>
-              {"group" in item && <div className="nav-group">{item.group}</div>}
-              <button
-                className={`nav-item ${page === item.id ? "active" : ""}`}
-                onClick={() => navigate(item.id)}
-                aria-current={page === item.id ? "page" : undefined}
-              >
-                <item.icon size={19} strokeWidth={1.7} />
-                <span>{item.label}</span>
-                {item.id === "leads" && Boolean(dashboard.stats.newLeads) && (
-                  <span
-                    className="nav-counter"
-                    aria-label={`Новых заявок: ${dashboard.stats.newLeads}`}
-                  >
-                    {dashboard.stats.newLeads}
-                  </span>
+          {navigation
+            .filter(
+              (item) =>
+                item.id !== "accounts" || session.account?.role === "admin",
+            )
+            .map((item) => (
+              <div key={item.id}>
+                {"group" in item && (
+                  <div className="nav-group">{item.group}</div>
                 )}
-                {page === item.id && <span className="nav-dot" />}
-              </button>
-            </div>
-          ))}
+                <button
+                  className={`nav-item ${page === item.id ? "active" : ""}`}
+                  onClick={() => navigate(item.id)}
+                  aria-current={page === item.id ? "page" : undefined}
+                >
+                  <item.icon size={19} strokeWidth={1.7} />
+                  <span>{item.label}</span>
+                  {item.id === "leads" && Boolean(dashboard.stats.newLeads) && (
+                    <span
+                      className="nav-counter"
+                      aria-label={`Новых заявок: ${dashboard.stats.newLeads}`}
+                    >
+                      {dashboard.stats.newLeads}
+                    </span>
+                  )}
+                  {page === item.id && <span className="nav-dot" />}
+                </button>
+              </div>
+            ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note">
@@ -264,9 +288,22 @@ export default function App() {
             <ArrowUpRight size={15} />
           </button>
           <div className="team-profile">
-            <span className="avatar">Б</span>
+            <span className="avatar">
+              {session.account?.role === "shared"
+                ? "Б"
+                : initials(session.account?.name)}
+            </span>
             <span>
-              Команда Бойков<small>Общий доступ</small>
+              {session.account?.role === "shared"
+                ? "Команда Бойков"
+                : session.account?.name}
+              <small>
+                {session.account?.role === "admin"
+                  ? "Администратор"
+                  : session.account?.role === "sales"
+                    ? "Отдел продаж"
+                    : "Общий доступ"}
+              </small>
             </span>
             <button
               className="icon-button"
@@ -299,8 +336,14 @@ export default function App() {
               <span>Поиск по истории</span>
               <kbd>⌘ K</kbd>
             </button>
-            <span className="top-avatar" aria-label="Команда">
-              Б
+            <span
+              className="top-avatar"
+              aria-label={session.account?.name || "Команда"}
+              title={session.account?.name}
+            >
+              {session.account?.role === "shared"
+                ? "Б"
+                : initials(session.account?.name)}
             </span>
           </div>
         </header>
@@ -313,6 +356,17 @@ export default function App() {
               </button>
             </Notice>
           )}
+          <div hidden={page !== "cabinet"} className="page">
+            <Cabinet
+              active={page === "cabinet"}
+              account={session.account}
+              onOpenDocument={openJob}
+              onOpenLead={(id) => {
+                setRequestedLead(id);
+                navigate("leads");
+              }}
+            />
+          </div>
           <div hidden={page !== "overview"} className="page">
             <Overview
               dashboard={dashboard}
@@ -328,7 +382,13 @@ export default function App() {
             <Technical />
           </div>
           <div hidden={page !== "leads"} className="page">
-            <Leads active={page === "leads"} onChange={refresh} />
+            <Leads
+              active={page === "leads"}
+              onChange={refresh}
+              account={session.account}
+              requestedId={requestedLead}
+              onRequestedOpen={() => setRequestedLead(null)}
+            />
           </div>
           <div hidden={page !== "wordstat"} className="page">
             <Wordstat
@@ -343,6 +403,15 @@ export default function App() {
           <div hidden={page !== "settings"} className="page">
             <Settings system={system} refresh={refresh} />
           </div>
+          {session.account?.role === "admin" && (
+            <div hidden={page !== "accounts"} className="page">
+              <Accounts
+                active={page === "accounts"}
+                currentId={session.account.id!}
+                onIdentityChange={checkSession}
+              />
+            </div>
+          )}
         </main>
         <footer className="app-footer">
           <span>boykov.services</span>
@@ -378,6 +447,9 @@ export default function App() {
           <h2>{selectedJob.title}</h2>
           <p className="muted">{dateTime(selectedJob.createdAt)} · МСК</p>
           <Status value={selectedJob.status} />
+          {selectedJob.createdBy && (
+            <p className="small muted">Создано: {selectedJob.createdBy.name}</p>
+          )}
           {(jobError || selectedJob.error) && (
             <Notice tone="error">{jobError || selectedJob.error}</Notice>
           )}
