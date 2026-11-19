@@ -7,7 +7,9 @@ import {
   Inbox,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import { api, ApiError, dateTime, errorText, post } from "../api";
@@ -31,6 +33,7 @@ type Site = {
   webhookError: string | null;
   connection: string;
   stats: Record<State, number>;
+  trashed: number;
   pending: number;
   rejected: number;
   scanOk: boolean;
@@ -55,6 +58,7 @@ type Lead = {
   status: State;
   note: string;
   version: number;
+  deletedAt: string | null;
 };
 type Detail = {
   lead: Lead;
@@ -63,9 +67,22 @@ type Detail = {
     status: State;
     note: string;
     version: number;
+    action: "update" | "delete" | "restore";
   }[];
 };
-type Result = { leads: Lead[]; total: number; page: number; pages: number };
+type Result = {
+  leads: Lead[];
+  total: number;
+  page: number;
+  pages: number;
+  trashTotal: number;
+};
+type TrashAction = {
+  requestId: string;
+  action: "delete" | "restore";
+  leads: { id: string; version: number }[];
+  fromDetail: boolean;
+};
 type Change = {
   requestId: string;
   version: number;
@@ -92,7 +109,7 @@ const connections: Record<string, string> = {
   webhook_waiting: "Ожидаем проверку Tilda",
 };
 const states: State[] = ["new", "working", "processed"];
-const empty: Result = { leads: [], total: 0, page: 1, pages: 1 };
+const empty: Result = { leads: [], total: 0, page: 1, pages: 1, trashTotal: 0 };
 
 export default function Leads({
   active,
@@ -103,6 +120,15 @@ export default function Leads({
 }) {
   const [sites, setSites] = useState<Site[]>([]),
     [result, setResult] = useState<Result>(empty);
+  const [view, setView] = useState<"inbox" | "trash">("inbox");
+  const [checked, setChecked] = useState<Record<string, number>>({});
+  const [trashAction, setTrashAction] = useState<TrashAction | null>(null);
+  const [trashBusy, setTrashBusy] = useState(false),
+    [trashError, setTrashError] = useState(""),
+    [trashConflict, setTrashConflict] = useState(false),
+    [trashUncertain, setTrashUncertain] = useState(false),
+    [feedback, setFeedback] = useState("");
+  const trashDialog = useRef<HTMLDialogElement>(null);
   const [site, setSite] = useState(""),
     [status, setStatus] = useState(""),
     [order, setOrder] = useState("newest"),
@@ -148,7 +174,7 @@ export default function Leads({
     try {
       const [data, sources] = await Promise.all([
         api<Result>(
-          `/leads?${new URLSearchParams({ site, status, order, q: query, page: String(page) })}`,
+          `/leads?${new URLSearchParams({ site, status, order, view, q: query, page: String(page) })}`,
         ),
         api<{ sites: Site[] }>("/leads/sites"),
       ]);
@@ -158,6 +184,13 @@ export default function Leads({
         return;
       }
       setResult(data);
+      setChecked((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) =>
+            data.leads.some((lead) => lead.id === id),
+          ),
+        ),
+      );
       setSites(sources.sites);
       setLoaded(true);
       setError("");
@@ -167,7 +200,15 @@ export default function Leads({
     } finally {
       if (sequence === listSequence.current) setLoading(false);
     }
-  }, [site, status, order, query, page]);
+  }, [site, status, order, view, query, page]);
+  useEffect(() => {
+    setChecked({});
+  }, [site, status, order, view, query, page]);
+  useEffect(() => {
+    if (active && trashAction && !trashDialog.current?.open)
+      trashDialog.current?.showModal();
+    if (!active) trashDialog.current?.close();
+  }, [active, trashAction]);
   useEffect(() => {
     if (!active) return;
     void load();
@@ -232,7 +273,7 @@ export default function Leads({
     pending.current = null;
   }
   async function save() {
-    if (!detail || saving) return;
+    if (!detail || detail.lead.deletedAt || saving) return;
     pending.current ??= {
       requestId: crypto.randomUUID(),
       version: detail.lead.version,
@@ -266,6 +307,69 @@ export default function Leads({
     } finally {
       setSaving(false);
     }
+  }
+  function requestTrash(
+    leads: { id: string; version: number }[],
+    action: "delete" | "restore",
+    fromDetail = false,
+  ) {
+    if (!leads.length || trashBusy) return;
+    setTrashError("");
+    setTrashConflict(false);
+    setTrashUncertain(false);
+    setTrashAction({
+      requestId: crypto.randomUUID(),
+      action,
+      leads,
+      fromDetail,
+    });
+  }
+  async function commitTrash() {
+    if (!trashAction || trashBusy || trashConflict) return;
+    setTrashBusy(true);
+    setTrashError("");
+    try {
+      await post("/leads/trash", {
+        requestId: trashAction.requestId,
+        action: trashAction.action,
+        leads: trashAction.leads,
+      });
+      setFeedback(
+        trashAction.action === "delete"
+          ? `Перемещено в корзину: ${trashAction.leads.length}. Заявки можно восстановить.`
+          : `Восстановлено заявок: ${trashAction.leads.length}.`,
+      );
+      if (trashAction.fromDetail) closeLead(true);
+      setChecked({});
+      setTrashAction(null);
+      setTrashUncertain(false);
+      void load();
+      onChange();
+    } catch (err) {
+      const unknown = !(err instanceof ApiError) || err.status >= 500;
+      setTrashUncertain(unknown);
+      setTrashConflict(!unknown);
+      setTrashError(
+        unknown
+          ? "Подтверждение не получено. Повторите операцию: она будет выполнена один раз."
+          : errorText(err),
+      );
+    } finally {
+      setTrashBusy(false);
+    }
+  }
+  function closeTrash(refresh = false) {
+    if (trashBusy) return;
+    if (trashUncertain)
+      setFeedback(
+        "Подтверждение операции не получено. Проверьте входящие и корзину после обновления.",
+      );
+    if (refresh) {
+      setChecked({});
+      void load();
+      if (trashAction?.fromDetail && selected) void loadDetail(selected);
+    }
+    setTrashAction(null);
   }
   function openConnection(value: Site | "new") {
     setConnectSite(value);
@@ -308,14 +412,40 @@ export default function Leads({
   const problematic = sites.filter((s) =>
     ["offline", "attention"].includes(s.connection),
   );
+  const checkedLeads = Object.entries(checked).map(([id, version]) => ({
+    id,
+    version,
+  }));
+  const allChecked =
+    result.leads.length > 0 &&
+    result.leads.every((lead) => checked[lead.id] !== undefined);
+  const detailDirty = Boolean(
+    detail && (note !== detail.lead.note || draftStatus !== detail.lead.status),
+  );
   return (
     <>
       <PageHead
         eyebrow="ОТДЕЛ ПРОДАЖ"
-        title="Заявки"
+        title={view === "trash" ? "Корзина заявок" : "Заявки"}
         description="Обращения со всех сайтов. Контакты, история и следующий шаг — рядом."
       >
         <div className="button-row">
+          <button
+            className="button secondary"
+            aria-pressed={view === "trash"}
+            onClick={() => {
+              setView(view === "trash" ? "inbox" : "trash");
+              setSite("");
+              setStatus("");
+              setSearch("");
+              setQuery("");
+              setPage(1);
+              setFeedback("");
+            }}
+          >
+            {view === "trash" ? <Inbox size={16} /> : <Trash2 size={16} />}
+            {view === "trash" ? "К заявкам" : `Корзина · ${result.trashTotal}`}
+          </button>
           <button
             className="button secondary"
             onClick={() => void load()}
@@ -333,6 +463,14 @@ export default function Leads({
           </button>
         </div>
       </PageHead>
+      {feedback && (
+        <Notice>
+          {feedback}
+          <button className="text-button" onClick={() => setFeedback("")}>
+            Скрыть
+          </button>
+        </Notice>
+      )}
       {error && (
         <Notice tone="error">
           Не удалось обновить заявки. Показаны последние загруженные данные.{" "}
@@ -346,29 +484,37 @@ export default function Leads({
           журнал отправок на сайтах.
         </Notice>
       )}
-      <section className="leads-stats" aria-label="Статусы заявок">
-        {states.map((state, index) => (
-          <button
-            key={state}
-            className={`leads-stat leads-stat-${state} ${status === state ? "selected" : ""}`}
-            aria-pressed={status === state}
-            onClick={() => {
-              setStatus(status === state ? "" : state);
-              setPage(1);
-            }}
-          >
-            <span>{plural[state]}</span>
-            <strong>{totals[index]}</strong>
-            <span>
-              {state === "new"
-                ? "Ждут первого контакта"
-                : state === "working"
-                  ? "Продолжаем общение"
-                  : "Сохранены в истории"}
-            </span>
-          </button>
-        ))}
-      </section>
+      {view === "inbox" && (
+        <section className="leads-stats" aria-label="Статусы заявок">
+          {states.map((state, index) => (
+            <button
+              key={state}
+              className={`leads-stat leads-stat-${state} ${status === state ? "selected" : ""}`}
+              aria-pressed={status === state}
+              onClick={() => {
+                setStatus(status === state ? "" : state);
+                setPage(1);
+              }}
+            >
+              <span>{plural[state]}</span>
+              <strong>{totals[index]}</strong>
+              <span>
+                {state === "new"
+                  ? "Ждут первого контакта"
+                  : state === "working"
+                    ? "Продолжаем общение"
+                    : "Сохранены в истории"}
+              </span>
+            </button>
+          ))}
+        </section>
+      )}
+      {view === "trash" && (
+        <Notice>
+          Здесь хранятся удалённые заявки. Восстановление вернёт их во входящие
+          с прежним статусом и комментарием.
+        </Notice>
+      )}
       <section className="leads-sources" aria-label="Сайты">
         <button
           className={`leads-source leads-all ${site === "" ? "selected" : ""}`}
@@ -383,7 +529,12 @@ export default function Leads({
             <b>Все сайты</b>
             <small>Всего сайтов: {sites.length}</small>
           </span>
-          <strong>{sites.reduce((sum, s) => sum + s.stats.new, 0)}</strong>
+          <strong>
+            {sites.reduce(
+              (sum, s) => sum + (view === "trash" ? s.trashed : s.stats.new),
+              0,
+            )}
+          </strong>
         </button>
         {sites.map((source) => (
           <div
@@ -403,7 +554,9 @@ export default function Leads({
                 <b>{source.name}</b>
                 <small>{source.host}</small>
               </span>
-              <strong title="Новых заявок">{source.stats.new}</strong>
+              <strong title={view === "trash" ? "В корзине" : "Новых заявок"}>
+                {view === "trash" ? source.trashed : source.stats.new}
+              </strong>
             </button>
             <button
               className={`leads-connection connection-${source.connection}`}
@@ -416,7 +569,10 @@ export default function Leads({
           </div>
         ))}
       </section>
-      <section className="panel leads-panel" aria-label="Входящие заявки">
+      <section
+        className="panel leads-panel"
+        aria-label={view === "trash" ? "Заявки в корзине" : "Входящие заявки"}
+      >
         <div className="leads-toolbar">
           <label className="leads-search">
             <Search size={17} />
@@ -460,6 +616,39 @@ export default function Leads({
             </select>
           </label>
         </div>
+        {checkedLeads.length > 0 && (
+          <div
+            className="leads-selection"
+            role="region"
+            aria-label="Действия с выбранными заявками"
+          >
+            <span>Выбрано: {checkedLeads.length} · на этой странице</span>
+            <div className="button-row">
+              <button
+                className={`button secondary ${view === "inbox" ? "lead-delete" : ""}`}
+                disabled={loading}
+                onClick={() =>
+                  requestTrash(
+                    checkedLeads,
+                    view === "trash" ? "restore" : "delete",
+                  )
+                }
+              >
+                {view === "trash" ? (
+                  <RotateCcw size={16} />
+                ) : (
+                  <Trash2 size={16} />
+                )}
+                {view === "trash"
+                  ? "Восстановить выбранные"
+                  : "Удалить выбранные"}
+              </button>
+              <button className="text-button" onClick={() => setChecked({})}>
+                Снять выбор
+              </button>
+            </div>
+          </div>
+        )}
         {!loaded && loading ? (
           <Loading />
         ) : result.leads.length ? (
@@ -467,6 +656,27 @@ export default function Leads({
             <table className="events leads-table">
               <thead>
                 <tr>
+                  <th className="leads-check-cell">
+                    <input
+                      type="checkbox"
+                      className="leads-checkbox"
+                      aria-label="Выбрать все заявки на этой странице"
+                      checked={allChecked}
+                      disabled={loading}
+                      onChange={(e) =>
+                        setChecked(
+                          e.target.checked
+                            ? Object.fromEntries(
+                                result.leads.map((lead) => [
+                                  lead.id,
+                                  lead.version,
+                                ]),
+                              )
+                            : {},
+                        )
+                      }
+                    />
+                  </th>
                   <th>Клиент</th>
                   <th>Сайт / услуга</th>
                   <th>Поступила · МСК</th>
@@ -479,6 +689,23 @@ export default function Leads({
               <tbody>
                 {result.leads.map((lead) => (
                   <tr key={lead.id}>
+                    <td className="leads-check-cell">
+                      <input
+                        type="checkbox"
+                        className="leads-checkbox"
+                        aria-label={`Выбрать заявку ${lead.name || lead.phone || lead.email || lead.eventId}`}
+                        checked={checked[lead.id] !== undefined}
+                        disabled={loading}
+                        onChange={(e) =>
+                          setChecked((current) => {
+                            const next = { ...current };
+                            if (e.target.checked) next[lead.id] = lead.version;
+                            else delete next[lead.id];
+                            return next;
+                          })
+                        }
+                      />
+                    </td>
                     <td>
                       <button
                         className="task-title"
@@ -524,14 +751,18 @@ export default function Leads({
         ) : (
           <Empty
             title={
-              search || site || status
-                ? "Заявок по этим условиям нет"
-                : "Здесь будут обращения клиентов"
+              view === "trash"
+                ? "В корзине нет заявок по этим условиям"
+                : search || site || status
+                  ? "Заявок по этим условиям нет"
+                  : "Здесь будут обращения клиентов"
             }
             text={
-              sites.some((s) => s.configured)
-                ? "Новые заявки появятся после доставки с подключённых сайтов. Статусы подключений указаны выше."
-                : "Настройте подключение сайтов. После этого обращения из форм будут появляться в этом разделе."
+              view === "trash"
+                ? "Удалённые заявки будут доступны здесь для восстановления."
+                : sites.some((s) => s.configured)
+                  ? "Новые заявки появятся после доставки с подключённых сайтов. Статусы подключений указаны выше."
+                  : "Настройте подключение сайтов. После этого обращения из форм будут появляться в этом разделе."
             }
           />
         )}
@@ -620,6 +851,39 @@ export default function Leads({
                 {selectedSite?.name} · {dateTime(detail.lead.createdAt, true)} ·
                 МСК
               </p>
+              {detail.lead.deletedAt && (
+                <Notice>
+                  В корзине с {dateTime(detail.lead.deletedAt, true)} · МСК. Для
+                  изменения статуса или комментария восстановите заявку.
+                </Notice>
+              )}
+              <div className="lead-trash-actions">
+                <button
+                  className={`button secondary ${detail.lead.deletedAt ? "" : "lead-delete"}`}
+                  disabled={saving || uncertain || detailDirty}
+                  onClick={() =>
+                    requestTrash(
+                      [detail.lead],
+                      detail.lead.deletedAt ? "restore" : "delete",
+                      true,
+                    )
+                  }
+                >
+                  {detail.lead.deletedAt ? (
+                    <RotateCcw size={16} />
+                  ) : (
+                    <Trash2 size={16} />
+                  )}
+                  {detail.lead.deletedAt
+                    ? "Восстановить заявку"
+                    : "Удалить заявку"}
+                </button>
+                {detailDirty && (
+                  <span className="small muted">
+                    Сохраните изменения перед удалением.
+                  </span>
+                )}
+              </div>
               <div className="lead-contacts">
                 {detail.lead.phone && (
                   <a href={`tel:${detail.lead.phone.replace(/[^\d+]/g, "")}`}>
@@ -684,7 +948,9 @@ export default function Leads({
                   Статус
                   <select
                     value={draftStatus}
-                    disabled={saving || uncertain}
+                    disabled={
+                      saving || uncertain || Boolean(detail.lead.deletedAt)
+                    }
                     onChange={(e) => setDraftStatus(e.target.value as State)}
                   >
                     {states.map((s) => (
@@ -700,7 +966,9 @@ export default function Leads({
                     rows={4}
                     value={note}
                     maxLength={12000}
-                    disabled={saving || uncertain}
+                    disabled={
+                      saving || uncertain || Boolean(detail.lead.deletedAt)
+                    }
                     onChange={(e) => setNote(e.target.value)}
                     placeholder="Результат звонка, договорённости и следующий шаг"
                   />
@@ -709,6 +977,7 @@ export default function Leads({
                   className="button primary"
                   disabled={
                     saving ||
+                    Boolean(detail.lead.deletedAt) ||
                     (!uncertain &&
                       note === detail.lead.note &&
                       draftStatus === detail.lead.status)
@@ -730,7 +999,11 @@ export default function Leads({
                     <li key={h.version}>
                       <span className={`status lead-status-${h.status}`}>
                         <i />
-                        {labels[h.status]}
+                        {h.action === "delete"
+                          ? "Перемещена в корзину"
+                          : h.action === "restore"
+                            ? "Восстановлена"
+                            : labels[h.status]}
                       </span>
                       <time>{dateTime(h.createdAt, true)} · МСК</time>
                       {h.note && <p>{h.note}</p>}
@@ -746,6 +1019,78 @@ export default function Leads({
               </p>
             </>
           )}
+        </dialog>
+      )}
+      {trashAction && (
+        <dialog
+          ref={trashDialog}
+          className="job-dialog lead-trash-dialog"
+          aria-labelledby="lead-trash-title"
+          onCancel={(e) => {
+            e.preventDefault();
+            closeTrash(true);
+          }}
+        >
+          <div className="dialog-heading">
+            <span className="eyebrow">ЗАЯВКИ</span>
+            <button
+              className="icon-button"
+              aria-label="Закрыть подтверждение"
+              disabled={trashBusy}
+              onClick={() => closeTrash(true)}
+            >
+              <X size={20} />
+            </button>
+          </div>
+          <h2 id="lead-trash-title">
+            {trashAction.action === "delete"
+              ? trashAction.leads.length === 1
+                ? "Удалить заявку?"
+                : "Удалить выбранные заявки?"
+              : trashAction.leads.length === 1
+                ? "Восстановить заявку?"
+                : "Восстановить выбранные заявки?"}
+          </h2>
+          <p>
+            Количество заявок: <strong>{trashAction.leads.length}</strong>.
+          </p>
+          <p className="muted">
+            {trashAction.action === "delete"
+              ? "Заявки исчезнут из входящих и счётчиков. Они останутся в корзине: при необходимости их можно восстановить."
+              : "Заявки вернутся во входящие с сохранёнными статусами, комментариями и историей."}
+          </p>
+          {trashError && <Notice tone="error">{trashError}</Notice>}
+          <div className="button-row">
+            <button
+              className="button secondary"
+              disabled={trashBusy}
+              onClick={() => closeTrash(true)}
+            >
+              {trashConflict || trashUncertain
+                ? "Закрыть и обновить список"
+                : "Отмена"}
+            </button>
+            {!trashConflict && (
+              <button
+                className={`button ${trashAction.action === "delete" ? "lead-delete-confirm" : "primary"}`}
+                disabled={trashBusy}
+                onClick={() => void commitTrash()}
+              >
+                {trashAction.action === "delete" ? (
+                  <Trash2 size={16} />
+                ) : (
+                  <RotateCcw size={16} />
+                )}
+                {trashBusy
+                  ? "Выполняем…"
+                  : trashUncertain
+                    ? "Повторить операцию"
+                    : trashAction.action === "delete"
+                      ? "Переместить в корзину"
+                      : "Восстановить"}
+              </button>
+            )}
+          </div>
         </dialog>
       )}
       {connectSite && (

@@ -126,6 +126,25 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
   ])
     if (!siteColumns.has(name))
       db.exec(`ALTER TABLE sales_sites ADD COLUMN ${name} ${definition}`);
+  if (
+    !db
+      .prepare("PRAGMA table_info(sales_leads)")
+      .all()
+      .some((c) => c.name === "deleted_at")
+  )
+    db.exec("ALTER TABLE sales_leads ADD COLUMN deleted_at TEXT");
+  if (
+    !db
+      .prepare("PRAGMA table_info(sales_history)")
+      .all()
+      .some((c) => c.name === "action")
+  )
+    db.exec(
+      "ALTER TABLE sales_history ADD COLUMN action TEXT NOT NULL DEFAULT 'update'",
+    );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS sales_leads_deleted ON sales_leads(deleted_at,created_at DESC)",
+  );
   const iso = () => new Date(now()).toISOString();
   const seed = db.prepare(
     "INSERT OR IGNORE INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)",
@@ -175,6 +194,7 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
       version: row.version,
       receivedAt: row.received_at,
       updatedAt: row.updated_at,
+      deletedAt: row.deleted_at,
     };
   }
   function get(id) {
@@ -315,9 +335,14 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     res.json({ ok: true, siteId: site.id });
   });
   function sites() {
+    const trashed = db
+      .prepare(
+        "SELECT site_id,count(*) AS count FROM sales_leads WHERE deleted_at IS NOT NULL GROUP BY site_id",
+      )
+      .all();
     const counts = db
       .prepare(
-        "SELECT site_id,status,count(*) AS count FROM sales_leads GROUP BY site_id,status",
+        "SELECT site_id,status,count(*) AS count FROM sales_leads WHERE deleted_at IS NULL GROUP BY site_id,status",
       )
       .all();
     return db
@@ -358,6 +383,8 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           webhookError: row.webhook_error,
           connection,
           stats,
+          trashed:
+            trashed.find((count) => count.site_id === row.id)?.count || 0,
           lastReceivedAt: row.last_received_at,
           lastHeartbeatAt: row.last_heartbeat_at,
           pending: row.pending_count,
@@ -387,6 +414,96 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
     };
   }
   function register(app) {
+    app.post(
+      "/api/leads/trash",
+      wrap((req, res) => {
+        const { requestId, action, leads } = req.body ?? {};
+        const validId = (id) =>
+          typeof id === "string" && /^[a-f0-9-]{36}$/.test(id);
+        if (
+          !validId(requestId) ||
+          !["delete", "restore"].includes(action) ||
+          !Array.isArray(leads) ||
+          leads.length < 1 ||
+          leads.length > 50 ||
+          leads.some(
+            (lead) =>
+              !validId(lead?.id) ||
+              !Number.isSafeInteger(lead.version) ||
+              lead.version < 1,
+          ) ||
+          new Set(leads.map((lead) => lead.id)).size !== leads.length
+        )
+          throw bad("Выберите от 1 до 50 заявок и обновите их версии.");
+        const targets = leads
+          .map(({ id, version }) => ({ id, version }))
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const operation = `trash:${action}`;
+        const hash = digest(JSON.stringify({ action, leads: targets }));
+        const duplicate = transaction(db, () => {
+          const previous = db
+            .prepare("SELECT * FROM sales_actions WHERE request_id=?")
+            .get(requestId);
+          if (previous) {
+            if (
+              previous.lead_id !== operation ||
+              previous.payload_hash !== hash
+            )
+              throw bad("Идентификатор изменения уже использован.", 409);
+            return true;
+          }
+          const updatedAt = iso();
+          for (const target of targets) {
+            const lead = get(target.id);
+            if (
+              lead.version !== target.version ||
+              Boolean(lead.deletedAt) !== (action === "restore")
+            )
+              throw bad(
+                "Одну из заявок уже изменили. Обновите список и выберите заявки заново.",
+                409,
+              );
+            const changed = db
+              .prepare(
+                "UPDATE sales_leads SET deleted_at=?,version=version+1,updated_at=? WHERE id=? AND version=?",
+              )
+              .run(
+                action === "delete" ? updatedAt : null,
+                updatedAt,
+                target.id,
+                target.version,
+              );
+            if (changed.changes !== 1)
+              throw bad(
+                "Не удалось изменить заявку. Обновите список и повторите операцию.",
+                409,
+              );
+            db.prepare(
+              "INSERT INTO sales_history(lead_id,created_at,status,note,version,action) VALUES(?,?,?,?,?,?)",
+            ).run(
+              target.id,
+              updatedAt,
+              lead.status,
+              lead.note,
+              target.version + 1,
+              action,
+            );
+          }
+          db.prepare("INSERT INTO sales_actions VALUES(?,?,?)").run(
+            requestId,
+            operation,
+            hash,
+          );
+          return false;
+        });
+        res.json({
+          ok: true,
+          action,
+          ids: targets.map((lead) => lead.id),
+          duplicate,
+        });
+      }),
+    );
     app.get(
       "/api/leads/sites",
       wrap((req, res) => res.json({ sites: sites() })),
@@ -427,14 +544,18 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           status = text(req.query.status, 20),
           q = text(req.query.q, 200).toLocaleLowerCase("ru");
         const order = req.query.order ?? "newest",
-          page = req.query.page ?? "1";
+          page = req.query.page ?? "1",
+          view = req.query.view ?? "inbox";
         if (
           !["newest", "oldest", "status"].includes(order) ||
+          !["inbox", "trash"].includes(view) ||
           !/^[1-9]\d{0,5}$/.test(page) ||
           (status && !statuses.includes(status))
         )
           throw bad("Некорректный фильтр заявок.");
-        const where = [],
+        const where = [
+            view === "trash" ? "deleted_at IS NOT NULL" : "deleted_at IS NULL",
+          ],
           args = [];
         if (site) {
           where.push("site_id=?");
@@ -469,6 +590,11 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           total,
           page: Number(page),
           pages: Math.max(1, Math.ceil(total / 50)),
+          trashTotal: db
+            .prepare(
+              "SELECT count(*) AS count FROM sales_leads WHERE deleted_at IS NOT NULL",
+            )
+            .get().count,
         });
       }),
     );
@@ -479,7 +605,7 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
           lead: get(req.params.id),
           history: db
             .prepare(
-              "SELECT created_at AS createdAt,status,note,version FROM sales_history WHERE lead_id=? ORDER BY id DESC",
+              "SELECT created_at AS createdAt,status,note,version,action FROM sales_history WHERE lead_id=? ORDER BY id DESC",
             )
             .all(req.params.id),
         }),
@@ -512,7 +638,8 @@ export function createLeadsModule(db, { now = Date.now } = {}) {
               throw bad("Идентификатор изменения уже использован.", 409);
             return;
           }
-          get(req.params.id);
+          if (get(req.params.id).deletedAt)
+            throw bad("Заявка в корзине. Сначала восстановите её.", 409);
           const updatedAt = iso();
           if (
             !db

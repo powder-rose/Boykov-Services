@@ -123,7 +123,7 @@ export async function createApp(options) {
       stats: {
         newLeads: db
           .prepare(
-            "SELECT count(*) AS count FROM sales_leads WHERE status='new'",
+            "SELECT count(*) AS count FROM sales_leads WHERE status='new' AND deleted_at IS NULL",
           )
           .get().count,
         documents: jobs.filter(
