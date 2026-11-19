@@ -65,9 +65,10 @@ export async function createApp(options) {
   app.locals.technical = technical;
   app.post("/hooks/technical/sync", technical.webhook);
   technical.registerPushHooks(app);
-  installAuth(app, { ...options, db });
   const statistics = await createStatisticsModule(db, options);
   app.locals.statistics = statistics;
+  app.post("/hooks/statistics/:siteId", statistics.receive);
+  installAuth(app, { ...options, db });
   statistics.register(app);
   leads.register(app);
   technical.registerRoutes(app);
@@ -289,7 +290,7 @@ export async function createApp(options) {
       return res
         .status(413)
         .json({ error: "Допустим один файл размером до 20 МБ." });
-    const status = [400, 403, 404, 409, 413, 415, 422, 429, 503].includes(
+    const status = [400, 401, 403, 404, 409, 413, 415, 422, 429, 503].includes(
       error.status,
     )
       ? error.status

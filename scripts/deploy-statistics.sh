@@ -48,14 +48,16 @@ import { DatabaseSync } from 'node:sqlite';
 const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
 try {
  if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
- for(const table of ['statistics_settings','statistics_cache'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('STATISTICS_MIGRATION_MISSING');
+ for(const table of ['statistics_native_reports'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('STATISTICS_MIGRATION_MISSING');
 }finally{db.close();}
 const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
 if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
-for(const route of ['/api/statistics/sites','/api/statistics/counters','/api/statistics/report?site=nwd&period=24h']){
+for(const route of ['/api/statistics/sites','/api/statistics/report?site=nwd&period=24h']){
  const response=await fetch('http://127.0.0.1:8787'+route,{signal:AbortSignal.timeout(10000)});
  if(response.status!==401)throw Error('STATISTICS_AUTH_CHECK_FAILED');
 }
+const hook=await fetch('http://127.0.0.1:8787/hooks/statistics/nwd',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+if(hook.status!==401)throw Error('STATISTICS_HOOK_AUTH_FAILED');
 console.log('STATISTICS_MODULE=OK\nSTATISTICS_AUTH=OK');
 VERIFY_STATISTICS
 docker compose ps

@@ -12,7 +12,7 @@ import {
   Settings2,
   X,
 } from "lucide-react";
-import { api, dateTime, errorText, number, post } from "../api";
+import { api, dateTime, errorText, number } from "../api";
 import { Empty, Notice, PageHead } from "../components/Common";
 import "./Statistics.css";
 
@@ -22,12 +22,8 @@ type Site = {
   name: string;
   host: string;
   connected: boolean;
-  settings: {
-    counterIds: string[];
-    articlePrefixes: string[];
-    includeSubdomains: boolean;
-    version: number;
-  };
+  source: { kind: string; label: string } | null;
+  lastSyncedAt: string | null;
 };
 type Point = {
   at: string;
@@ -45,9 +41,8 @@ type Report = {
   error: string | null;
   fetchedAt: string | null;
   checkedAt: string;
-  dataLag: number;
-  sampled: boolean;
-  truncated: boolean;
+  provider: string;
+  leadsOrigin: "native" | "hub";
   totals: {
     visits: number | null;
     views: number | null;
@@ -58,9 +53,6 @@ type Report = {
   sources: { name: string; visits: number }[];
   pages: PageRow[];
   articles: PageRow[];
-  articlePrefixes: string[];
-  leadsSince: string;
-  counterIds: string[];
 };
 const periods: { key: Period; label: string }[] = [
   { key: "24h", label: "24 часа" },
@@ -93,13 +85,15 @@ function TrafficChart({
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   useEffect(() => setSelected(null), [points]);
-  const available = points.length > 0 && points[0].views !== null;
+  const hasViews = points.length > 0 && points[0].views !== null;
+  const hasVisits = points.length > 0 && points[0].visits !== null;
+  const available = hasViews || hasVisits;
   if (!available)
     return (
       <div className="stats-chart-empty">
         <BarChart3 size={32} strokeWidth={1.3} />
         <p>Здесь появится динамика посещаемости</p>
-        <span>После подключения счётчика Яндекс Метрики</span>
+        <span>После подключения статистики сайта</span>
       </div>
     );
   const max = Math.max(
@@ -138,10 +132,10 @@ function TrafficChart({
       <div className="stats-chart-readout" aria-live="polite">
         <span>{labelDate(point.at, hourly)}</span>
         <b>
-          {number(point.views || 0)} <small>просмотров</small>
+          {metric(point.views)} <small>просмотров</small>
         </b>
         <b>
-          {number(point.visits || 0)} <small>визитов</small>
+          {metric(point.visits)} <small>визитов</small>
         </b>
       </div>
       <svg
@@ -193,12 +187,18 @@ function TrafficChart({
             </text>
           </g>
         ))}
-        <polygon
-          className="stats-chart-area"
-          points={`${x(0)},${y(0)} ${line("views")} ${x(points.length - 1)},${y(0)}`}
-        />
-        <polyline className="stats-chart-views" points={line("views")} />
-        <polyline className="stats-chart-visits" points={line("visits")} />
+        {hasViews && (
+          <polygon
+            className="stats-chart-area"
+            points={`${x(0)},${y(0)} ${line("views")} ${x(points.length - 1)},${y(0)}`}
+          />
+        )}
+        {hasViews && (
+          <polyline className="stats-chart-views" points={line("views")} />
+        )}
+        {hasVisits && (
+          <polyline className="stats-chart-visits" points={line("visits")} />
+        )}
         {selected !== null && (
           <g>
             <line
@@ -211,7 +211,7 @@ function TrafficChart({
             <circle
               className="stats-chart-point"
               cx={x(index)}
-              cy={y(point.views || 0)}
+              cy={y(point.views ?? point.visits ?? 0)}
               r={4}
             />
           </g>
@@ -241,90 +241,21 @@ function TrafficChart({
 
 function ConnectionDialog({
   site,
-  oauthConfigured,
   onClose,
-  onChange,
 }: {
   site: Site;
-  oauthConfigured: boolean;
   onClose: () => void;
-  onChange: (close: boolean) => Promise<void>;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null),
-    [token, setToken] = useState(""),
-    [tokenOpen, setTokenOpen] = useState(!oauthConfigured),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  const [ids, setIds] = useState(site.settings.counterIds.join(", ")),
-    [prefixes, setPrefixes] = useState(
-      site.settings.articlePrefixes.join("\n"),
-    ),
-    [subdomains, setSubdomains] = useState(site.settings.includeSubdomains);
-  const [counters, setCounters] = useState<
-    { id: string; name: string; site: string }[]
-  >([]);
+  const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     dialog.current?.showModal();
+    return () => dialog.current?.close();
   }, []);
-  useEffect(() => {
-    setIds(site.settings.counterIds.join(", "));
-    setPrefixes(site.settings.articlePrefixes.join("\n"));
-    setSubdomains(site.settings.includeSubdomains);
-  }, [site.id, site.settings.version]);
-  useEffect(() => {
-    if (!oauthConfigured) return;
-    const c = new AbortController();
-    void api<{ counters: typeof counters }>("/statistics/counters", {
-      signal: c.signal,
-    })
-      .then((r) => setCounters(r.counters))
-      .catch(() => {});
-    return () => c.abort();
-  }, [oauthConfigured, site.settings.version]);
-  async function connect(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await post("/statistics/connection", { token: token.trim() });
-      setToken("");
-      setTokenOpen(false);
-      await onChange(false);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await api(`/statistics/sites/${site.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          counterIds: ids.split(/[\s,;]+/).filter(Boolean),
-          articlePrefixes: prefixes
-            .split(/[\n,;]+/)
-            .map((v) => v.trim())
-            .filter(Boolean),
-          includeSubdomains: subdomains,
-          version: site.settings.version,
-        }),
-      });
-      await onChange(true);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
     <dialog ref={dialog} className="stats-dialog" onCancel={onClose}>
       <div className="stats-dialog-heading">
         <div>
-          <span className="eyebrow">ПОДКЛЮЧЕНИЕ СТАТИСТИКИ</span>
+          <span className="eyebrow">СТАТИСТИКА САЙТА</span>
           <h2>{site.name}</h2>
           <p>{site.host}</p>
         </div>
@@ -336,115 +267,33 @@ function ConnectionDialog({
           <X size={21} />
         </button>
       </div>
-      {error && <Notice tone="error">{error}</Notice>}
-      {oauthConfigured && !tokenOpen && (
-        <div className="stats-token-status">
-          <span>Доступ к Метрике подключён</span>
-          <button className="text-button" onClick={() => setTokenOpen(true)}>
-            Изменить токен
-          </button>
-        </div>
+      <div className="stats-token-form">
+        <h3>{site.source?.label || "Источник ещё не подключён"}</h3>
+        <p>
+          {site.source
+            ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
+            : site.host === "energo-365.ru"
+              ? "Нужно определить плагин статистики WordPress, чтобы подключить его данные вместе с поддоменами."
+              : "Для этого сайта пока нет подключённой выгрузки статистики. Недоступные показатели отмечены прочерком."}
+        </p>
+        <p>
+          {site.lastSyncedAt
+            ? `Последний отчёт: ${dateTime(site.lastSyncedAt)} · Москва`
+            : "Ожидаем первый отчёт сайта."}
+        </p>
+      </div>
+      {site.source && (
+        <p>
+          Инструкции установки синхронизации находятся в архиве обновления.
+          Используется существующее защищённое подключение сайта к разделу
+          «Заявки».
+        </p>
       )}
-      {tokenOpen && (
-        <form onSubmit={connect} className="stats-token-form">
-          <h3>Доступ к Яндекс Метрике</h3>
-          <p>
-            Один токен с правом просмотра для всех доступных вам счётчиков.{" "}
-            <a
-              href="https://yandex.ru/dev/metrika/ru/intro/authorization"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Как получить токен
-            </a>
-          </p>
-          <label>
-            Токен Метрики
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              required
-              placeholder="Вставьте токен"
-            />
-            <small>
-              Токен сохраняется на сервере. Пароль Яндекса вводить не нужно.
-            </small>
-          </label>
-          <button className="button secondary" disabled={busy || !token.trim()}>
-            Подключить доступ
-          </button>
-        </form>
-      )}
-      <form onSubmit={save} className="stats-connection-form">
-        <h3>Счётчики и материалы сайта</h3>
-        <label>
-          Номера счётчиков
-          <input
-            value={ids}
-            onChange={(e) => setIds(e.target.value)}
-            placeholder="Например, 114341229"
-            required
-            disabled={!oauthConfigured}
-          />
-          <small>
-            Через запятую. Для поддоменов можно указать несколько счётчиков. Два
-            счётчика на одной странице могут дублировать данные.
-          </small>
-        </label>
-        {counters.length > 0 && (
-          <details className="stats-counter-list">
-            <summary>Доступные счётчики · {counters.length}</summary>
-            <ul>
-              {counters.map((c) => (
-                <li key={c.id}>
-                  <span>
-                    {c.name}
-                    <small>{c.site}</small>
-                  </span>
-                  <code>{c.id}</code>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-        <label className="stats-checkbox">
-          <input
-            type="checkbox"
-            checked={subdomains}
-            onChange={(e) => setSubdomains(e.target.checked)}
-            disabled={!oauthConfigured}
-          />
-          Учитывать все поддомены этого сайта
-        </label>
-        <label>
-          Разделы статей
-          <textarea
-            rows={3}
-            value={prefixes}
-            onChange={(e) => setPrefixes(e.target.value)}
-            placeholder={"/blog/\n/articles/"}
-            disabled={!oauthConfigured}
-          />
-          <small>
-            По одному пути на строку. Считаются страницы вида
-            /blog/название-статьи/. Пустое поле оставляет статистику статей без
-            подключения.
-          </small>
-        </label>
-        <div className="stats-dialog-actions">
-          <button type="button" className="button secondary" onClick={onClose}>
-            Закрыть
-          </button>
-          <button
-            className="button primary"
-            disabled={busy || !oauthConfigured}
-          >
-            {busy ? "Проверяем…" : "Сохранить подключение"}
-          </button>
-        </div>
-      </form>
+      <div className="stats-dialog-actions">
+        <button className="button primary" onClick={onClose}>
+          Понятно
+        </button>
+      </div>
     </dialog>
   );
 }
@@ -453,7 +302,6 @@ export default function Statistics({ active }: { active: boolean }) {
   const [sites, setSites] = useState<Site[]>([]),
     [selected, setSelected] = useState(""),
     [period, setPeriod] = useState<Period>("24h"),
-    [oauth, setOauth] = useState(false),
     [canConfigure, setCanConfigure] = useState(false);
   const [report, setReport] = useState<Report | null>(null),
     [error, setError] = useState(""),
@@ -467,11 +315,9 @@ export default function Statistics({ active }: { active: boolean }) {
     try {
       const data = await api<{
         sites: Site[];
-        oauthConfigured: boolean;
         canConfigure: boolean;
       }>("/statistics/sites");
       setSites(data.sites);
-      setOauth(data.oauthConfigured);
       setCanConfigure(data.canConfigure);
       setSelected((value) =>
         data.sites.some((s) => s.id === value)
@@ -505,6 +351,17 @@ export default function Statistics({ active }: { active: boolean }) {
         );
         if (!disposed && sequence.current === own) {
           setReport(result);
+          setSites((current) =>
+            current.map((s) =>
+              s.id === result.site.id
+                ? {
+                    ...s,
+                    connected: result.status !== "unconfigured",
+                    lastSyncedAt: result.fetchedAt,
+                  }
+                : s,
+            ),
+          );
           setError("");
         }
       } catch (e) {
@@ -540,7 +397,7 @@ export default function Statistics({ active }: { active: boolean }) {
         : null;
   const hourly = period === "24h",
     connected =
-      visible?.totals.views !== null && visible?.totals.views !== undefined;
+      visible?.totals.visits !== null && visible?.totals.visits !== undefined;
   const metricCards = [
     {
       key: "visits" as const,
@@ -554,23 +411,30 @@ export default function Statistics({ active }: { active: boolean }) {
       label: "Просмотры страниц",
       icon: Eye,
       tone: "white",
-      note: "По данным Яндекс Метрики",
+      note:
+        visible?.totals.views === null
+          ? "Источник не ведёт этот показатель"
+          : "По данным админки сайта",
     },
     {
       key: "articles" as const,
       label: "Просмотры статей",
       icon: Newspaper,
       tone: "pink",
-      note: visible?.articlePrefixes.length
-        ? "Материалы в разделах сайта"
-        : "Раздел статей не указан",
+      note:
+        visible?.totals.articles === null
+          ? "Источник не ведёт этот показатель"
+          : "По сохранённым просмотрам материалов",
     },
     {
       key: "leads" as const,
       label: "Заявки с сайта",
       icon: Inbox,
       tone: "white",
-      note: "Получены в Boykov Services",
+      note:
+        visible?.leadsOrigin === "native"
+          ? "По данным админки сайта"
+          : "Получены в Boykov Services",
     },
   ];
   const shownSources = visible?.sources.slice(0, 6) || [],
@@ -663,10 +527,9 @@ export default function Statistics({ active }: { active: boolean }) {
           </section>
           <div className="stats-report-meta">
             <div>
-              <span className="stats-provider">Яндекс Метрика</span>
-              {site?.settings.includeSubdomains && (
-                <span>Включая поддомены</span>
-              )}
+              <span className="stats-provider">
+                {visible?.provider || site?.source?.label || "Статистика сайта"}
+              </span>
               <span>
                 {visible
                   ? `${labelDate(visible.period.from, hourly)} — ${labelDate(visible.period.to, hourly)}`
@@ -687,8 +550,8 @@ export default function Statistics({ active }: { active: boolean }) {
               <div>
                 <b>Подключите статистику {site?.host}</b>
                 <p>
-                  Посещаемость появится после подключения Метрики. Обращения уже
-                  считаются по данным сервиса.
+                  Посещаемость появится после первого отчёта из админки сайта.
+                  Пока отображаются заявки, поступившие в Boykov Services.
                 </p>
               </div>
               {canConfigure ? (
@@ -696,7 +559,7 @@ export default function Statistics({ active }: { active: boolean }) {
                   className="button primary"
                   onClick={() => setSettingsOpen(true)}
                 >
-                  Подключить Метрику
+                  Как подключить
                 </button>
               ) : (
                 <span>Подключение выполняет администратор</span>
@@ -878,11 +741,13 @@ export default function Statistics({ active }: { active: boolean }) {
                   </div>
                 ) : (
                   <p className="stats-table-empty">
-                    {section.articles && !visible?.articlePrefixes.length
-                      ? "Укажите разделы статей в настройках этого сайта, чтобы видеть просмотры материалов."
-                      : connected
-                        ? "За выбранный период просмотров пока нет."
-                        : "Данные появятся после подключения Метрики."}
+                    {section.articles && visible?.totals.articles === null
+                      ? "В источнике пока нет отдельного учёта просмотров статей."
+                      : !section.articles && visible?.totals.views === null
+                        ? "Источник не ведёт отдельный учёт просмотров страниц."
+                        : connected
+                          ? "За выбранный период просмотров пока нет."
+                          : "Данные появятся после подключения статистики сайта."}
                   </p>
                 )}
               </section>
@@ -892,43 +757,22 @@ export default function Statistics({ active }: { active: boolean }) {
             <CircleHelp size={18} />
             <div>
               <p>
-                Проверка обновлений — каждые 30 секунд. Полный отчёт обновляется{" "}
-                {hourly ? "раз в две минуты" : "раз в десять минут"}. Все
-                показатели относятся к указанному интервалу. Метрика может
-                передавать новые данные с задержкой.
+                Проверка обновлений — каждые 30 секунд. Сайты передают отчёты
+                раз в минуту. Все показатели относятся к указанному интервалу по
+                московскому времени.
               </p>
               <p>
-                Заявки учитываются вместе с корзиной. История обращений до
-                подключения сайта может быть неполной. Просмотры статей
-                считаются по указанным разделам.
+                {visible?.leadsOrigin === "native"
+                  ? "Заявки и посещаемость берутся из админки сайта с её правилами подсчёта. История ограничена сохранёнными на сайте данными."
+                  : "До подключения статистики учитываются только заявки центрального сервиса, включая корзину."}{" "}
+                Прочерк означает, что источник не передаёт показатель.
               </p>
-              {visible?.sampled && (
-                <p>
-                  Метрика использовала выборку: показатели посещаемости
-                  оценочные.
-                </p>
-              )}
-              {visible?.truncated && (
-                <p>
-                  Таблицы ограничены наиболее популярными адресами; суммарные
-                  показатели рассчитаны за весь период.
-                </p>
-              )}
             </div>
           </footer>
         </>
       )}
       {settingsOpen && site && canConfigure && (
-        <ConnectionDialog
-          site={site}
-          oauthConfigured={oauth}
-          onClose={() => setSettingsOpen(false)}
-          onChange={async (close) => {
-            await loadSites();
-            setRevision((r) => r + 1);
-            if (close) setSettingsOpen(false);
-          }}
-        />
+        <ConnectionDialog site={site} onClose={() => setSettingsOpen(false)} />
       )}
     </>
   );
