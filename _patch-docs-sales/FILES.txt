@@ -1,0 +1,13 @@
+README.md
+docs/BOYKOVDOCS-SALES.md
+integrations/docs-customers/sales-agent.mjs
+scripts/deploy-docs-customers.sh
+scripts/install-docs-sales.sh
+server/app.js
+server/modules/docs-customers/index.js
+server/modules/docs-sales/index.js
+shared/docs-sales.js
+src/pages/DocsCustomers.tsx
+src/pages/DocsSales.css
+src/pages/DocsSales.tsx
+tests/docs-sales.test.js

@@ -23,6 +23,7 @@ import {
 } from "../../shared/docs-customers.js";
 import type { CompanyField } from "../../shared/docs-customers.js";
 import "./DocsCustomers.css";
+import DocsSales from "./DocsSales";
 type Outcome = keyof typeof DOCS_CALL_OUTCOMES;
 type Company = Record<CompanyField, string> & { savedAt: string };
 type Call = {
@@ -137,6 +138,8 @@ export default function DocsCustomers({
   active: boolean;
   account?: AccountIdentity;
 }) {
+  const [section, setSection] = useState<"customers" | "sales">("customers"),
+    [salesRefresh, setSalesRefresh] = useState(0);
   const [listing, setListing] = useState<Listing | null>(null),
     [connection, setConnection] = useState<Connection | null>(null),
     [error, setError] = useState("");
@@ -186,7 +189,7 @@ export default function DocsCustomers({
     }
   }, [debounced, status, sort, page, company, mine, view, updatedOnly]);
   useEffect(() => {
-    if (!active) return;
+    if (!active || section !== "customers") return;
     void refresh();
     const timer = setInterval(() => {
       if (!document.hidden) void refresh();
@@ -195,7 +198,7 @@ export default function DocsCustomers({
       clearInterval(timer);
       generation.current++;
     };
-  }, [active, refresh]);
+  }, [active, refresh, section]);
   useEffect(() => {
     if (!active) {
       setSelected(null);
@@ -211,347 +214,405 @@ export default function DocsCustomers({
       <PageHead
         eyebrow="КЛИЕНТСКАЯ БАЗА"
         title="Клиенты BoykovDocs"
-        description="Пользователи, их компании и история общения — в одном месте."
+        description="Пользователи, компании, продажи инструкций и история общения."
       >
         <button
           className="button"
-          onClick={() => void refresh()}
-          aria-label="Обновить клиентов"
+          onClick={() => {
+            if (section === "customers") void refresh();
+            else setSalesRefresh((v) => v + 1);
+          }}
+          aria-label={
+            section === "customers" ? "Обновить клиентов" : "Обновить продажи"
+          }
         >
           <RefreshCw size={17} />
           Обновить
         </button>
       </PageHead>
-      {error && <Notice tone="error">{error}</Notice>}
-      {success && <Notice tone="success">{success}</Notice>}
-      {listing && (
-        <div className="dc-metrics">
-          {[
-            ["Пользователи", listing.stats.total, ContactRound, "lime"],
-            ["С данными компании", listing.stats.companies, Building2, "pink"],
-            ["Ещё не звонили", listing.stats.uncalled, Phone, ""],
-            ["Звонок отмечен", listing.stats.called, PhoneCall, ""],
-          ].map(([label, value, Icon, tone]) => {
-            const Glyph = Icon as typeof Phone;
-            return (
-              <div className={"dc-metric " + tone} key={String(label)}>
-                <span>
-                  {String(label)}
-                  <Glyph size={19} />
-                </span>
-                <strong>{number(value as number)}</strong>
-                <div className="dc-metric-decoration" aria-hidden="true" />
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {listing && listing.companyUpdates.pending > 0 && (
-        <section
-          className="dc-update-widget"
-          aria-label="Непросмотренные обновления компаний"
+      <div
+        className="docs-subtabs"
+        role="tablist"
+        aria-label="Подразделы BoykovDocs"
+      >
+        <button
+          role="tab"
+          id="docs-customers-tab"
+          aria-controls="docs-customers-panel"
+          aria-selected={section === "customers"}
+          onClick={() => setSection("customers")}
         >
-          <span className="dc-update-symbol">
-            <RefreshCw size={23} />
-          </span>
-          <div>
-            <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
-            <h2>
-              Обновлены данные компаний{" "}
-              <strong>{number(listing.companyUpdates.pending)}</strong>
-            </h2>
-            <p>
-              Проверьте изменения реквизитов. Последнее обновление:{" "}
-              {when(listing.companyUpdates.lastChangedAt)} · Москва
-            </p>
-          </div>
-          <button
-            className="button"
-            onClick={() => {
-              setView("active");
-              setUpdatedOnly(true);
-              setPage(1);
-              setStatus("all");
-              setQuery("");
-              setDebounced("");
-              setCompany(false);
-              setMine(false);
-              setSort("newest");
-            }}
-          >
-            Показать обновлённые
-          </button>
-        </section>
-      )}
-      <div className="dc-connection">
-        <span className={"dc-health " + (connection?.status || "")}>
-          <i />
-          {connectionLabels[connection?.status || "unconfigured"]}
-        </span>
-        <span>
-          Новые данные с{" "}
-          {connection ? when(connection.since) : "19 ноября 2026, 00:00"} · МСК
-        </span>
-        {connection && connection.pending > 0 && (
-          <span>В очереди: {number(connection.pending)}</span>
-        )}
-        {connection?.canConfigure && (
-          <button onClick={() => setSettings(true)}>
-            <Settings2 size={16} />
-            Подключение
-          </button>
-        )}
+          Клиенты
+        </button>
+        <button
+          role="tab"
+          id="docs-sales-tab"
+          aria-controls="docs-sales-panel"
+          aria-selected={section === "sales"}
+          onClick={() => setSection("sales")}
+        >
+          Продажи инструкций
+        </button>
       </div>
-      {connection && ["offline", "attention"].includes(connection.status) && (
-        <Notice tone="error">
-          Нет подтверждения исправной доставки BoykovDocs. Проверьте коннектор
-          на сервере сайта. Последняя связь: {when(connection.lastHeartbeatAt)}{" "}
-          МСК.
-        </Notice>
-      )}
-      <section className="dc-directory" aria-label="Пользователи BoykovDocs">
-        {view === "trash" && (
-          <div className="dc-trash-caption">
-            <Trash2 size={18} />
+      <div
+        role="tabpanel"
+        id="docs-customers-panel"
+        aria-labelledby="docs-customers-tab"
+        hidden={section !== "customers"}
+      >
+        {error && <Notice tone="error">{error}</Notice>}
+        {success && <Notice tone="success">{success}</Notice>}
+        {listing && (
+          <div className="dc-metrics">
+            {[
+              ["Пользователи", listing.stats.total, ContactRound, "lime"],
+              [
+                "С данными компании",
+                listing.stats.companies,
+                Building2,
+                "pink",
+              ],
+              ["Ещё не звонили", listing.stats.uncalled, Phone, ""],
+              ["Звонок отмечен", listing.stats.called, PhoneCall, ""],
+            ].map(([label, value, Icon, tone]) => {
+              const Glyph = Icon as typeof Phone;
+              return (
+                <div className={"dc-metric " + tone} key={String(label)}>
+                  <span>
+                    {String(label)}
+                    <Glyph size={19} />
+                  </span>
+                  <strong>{number(value as number)}</strong>
+                  <div className="dc-metric-decoration" aria-hidden="true" />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {listing && listing.companyUpdates.pending > 0 && (
+          <section
+            className="dc-update-widget"
+            aria-label="Непросмотренные обновления компаний"
+          >
+            <span className="dc-update-symbol">
+              <RefreshCw size={23} />
+            </span>
             <div>
-              <strong>Корзина клиентов</strong>
+              <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
+              <h2>
+                Обновлены данные компаний{" "}
+                <strong>{number(listing.companyUpdates.pending)}</strong>
+              </h2>
               <p>
-                Удалённые карточки не возвращаются в рабочий список при
-                синхронизации. При необходимости их можно восстановить.
+                Проверьте изменения реквизитов. Последнее обновление:{" "}
+                {when(listing.companyUpdates.lastChangedAt)} · Москва
               </p>
             </div>
-          </div>
-        )}
-        <div className="dc-toolbar">
-          <label className="dc-search">
-            <Search size={19} />
-            <input
-              aria-label="Поиск клиентов"
-              placeholder="Имя, телефон, почта или ИНН"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              maxLength={300}
-            />
-          </label>
-          <label className="dc-sort">
-            Порядок
-            <select
-              aria-label="Порядок клиентов"
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value);
+            <button
+              className="button"
+              onClick={() => {
+                setView("active");
+                setUpdatedOnly(true);
                 setPage(1);
+                setStatus("all");
+                setQuery("");
+                setDebounced("");
+                setCompany(false);
+                setMine(false);
+                setSort("newest");
               }}
             >
-              <option value="newest">Сначала новые</option>
-              <option value="oldest">Сначала ранние</option>
-            </select>
-          </label>
-        </div>
-        <div className="dc-filters">
-          <div className="dc-tabs" aria-label="Фильтр по звонкам">
-            {[
-              ["all", "Все"],
-              ["uncalled", "Не звонили"],
-              ["called", "Звонили"],
-            ].map(([value, label]) => (
-              <button
-                key={value}
-                aria-pressed={status === value}
-                className={status === value ? "selected" : ""}
-                onClick={() => filter(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <label>
-            <input
-              type="checkbox"
-              checked={company}
-              onChange={(e) => {
-                setCompany(e.target.checked);
-                setPage(1);
-              }}
-            />
-            С данными компании
-          </label>
-          {account?.id && (
-            <label>
-              <input
-                type="checkbox"
-                checked={mine}
-                onChange={(e) => {
-                  setMine(e.target.checked);
-                  setPage(1);
-                }}
-              />
-              Мои звонки
-            </label>
+              Показать обновлённые
+            </button>
+          </section>
+        )}
+        <div className="dc-connection">
+          <span className={"dc-health " + (connection?.status || "")}>
+            <i />
+            {connectionLabels[connection?.status || "unconfigured"]}
+          </span>
+          <span>
+            Новые данные с{" "}
+            {connection ? when(connection.since) : "19 ноября 2026, 00:00"} ·
+            МСК
+          </span>
+          {connection && connection.pending > 0 && (
+            <span>В очереди: {number(connection.pending)}</span>
           )}
-          {view === "active" && (
-            <label>
-              <input
-                type="checkbox"
-                checked={updatedOnly}
-                onChange={(e) => {
-                  setUpdatedOnly(e.target.checked);
-                  setPage(1);
-                }}
-              />
-              Только обновления
-            </label>
+          {connection?.canConfigure && (
+            <button onClick={() => setSettings(true)}>
+              <Settings2 size={16} />
+              Подключение
+            </button>
           )}
-          <button
-            className={
-              "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
-            }
-            aria-pressed={view === "trash"}
-            onClick={() => {
-              setView(view === "active" ? "trash" : "active");
-              setStatus("all");
-              setQuery("");
-              setDebounced("");
-              setCompany(false);
-              setUpdatedOnly(false);
-              setMine(false);
-              setPage(1);
-              setSuccess("");
-            }}
-          >
-            <Trash2 size={16} />
-            {view === "trash"
-              ? "К рабочему списку"
-              : `Корзина · ${listing?.trashCount || 0}`}
-          </button>
         </div>
-        {!listing ? (
-          <Loading />
-        ) : !listing.customers.length ? (
-          <Empty
-            title={
-              query || status !== "all" || company || mine || updatedOnly
-                ? "Ничего не найдено"
-                : view === "trash"
-                  ? "Корзина пуста"
-                  : "Здесь появятся клиенты BoykovDocs"
-            }
-            text={
-              query || status !== "all" || company || mine || updatedOnly
-                ? "Попробуйте изменить условия поиска."
-                : view === "trash"
-                  ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
-                  : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
-            }
-          />
-        ) : (
-          <>
-            <div className="dc-list-head">
-              <span>Пользователь</span>
-              <span>Его компания</span>
-              <span>Общение</span>
-              <span />
+        {connection && ["offline", "attention"].includes(connection.status) && (
+          <Notice tone="error">
+            Нет подтверждения исправной доставки BoykovDocs. Проверьте коннектор
+            на сервере сайта. Последняя связь:{" "}
+            {when(connection.lastHeartbeatAt)} МСК.
+          </Notice>
+        )}
+        <section className="dc-directory" aria-label="Пользователи BoykovDocs">
+          {view === "trash" && (
+            <div className="dc-trash-caption">
+              <Trash2 size={18} />
+              <div>
+                <strong>Корзина клиентов</strong>
+                <p>
+                  Удалённые карточки не возвращаются в рабочий список при
+                  синхронизации. При необходимости их можно восстановить.
+                </p>
+              </div>
             </div>
-            <div className="dc-list">
-              {listing.customers.map((c) => (
-                <article className="dc-row" key={c.id}>
-                  <div className="dc-user-cell">
-                    <span className="dc-avatar">{initials(c.name)}</span>
-                    <div>
-                      <button
-                        className="dc-name"
-                        onClick={() => setSelected(c.id)}
-                      >
-                        {c.name || "Без имени"}
-                      </button>
-                      <div className="dc-contact-links">
-                        {c.phone && <a href={phoneUrl(c.phone)}>{c.phone}</a>}
-                        {c.email && (
-                          <a href={"mailto:" + encodeURIComponent(c.email)}>
-                            {c.email}
-                          </a>
-                        )}
-                      </div>
-                      <small>ID {c.externalId}</small>
-                    </div>
-                  </div>
-                  <div className="dc-company-cell">
-                    {c.companyUpdate && (
-                      <span
-                        className={
-                          "dc-update-badge" +
-                          (c.companyUpdate.unread ? " unread" : "")
-                        }
-                      >
-                        <RefreshCw size={13} />
-                        {c.companyUpdate.unread
-                          ? "Обновлено"
-                          : "Обновление просмотрено"}
-                      </span>
-                    )}
-                    {c.company ? (
-                      <>
-                        <strong>
-                          {c.company.companyName || "Данные компании"}
-                        </strong>
-                        <span>
-                          {c.company.inn
-                            ? "ИНН " + c.company.inn
-                            : "ИНН не указан"}
-                        </span>
-                        <small>Сохранено {when(c.company.savedAt)}</small>
-                      </>
-                    ) : (
-                      <span className="dc-muted">Пока не заполнена</span>
-                    )}
-                  </div>
-                  <div className="dc-call-cell">
-                    {c.lastCall ? (
-                      <>
-                        <span className={"dc-call-state " + c.lastCall.outcome}>
-                          {DOCS_CALL_OUTCOMES[c.lastCall.outcome]}
-                        </span>
-                        <Person call={c.lastCall} />
-                        <small>{when(c.lastCall.createdAt)}</small>
-                      </>
-                    ) : (
-                      <span className="dc-call-state uncalled">Не звонили</span>
-                    )}
-                  </div>
-                  <button
-                    className="button dc-open"
-                    onClick={() => setSelected(c.id)}
-                  >
-                    {c.deletedAt ? "Посмотреть" : "Карточка"}
-                  </button>
-                </article>
+          )}
+          <div className="dc-toolbar">
+            <label className="dc-search">
+              <Search size={19} />
+              <input
+                aria-label="Поиск клиентов"
+                placeholder="Имя, телефон, почта или ИНН"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                maxLength={300}
+              />
+            </label>
+            <label className="dc-sort">
+              Порядок
+              <select
+                aria-label="Порядок клиентов"
+                value={sort}
+                onChange={(e) => {
+                  setSort(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="newest">Сначала новые</option>
+                <option value="oldest">Сначала ранние</option>
+              </select>
+            </label>
+          </div>
+          <div className="dc-filters">
+            <div className="dc-tabs" aria-label="Фильтр по звонкам">
+              {[
+                ["all", "Все"],
+                ["uncalled", "Не звонили"],
+                ["called", "Звонили"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  aria-pressed={status === value}
+                  className={status === value ? "selected" : ""}
+                  onClick={() => filter(value)}
+                >
+                  {label}
+                </button>
               ))}
             </div>
-            <footer className="dc-pagination">
-              <span>Найдено: {number(listing.total)}</span>
-              <div>
-                <button
-                  className="button"
-                  disabled={listing.page <= 1}
-                  onClick={() => setPage(listing.page - 1)}
-                >
-                  Назад
-                </button>
-                <span>
-                  {listing.page} / {listing.pages}
-                </span>
-                <button
-                  className="button"
-                  disabled={listing.page >= listing.pages}
-                  onClick={() => setPage(listing.page + 1)}
-                >
-                  Далее
-                </button>
+            <label>
+              <input
+                type="checkbox"
+                checked={company}
+                onChange={(e) => {
+                  setCompany(e.target.checked);
+                  setPage(1);
+                }}
+              />
+              С данными компании
+            </label>
+            {account?.id && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={mine}
+                  onChange={(e) => {
+                    setMine(e.target.checked);
+                    setPage(1);
+                  }}
+                />
+                Мои звонки
+              </label>
+            )}
+            {view === "active" && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={updatedOnly}
+                  onChange={(e) => {
+                    setUpdatedOnly(e.target.checked);
+                    setPage(1);
+                  }}
+                />
+                Только обновления
+              </label>
+            )}
+            <button
+              className={
+                "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
+              }
+              aria-pressed={view === "trash"}
+              onClick={() => {
+                setView(view === "active" ? "trash" : "active");
+                setStatus("all");
+                setQuery("");
+                setDebounced("");
+                setCompany(false);
+                setUpdatedOnly(false);
+                setMine(false);
+                setPage(1);
+                setSuccess("");
+              }}
+            >
+              <Trash2 size={16} />
+              {view === "trash"
+                ? "К рабочему списку"
+                : `Корзина · ${listing?.trashCount || 0}`}
+            </button>
+          </div>
+          {!listing ? (
+            <Loading />
+          ) : !listing.customers.length ? (
+            <Empty
+              title={
+                query || status !== "all" || company || mine || updatedOnly
+                  ? "Ничего не найдено"
+                  : view === "trash"
+                    ? "Корзина пуста"
+                    : "Здесь появятся клиенты BoykovDocs"
+              }
+              text={
+                query || status !== "all" || company || mine || updatedOnly
+                  ? "Попробуйте изменить условия поиска."
+                  : view === "trash"
+                    ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
+                    : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
+              }
+            />
+          ) : (
+            <>
+              <div className="dc-list-head">
+                <span>Пользователь</span>
+                <span>Его компания</span>
+                <span>Общение</span>
+                <span />
               </div>
-            </footer>
-          </>
-        )}
-      </section>
+              <div className="dc-list">
+                {listing.customers.map((c) => (
+                  <article className="dc-row" key={c.id}>
+                    <div className="dc-user-cell">
+                      <span className="dc-avatar">{initials(c.name)}</span>
+                      <div>
+                        <button
+                          className="dc-name"
+                          onClick={() => setSelected(c.id)}
+                        >
+                          {c.name || "Без имени"}
+                        </button>
+                        <div className="dc-contact-links">
+                          {c.phone && <a href={phoneUrl(c.phone)}>{c.phone}</a>}
+                          {c.email && (
+                            <a href={"mailto:" + encodeURIComponent(c.email)}>
+                              {c.email}
+                            </a>
+                          )}
+                        </div>
+                        <small>ID {c.externalId}</small>
+                      </div>
+                    </div>
+                    <div className="dc-company-cell">
+                      {c.companyUpdate && (
+                        <span
+                          className={
+                            "dc-update-badge" +
+                            (c.companyUpdate.unread ? " unread" : "")
+                          }
+                        >
+                          <RefreshCw size={13} />
+                          {c.companyUpdate.unread
+                            ? "Обновлено"
+                            : "Обновление просмотрено"}
+                        </span>
+                      )}
+                      {c.company ? (
+                        <>
+                          <strong>
+                            {c.company.companyName || "Данные компании"}
+                          </strong>
+                          <span>
+                            {c.company.inn
+                              ? "ИНН " + c.company.inn
+                              : "ИНН не указан"}
+                          </span>
+                          <small>Сохранено {when(c.company.savedAt)}</small>
+                        </>
+                      ) : (
+                        <span className="dc-muted">Пока не заполнена</span>
+                      )}
+                    </div>
+                    <div className="dc-call-cell">
+                      {c.lastCall ? (
+                        <>
+                          <span
+                            className={"dc-call-state " + c.lastCall.outcome}
+                          >
+                            {DOCS_CALL_OUTCOMES[c.lastCall.outcome]}
+                          </span>
+                          <Person call={c.lastCall} />
+                          <small>{when(c.lastCall.createdAt)}</small>
+                        </>
+                      ) : (
+                        <span className="dc-call-state uncalled">
+                          Не звонили
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="button dc-open"
+                      onClick={() => setSelected(c.id)}
+                    >
+                      {c.deletedAt ? "Посмотреть" : "Карточка"}
+                    </button>
+                  </article>
+                ))}
+              </div>
+              <footer className="dc-pagination">
+                <span>Найдено: {number(listing.total)}</span>
+                <div>
+                  <button
+                    className="button"
+                    disabled={listing.page <= 1}
+                    onClick={() => setPage(listing.page - 1)}
+                  >
+                    Назад
+                  </button>
+                  <span>
+                    {listing.page} / {listing.pages}
+                  </span>
+                  <button
+                    className="button"
+                    disabled={listing.page >= listing.pages}
+                    onClick={() => setPage(listing.page + 1)}
+                  >
+                    Далее
+                  </button>
+                </div>
+              </footer>
+            </>
+          )}
+        </section>
+      </div>
+      <div
+        role="tabpanel"
+        id="docs-sales-panel"
+        aria-labelledby="docs-sales-tab"
+        hidden={section !== "sales"}
+      >
+        <DocsSales
+          active={active && section === "sales"}
+          refreshKey={salesRefresh}
+          onOpenCustomer={setSelected}
+        />
+      </div>
       {selected && (
         <CustomerDialog
           key={selected}

@@ -1,0 +1,14 @@
+README.md
+docs/BOYKOVDOCS-CUSTOMERS.md
+integrations/docs-customers/agent.mjs
+scripts/deploy-docs-customers.sh
+scripts/install-docs-customers.sh
+server/app.js
+server/modules/docs-customers/index.js
+shared/docs-customers.d.ts
+shared/docs-customers.js
+src/App.tsx
+src/pages/DocsCustomers.css
+src/pages/DocsCustomers.tsx
+src/types.ts
+tests/docs-customers.test.js

@@ -1,0 +1,16 @@
+--- a/tests/statistics.test.js
++++ b/tests/statistics.test.js
+@@ -163,7 +163,12 @@
+   assert.ok(JSON.parse(text).sites.find((s) => s.id === "nwd").connected);
+   const secret = path.join(f.directory, "statistics/metrika.json");
+   assert.equal(JSON.parse(await readFile(secret, "utf8")).token, oauth);
+-  assert.equal((await stat(secret)).mode & 0o777, 0o600);
++  assert.ok((await stat(secret)).isFile());
++  // Windows uses ACLs; stat().mode does not represent Unix access permissions.
++  if (process.platform !== "win32") {
++    assert.equal((await stat(secret)).mode & 0o777, 0o600);
++    assert.equal((await stat(path.dirname(secret))).mode & 0o777, 0o700);
++  }
+   assert.equal(response.headers.get("cache-control"), "private, no-store");
+ });
+ 

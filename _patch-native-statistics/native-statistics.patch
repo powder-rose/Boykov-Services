@@ -1,0 +1,3513 @@
+diff --git a/docs/STATISTICS.md b/docs/STATISTICS.md
+index eceed2691cc9beb2640ebe398f4d906e7e332fb1..ad029e5d202d1f373d9c843328513f8e8e5cf0d6 100644
+--- a/docs/STATISTICS.md
++++ b/docs/STATISTICS.md
+@@ -1,71 +1,52 @@
+-# Статистика сайтов
++# Собственная статистика сайтов
+ 
+-Раздел «Статистика» объединяет посещаемость из Яндекс Метрики и заявки, принятые Boykov Services. Он доступен после входа с общим паролем или под личным аккаунтом. Подключения настраивает только администратор.
++Раздел «Статистика» получает отчёты из существующих систем учёта сайтов. Яндекс Метрика и её токены для этого раздела не используются. Внешние счётчики на публичных сайтах этим обновлением не изменяются.
+ 
+-## Периоды и обновление
++## Поддерживаемые источники
+ 
+-- **24 часа** — скользящие последние сутки до начала текущей минуты, график по часам. Первый и последний час могут быть неполными. Например, интервал 18.11 16:34–19.11 16:34 содержит 25 подписанных часовых отрезков, суммарно ровно 24 часа.
+-- **7, 30 и 90 дней** — календарные дни, включая текущий неполный день; график по дням.
+-- Все даты, границы и подписи — по Москве (UTC+3).
+-- Открытый раздел проверяет данные каждые 30 секунд. Полный отчёт Метрики обновляется раз в две минуты для суток и раз в десять минут для остальных периодов. Вкладка в фоне и закрытый раздел не опрашивают API.
+-- Кнопка «Обновить» проверяет доступный отчёт и настройки. Она использует общий серверный кэш и не обходит его срок жизни.
++| Сайт                    | Откуда берутся данные                                          | Показатели                                                                   |
++| ----------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------- |
++| nwdelectricity.ru       | MySQL редакции: panel_traffic_view, panel_article, feedback    | Визиты, просмотры, статьи, источники, страницы, заявки                       |
++| pasport-dostupnosty.ru  | SQLite: analytics_visits, analytics_pageviews, articles, leads | Визиты, просмотры, статьи по каталогу, источники, страницы, заявки           |
++| pasport-bezopasnosty.ru | Существующие visits.jsonl и leads.jsonl                        | Визиты с действующим фильтром ботов, источники по сохранённым данным, заявки |
+ 
+-Четыре показателя: визиты, просмотры страниц, просмотры статей и заявки. Под графиком можно раскрыть таблицу по часам или дням. Отдельно показаны источники визитов, популярные страницы и статьи.
++У Паспорта безопасности существующий журнал фиксирует начало визита, а не каждый просмотр страницы. Поэтому просмотры страниц и статей в его отчёте отмечены прочерком; график показывает доступную линию визитов. Входные страницы визитов не выдаются за просмотры всех страниц. Дополнение самого счётчика просмотров — отдельное изменение сайта.
+ 
+-## Первое подключение
++Для energo-365.ru нужно определить плагин статистики WordPress; подключение его истории этим патчем не реализовано. Для boykovgroup.ru и elektrolaboratoriya-techotchet.ru также пока нет подключённой выгрузки встроенной статистики Тильды: её документированный API посвящён экспорту проектов и страниц, а не посещаемости (<https://help-ru.tilda.cc/api>). Эти сайты остаются в селекторе, с явным ожиданием подключения и доступными заявками центрального сервиса. Новые независимые счётчики на них автоматически не устанавливаются.
+ 
+-1. Войдите под личным аккаунтом администратора. Если он ещё не создан, на VPS выполните `docker compose exec app node server/manage-accounts.js init-admin` в `/opt/boykov-services` и следуйте подсказкам. Существующий аккаунт менять не нужно.
+-2. Получите OAuth-токен аккаунта Яндекса с доступом на просмотр нужных счётчиков. Достаточно права **`metrika:read`**. Инструкция Яндекса: <https://yandex.ru/dev/metrika/ru/intro/authorization>.
+-3. В разделе «Статистика» выберите сайт, нажмите значок настроек и вставьте токен в поле «Токен Метрики». Вставляйте только значение, без слова `OAuth`.
+-4. Нажмите «Подключить доступ». Сервис проверит токен через API. Известные номера счётчиков подключатся автоматически, если все они доступны этому аккаунту.
+-5. Проверьте номера счётчиков, поддомены и разделы статей для каждого сайта. При необходимости измените и сохраните настройки. Список доступных счётчиков можно раскрыть в том же окне.
++## Периоды и методика
+ 
+-Токен вводится непосредственно в сервисе: не добавляйте его в Git, переписку или снимки экрана. Он хранится только на сервере в `data/statistics/metrika.json` (каталог 0700, файл 0600), внутри постоянного Docker-тома. В ответах API и интерфейсе сохранённое значение не возвращается. Замена токена очищает кэш и заново проверяет доступность настроенных счётчиков.
++- **24 часа** — последние скользящие сутки до начала минуты формирования отчёта. График по часам; первый и последний час могут быть неполными. В интервале 16:34–16:34 показаны 25 часовых отрезков суммарно за 24 часа.
++- **7, 30, 90 дней** — календарные дни по Москве, включая текущий неполный день.
++- Границы всех показателей внутри отчёта совпадают; начало включено, конец исключён.
++- Синхронизация сайтов выполняется раз в минуту. Открытый раздел проверяет новые данные каждые 30 секунд; скрытая вкладка и другие разделы не опрашивают отчёты.
++- Если отчёт старше трёх минут, показывается предупреждение и последний сохранённый снимок с прежними цифрами и интервалом. Сбой не превращается в нули.
+ 
+-Для получения токена создайте OAuth-приложение в интерфейсе Яндекса «Для доступа к API или отладки», добавьте разрешение `metrika:read`, затем откройте ссылку авторизации из официальной инструкции с ClientID своего приложения. Авторизуйте именно аккаунт, которому выдан доступ к счётчикам. Если счётчиков не видно, сначала выдайте этому аккаунту права просмотра в Метрике.
++Правила определения визита сохраняются из системы-источника. У NWD это `entry=1` после 30 минут без просмотров, у Паспорта доступности — записи `analytics_visits`, у Паспорта безопасности — записи существующего журнала с тем же фильтром ботов. Общие периоды отчётов приведены к московскому времени; прежний отчёт Паспорта безопасности за «сутки» использовал завершённый календарный день, а новый режим показывает скользящие 24 часа.
+ 
+-## Начальные настройки
++После подключения **заявки считаются на стороне сайта**, как в его админке: NWD исключает корзину `feedback.trash`, Паспорт доступности читает текущую таблицу `leads`, Паспорт безопасности — существующий журнал заявок. Число может отличаться от раздела «Заявки» Boykov Services, где есть свои корзина и история доставки. До первого отчёта карточка заявок показывает число из центральной базы, и это подписано отдельно. Заявки центрального сервиса не смешиваются с посещаемостью из другого временного окна.
+ 
+-Это номера, обнаруженные в публичном коде сайтов при подготовке обновления. Владелец может заменить их в интерфейсе; наличие номера само по себе не даёт доступа к данным.
++Просмотры статей NWD определяются сохранённым `article_site_id`, а не догадкой по URL. Для Паспорта доступности просмотр страницы сопоставляется с собственным каталогом статей и сохранёнными псевдонимами. Если каталога нет, показатель недоступен. История ограничена тем, что сохранил источник: новые данные задним числом не создаются.
+ 
+-| Сайт                              | Счётчики            | Разделы статей        | Поддомены |
+-| --------------------------------- | ------------------- | --------------------- | --------- |
+-| nwdelectricity.ru                 | 114341229           | /articles/, /zhurnal/ | Нет       |
+-| pasport-dostupnosty.ru            | 114185674           | /blog/                | Нет       |
+-| pasport-bezopasnosty.ru           | 112564818           | /blog/                | Нет       |
+-| boykovgroup.ru                    | 106986222           | Не заданы             | Нет       |
+-| energo-365.ru                     | 87477971, 113826112 | Не заданы             | Да        |
+-| elektrolaboratoriya-techotchet.ru | 113216650           | Не заданы             | Нет       |
++## Передача и защита данных
+ 
+-Новые сайты появляются в селекторе автоматически после добавления источника в «Заявках». Для них администратор указывает счётчики и разделы вручную.
++Коннекторы запускаются рядом с существующими данными и читают их без изменений. Для SQLite используется транзакция только для чтения, для MySQL — согласованный снимок в транзакции только для чтения, JSONL читается потоком до зафиксированного размера. Незавершённая последняя строка допишется и попадёт в следующую синхронизацию; повреждённая полная строка вызывает ошибку вместо частичного отчёта.
+ 
+-**Важно для Энерго 365:** профиль объединяет основной домен и все его поддомены. Метрика сможет показать только те поддомены, где установлен один из указанных счётчиков. Если на новом поддомене установлен отдельный счётчик, добавьте его номер в этот профиль. Два счётчика на одной странице могут учитывать одни посещения дважды: включайте совместно только счётчики, разделяющие сайты или поддомены. Автоматической дедупликации между разными счётчиками нет.
++В центральный сервис отправляются только агрегаты за четыре периода: числа, интервалы, очищенные пути страниц и заголовки материалов. IP, идентификаторы посетителей, телефоны, почта и содержимое заявок не передаются. Параметры URL и фрагменты в таблицы не попадают. Отчёт отправляется по HTTPS на `/hooks/statistics/:siteId` с существующим серверным ключом подключения заявок. Он не вставляется в браузер и не выводится в журнал. Генерация нового ключа и перенастройка форм не нужны.
+ 
+-Разделы статей задаются по одному пути на строку, например `/blog/`. Статьёй считается URL на один уровень глубже: `/blog/nazvanie-stati/`, без страницы списка `/blog/`. Для иной структуры добавьте нужный родительский раздел. Если пути не заданы, просмотры статей показаны прочерком. Заголовки берутся из заголовков страниц Метрики; варианты одного URL суммируются. Адреса в таблицах не содержат параметров запроса и фрагментов.
++Все четыре периода сохраняются одной транзакцией SQLite. Повторная отправка того же снимка идемпотентна; более старый снимок не заменяет новый. Конфликт содержания за одинаковое время отклоняется. Проверяются источник, домен, интервалы, суммы, состав рядов и безопасные пути. Отчёты привязаны к домену источника и не переходят к другому домену после переименования сайта.
+ 
+-## Как читать показатели
++Перед отправкой полный снимок сохраняется в закрытом каталоге состояния. При сетевом сбое он остаётся для повторной доставки. Если временно недоступен исходный файл, можно повторно доставить предыдущий полный снимок, но его исходное время сохраняется: повторная доставка не скрывает устаревание.
+ 
+-Посещаемость и источники рассчитывает Метрика, поэтому цифры могут отличаться от встроенной статистики редакции nwdelectricity.ru: у систем разные способы определения визита, фильтрации ботов и блокировщиков. Формат отчёта сохранён, источником посещаемости теперь служит единая система для всех сайтов.
++## Центральный сервис
+ 
+-Заявки считаются по дате создания обращения из центральной базы Boykov Services, независимо от статуса и сотрудника. Корзина тоже учитывается: удаление заявки из рабочего списка не стирает факт обращения. Заявки, никогда не поступавшие в сервис, в этот показатель не попадут. История до подключения источника может быть неполной.
++Новая таблица: `statistics_native_reports`. Прежние таблицы кэша и настройки Метрики не используются, но не удаляются. Файл прежнего токена, если он существовал, не читается и не требуется. Заявки, документы, аккаунты и коннекторы продаж не изменяются.
+ 
+-Все показатели одного отчёта относятся к **одному интервалу**, указанному над карточками. При использовании сохранённого снимка границы периода тоже сохраняются; заявки пересчитываются для этих границ. Поэтому новая заявка с более поздним временем появится в статистике после следующего полного обновления отчёта. В рабочем разделе «Заявки» она доступна независимо от кэша статистики.
++GET `/api/statistics/sites` и GET `/api/statistics/report?site=ID&period=24h|7|30|90` требуют входа. Ответы: `Cache-Control: private, no-store`. Информация о подключении доступна администратору в окне настроек; общие и личные аккаунты могут смотреть отчёты.
+ 
+-Если доступ к Метрике не настроен или ещё не получен ни один отчёт, посещаемость показана прочерками, а заявки продолжают считаться из центральной базы. При временном сбое сохраняется последний успешный отчёт с прежним интервалом и отметкой времени. Сбой не превращается в нулевые показатели. Метрика может передавать данные с задержкой и использовать выборку; выборка отмечается в интерфейсе. Таблицы показывают наиболее популярные адреса, а суммарные показатели относятся ко всему периоду.
++POST `/hooks/statistics/:siteId` требует действующий ключ источника. Обычная пользовательская сессия не заменяет этот ключ. Старые маршруты подключения Метрики удалены.
+ 
+-## Реализация и обслуживание
+-
+-- Новые таблицы SQLite: `statistics_settings`, `statistics_cache`; существующие заявки, документы и аккаунты не изменяются.
+-- Кэш переживает перезапуск контейнера. Смена счётчиков, путей, режима поддоменов или токена делает прежний снимок неприменимым.
+-- Одновременные запросы одного отчёта объединяются. Клиент Метрики выполняет не больше двух запросов одновременно, ограничивает время ожидания и делает паузу после отказов и ограничения частоты.
+-- Используются только фиксированные адреса `https://api-metrika.yandex.net`; токен передаётся в заголовке, перенаправления запрещены. Внешние URL из настроек не принимаются.
+-- GET `/api/statistics/sites` и `/api/statistics/report?site=ID&period=24h|7|30|90` доступны авторизованным пользователям.
+-- GET `/api/statistics/counters`, POST `/api/statistics/connection` и PATCH `/api/statistics/sites/:id` доступны только администратору.
+-- Ответы приватные, `Cache-Control: private, no-store`. Фоновое серверное задание и установка дополнительного кода на сайты не нужны.
+-
+-## Установка на VPS
+-
+-После локальной установки патча, успешной проверки, коммита и push:
++После push на VPS Boykov Services:
+ 
+ ```bash
+ umask 022
+@@ -74,8 +55,68 @@ git pull --ff-only
+ bash scripts/deploy-statistics.sh
+ ```
+ 
+-Скрипт требует чистые отслеживаемые файлы. Он сохраняет предыдущий образ приложения, делает согласованную копию SQLite через `VACUUM INTO`, проверяет целостность копии, сохраняет файл подключения при его наличии, затем пересобирает и перезапускает только `app` с ожиданием healthcheck. Контейнер документов не перезапускается. В конце проверяются новые таблицы, `/healthz` и закрытость статистики без входа.
++Скрипт сохраняет согласованную копию SQLite и предыдущий образ, пересобирает только `app`, ждёт healthcheck и проверяет новую таблицу и закрытость API/приёмника. Ожидается `STATISTICS_DEPLOY=OK`. Обратный образ можно включить через `BACKUP/rollback-app.sh`; рабочая база не подменяется старой копией.
++
++## Подключение источников
++
++Подключайте после установки новой версии центрального сервиса. Готовые скрипты используют уже работающие настройки доставки заявок. Они не останавливают эти коннекторы и не меняют обработчики форм.
++
++### NWD — Beget
++
++В SSH под пользователем хостинга:
++
++```bash
++git clone --depth 1 https://github.com/powder-rose/Boykov-Services.git "$HOME/.nwd-production/native-statistics-source"
++cd "$HOME/.nwd-production/native-statistics-source"
++bash scripts/install-native-statistics-nwd.sh
++```
++
++Скрипт использует `/usr/local/bin/php7.3` и существующий `$HOME/.nwd-production/boykov-leads/config.php`, копирует две PHP-программы в отдельный закрытый каталог, проверяет первую отправку и выводит `NWD_STATISTICS_CRON_COMMAND=...`.
++
++В Beget → CronTab добавьте **новое** задание с выведенной командой и расписанием `* * * * *`: каждую минуту, каждый час, каждый день. Существующее задание доставки заявок сохраните. Ожидается `NWD_STATISTICS_CONNECTION=OK`; без задания Cron первая отправка не обеспечит дальнейшее обновление.
++
++### Паспорт доступности — его VPS
++
++```bash
++git clone --depth 1 https://github.com/powder-rose/Boykov-Services.git /opt/boykov-native-statistics-source
++cd /opt/boykov-native-statistics-source
++bash scripts/install-native-statistics.sh accessibility
++```
++
++Скрипт проверяет контейнеры `accessibility-passport-app-1` и `boykov-leads-accessibility-delivery-1`, берёт существующий ключ из окружения агента, подключает постоянный каталог данных сайта только для чтения и запускает отдельный контейнер `boykov-native-statistics-accessibility-collector-1` на уже имеющемся образе Node. Исходный сайт не пересобирается и не перезапускается. Ожидается `NATIVE_STATISTICS_CONNECTION=OK SOURCE=accessibility`.
++
++### Паспорт безопасности — его VPS
++
++```bash
++git clone --depth 1 https://github.com/powder-rose/Boykov-Services.git /opt/boykov-native-statistics-source
++cd /opt/boykov-native-statistics-source
++bash scripts/install-native-statistics.sh security
++```
++
++Скрипт определяет процесс, слушающий 8787, пользователя приложения, `PASSPORT_PROJECT_ROOT`, `SERVER_ENV_FILE` / `.env.server` и существующие пути `VISITS_FILE`/`LEADS_FILE`. Ключ берётся из `/etc/boykov-leads-security.env`. Запускается отдельная служба `boykov-native-statistics-security.service` под пользователем сайта. PM2 и сайт не перезапускаются.
++
++Если выведено `NATIVE_SOURCE_FILE_NOT_FOUND`, установка остановлена до изменения работающих служб. Выведенные пути можно сверить с фактическим расположением файлов и передать явно:
++
++```bash
++bash scripts/install-native-statistics.sh security /полный/путь/visits.jsonl /полный/путь/leads.jsonl
++```
++
++Ожидается `NATIVE_STATISTICS_CONNECTION=OK SOURCE=security`. Каталог резервной копии конфигурации выводится как `NATIVE_BACKUP`. Если настройки подключения заявок имеют иной формат, скрипт остановится с `NATIVE_EXISTING_LEADS_CONNECTION_NOT_FOUND`; значения ключей присылать не нужно.
++
++Если каталог клона уже существует, используйте его с `git pull --ff-only` вместо повторного `git clone`, предварительно проверив отсутствие своих изменений. На серверах двух разных сайтов одинаковое имя каталога допустимо.
++
++## Диагностика
++
++```bash
++# Паспорт доступности
++docker compose -f /opt/boykov-native-statistics-accessibility/compose.json ps
++docker compose -f /opt/boykov-native-statistics-accessibility/compose.json logs --tail 20
++
++# Паспорт безопасности
++systemctl status boykov-native-statistics-security.service --no-pager
++journalctl -u boykov-native-statistics-security.service -n 20 --no-pager
++```
+ 
+-Ожидается `STATISTICS_DEPLOY=OK`; адрес резервной копии выводится как `BACKUP=...`. Если проверка после запуска не прошла, можно выполнить `bash ПУТЬ_ИЗ_BACKUP/rollback-app.sh`: восстановится предыдущий образ с текущими данными. Скрипт отката не подменяет рабочую базу старой копией и не удаляет новые заявки. Копия БД расположена в постоянном томе; точный путь записан в `database-backup.json` внутри каталога BACKUP.
++Логи показывают код результата и время снимка. Ошибка синхронизации не меняет последний отчёт и не останавливает приём заявок.
+ 
+-Проверки разработки: `npm run check`, отдельно `node --test tests/statistics.test.js`. API Метрики покрыт воспроизводимой фикстурой; реальная доступность счётчиков проверяется при подключении токена в рабочем сервисе.
++Разработка: `npm run check`. Тесты MySQL включаются при наличии `PHP_BIN` и `NATIVE_TEST_MYSQL_PORT`; локально на Windows этот дополнительный тест пропускается без MySQL. Основные проверки API, SQLite, JSONL, повторной доставки и границ времени выполняются без внешних сервисов.
+diff --git a/integrations/statistics/agent.mjs b/integrations/statistics/agent.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..64c5c913886c6cbc2c2dd3fd61455c07d82d086b
+--- /dev/null
++++ b/integrations/statistics/agent.mjs
+@@ -0,0 +1,125 @@
++import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
++import { resolve, join, dirname } from "node:path";
++import { pathToFileURL } from "node:url";
++import { randomUUID } from "node:crypto";
++import { setTimeout as delay } from "node:timers/promises";
++import { collectNative } from "./collect.mjs";
++export function statisticsEndpoint(leadsEndpoint) {
++  const u = new URL(leadsEndpoint);
++  if (
++    u.protocol !== "https:" ||
++    u.username ||
++    u.password ||
++    u.search ||
++    u.hash ||
++    !/^\/hooks\/leads\/[a-zA-Z0-9_-]+$/.test(u.pathname)
++  )
++    throw Error("INVALID_NATIVE_ENDPOINT");
++  u.pathname = u.pathname.replace("/hooks/leads/", "/hooks/statistics/");
++  return u.href;
++}
++export async function writePrivate(file, value) {
++  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
++  const tmp = file + "." + randomUUID();
++  await writeFile(tmp, JSON.stringify(value), { mode: 0o600, flag: "wx" });
++  await rename(tmp, file);
++}
++export async function runNativeCycle(
++  config,
++  { fetcher = fetch, now = Date.now() } = {},
++) {
++  if (!/^[a-f0-9]{64}$/.test(config.token || ""))
++    throw Error("INVALID_NATIVE_KEY");
++  const endpoint = statisticsEndpoint(config.leadsEndpoint),
++    siteId = new URL(endpoint).pathname.split("/").at(-1);
++  const stateFile = join(config.stateDir, "last-packet.json");
++  let packet;
++  try {
++    packet = await collectNative({ ...config, now });
++    await writePrivate(stateFile, packet);
++  } catch (error) {
++    // Keep a queued complete snapshot; never replace it with an empty report.
++    let queued;
++    try {
++      queued = JSON.parse(await readFile(stateFile, "utf8"));
++    } catch {}
++    if (!queued || queued.host !== config.host || queued.source !== config.kind)
++      throw error;
++    packet = queued;
++  }
++  const response = await fetcher(endpoint, {
++    method: "POST",
++    headers: {
++      "Content-Type": "application/json",
++      Authorization: "Bearer " + config.token,
++    },
++    body: JSON.stringify(packet),
++    redirect: "error",
++    signal: AbortSignal.timeout(20000),
++  });
++  if (!response.ok) throw Error("NATIVE_HTTP_" + response.status);
++  const ack = await response.json();
++  if (
++    ack.ok !== true ||
++    ack.siteId !== siteId ||
++    ack.generatedAt !== packet.generatedAt
++  )
++    throw Error("INVALID_NATIVE_ACK");
++  const stale = now - Date.parse(packet.generatedAt) > 180000;
++  await writePrivate(join(config.stateDir, "status.json"), {
++    ok: !stale,
++    generatedAt: packet.generatedAt,
++    deliveredAt: new Date(now).toISOString(),
++  });
++  return { ok: !stale, generatedAt: packet.generatedAt };
++}
++if (
++  process.argv[1] &&
++  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
++) {
++  process.umask(0o077);
++  const file = process.argv[2];
++  if (!file) throw Error("Usage: node agent.mjs CONFIG_JSON [--once]");
++  let config;
++  try {
++    config = JSON.parse(await readFile(file, "utf8"));
++  } catch {
++    throw Error("NATIVE_CONFIGURATION_UNREADABLE");
++  }
++  const cycle = async () => {
++    try {
++      const result = await runNativeCycle(config);
++      console.log(
++        "NATIVE_STATISTICS=" +
++          (result.ok ? "OK" : "STALE") +
++          " GENERATED_AT=" +
++          result.generatedAt,
++      );
++      return result.ok;
++    } catch (error) {
++      console.error(
++        "NATIVE_STATISTICS_CHECK_REQUIRED=" +
++          (/^[A-Z_0-9]+$/.test(error.message)
++            ? error.message
++            : "SOURCE_OR_CONNECTION_ERROR"),
++      );
++      return false;
++    }
++  };
++  if (process.argv.includes("--once"))
++    process.exitCode = (await cycle()) ? 0 : 1;
++  else {
++    const stop = new AbortController();
++    for (const signal of ["SIGINT", "SIGTERM"])
++      process.once(signal, () => stop.abort());
++    while (!stop.signal.aborted) {
++      await cycle();
++      if (!stop.signal.aborted)
++        await delay(60000, undefined, { signal: stop.signal }).catch(
++          (error) => {
++            if (error.name !== "AbortError") throw error;
++          },
++        );
++    }
++  }
++}
+diff --git a/integrations/statistics/collect.mjs b/integrations/statistics/collect.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9fc72f9de7cbfe5778dc924388ee86b06df84923
+--- /dev/null
++++ b/integrations/statistics/collect.mjs
+@@ -0,0 +1,153 @@
++import { DatabaseSync } from "node:sqlite";
++import { createReadStream } from "node:fs";
++import { stat, readFile } from "node:fs/promises";
++import { NativeReportBuilder, cleanPath } from "../../shared/statistics.js";
++import { isBotVisit } from "./security-bots.mjs";
++export function collectAccessibility({ sourceFile, now = Date.now() }) {
++  const db = new DatabaseSync(sourceFile, { readOnly: true });
++  try {
++    db.exec("PRAGMA busy_timeout=10000; BEGIN");
++    const tables = new Set(
++      db
++        .prepare("SELECT name FROM sqlite_master WHERE type='table'")
++        .all()
++        .map((t) => t.name),
++    );
++    if (
++      !["analytics_visits", "analytics_pageviews", "leads"].every((t) =>
++        tables.has(t),
++      )
++    )
++      throw Error("NATIVE_ANALYTICS_TABLES_NOT_FOUND");
++    const titles = new Map();
++    if (tables.has("articles")) {
++      for (const row of db
++        .prepare("SELECT slug,payload FROM articles")
++        .iterate()) {
++        const payload = JSON.parse(row.payload);
++        titles.set(
++          "/blog/" + row.slug + "/",
++          typeof payload.title === "string" && payload.title.trim()
++            ? payload.title.trim()
++            : row.slug,
++        );
++      }
++      if (tables.has("article_slugs"))
++        for (const row of db
++          .prepare(
++            "SELECT s.slug,a.payload FROM article_slugs s JOIN articles a ON a.id=s.article_id",
++          )
++          .iterate()) {
++          const payload = JSON.parse(row.payload);
++          titles.set("/blog/" + row.slug + "/", payload.title || row.slug);
++        }
++    }
++    const builder = new NativeReportBuilder({
++      host: "pasport-dostupnosty.ru",
++      kind: "accessibility",
++      now,
++      articles: tables.has("articles"),
++    });
++    const first = builder.frames.at(-1).range.start,
++      end = builder.frames[0].range.end;
++    for (const row of db
++      .prepare(
++        "SELECT started_at,source FROM analytics_visits WHERE started_at>=? AND started_at<?",
++      )
++      .iterate(first, end))
++      builder.record("visits", row.started_at, { source: row.source });
++    for (const row of db
++      .prepare(
++        "SELECT path,created_at FROM analytics_pageviews WHERE created_at>=? AND created_at<?",
++      )
++      .iterate(first, end)) {
++      const p = cleanPath(row.path);
++      builder.record("views", row.created_at, {
++        path: p,
++        title: titles.get(p?.endsWith("/") ? p : p + "/"),
++      });
++    }
++    for (const row of db
++      .prepare(
++        "SELECT created_at FROM leads WHERE created_at>=? AND created_at<?",
++      )
++      .iterate(new Date(first).toISOString(), new Date(end).toISOString()))
++      builder.record("leads", Date.parse(row.created_at));
++    db.exec("COMMIT");
++    return builder.packet();
++  } finally {
++    if (db.isTransaction) db.exec("ROLLBACK");
++    db.close();
++  }
++}
++async function* jsonLines(file) {
++  const before = await stat(file);
++  if (!before.isFile()) throw Error("SOURCE_NOT_A_REGULAR_FILE");
++  if (!before.size) return;
++  let remaining = "";
++  for await (const chunk of createReadStream(file, {
++    encoding: "utf8",
++    end: before.size - 1,
++  })) {
++    remaining += chunk;
++    if (remaining.length > 5e6) throw Error("SOURCE_LINE_TOO_LARGE");
++    let newline;
++    while ((newline = remaining.indexOf("\n")) !== -1) {
++      const line = remaining.slice(0, newline).trim();
++      remaining = remaining.slice(newline + 1);
++      if (line) yield JSON.parse(line);
++    }
++  }
++  // An unfinished append is not yet a committed JSONL record; retry next cycle.
++  const after = await stat(file);
++  if (
++    after.dev !== before.dev ||
++    after.ino !== before.ino ||
++    after.size < before.size
++  )
++    throw Error("SOURCE_CHANGED_DURING_READ");
++}
++function securitySource(row) {
++  const utm =
++    row.attribution?.utm?.utm_source ||
++    row.attribution?.utm_source ||
++    row.attribution?.utmSource;
++  if (typeof utm === "string" && utm.trim()) return "utm:" + utm.slice(0, 64);
++  if (!row.referrer) return "direct";
++  try {
++    const host = new URL(row.referrer).hostname.toLowerCase();
++    return ["pasport-bezopasnosty.ru", "www.pasport-bezopasnosty.ru"].includes(
++      host,
++    )
++      ? "internal"
++      : "ref:" + host;
++  } catch {
++    return "unknown";
++  }
++}
++export async function collectSecurity({
++  sourceFile,
++  leadsFile,
++  now = Date.now(),
++}) {
++  const builder = new NativeReportBuilder({
++    host: "pasport-bezopasnosty.ru",
++    kind: "security",
++    now,
++    views: false,
++    articles: false,
++  });
++  for await (const row of jsonLines(sourceFile))
++    if (!isBotVisit(row))
++      builder.record("visits", Date.parse(row.receivedAt), {
++        source: securitySource(row),
++      });
++  for await (const row of jsonLines(leadsFile))
++    builder.record("leads", Date.parse(row.receivedAt || row.submittedAt));
++  return builder.packet();
++}
++export async function collectNative(config) {
++  if (config.kind === "accessibility") return collectAccessibility(config);
++  if (config.kind === "security") return collectSecurity(config);
++  throw Error("UNKNOWN_NATIVE_COLLECTOR");
++}
+diff --git a/integrations/statistics/nwd.php b/integrations/statistics/nwd.php
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7f17759672c9606e2c694313ab449b835acaa67
+--- /dev/null
++++ b/integrations/statistics/nwd.php
+@@ -0,0 +1,41 @@
++<?php
++if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
++function nwdStatisticsPeriod($key, $now) {
++    if (!in_array($key, array('24h','7','30','90'), true)) throw new RuntimeException('INVALID_NATIVE_PERIOD');
++    $end = (int)floor($now / 60) * 60;
++    $today = (int)floor(($end + 10800) / 86400) * 86400 - 10800;
++    $start = $key === '24h' ? $end - 86400 : $today - ((int)$key - 1) * 86400;
++    $step = $key === '24h' ? 3600 : 86400;
++    $first = (int)floor(($start + 10800) / $step) * $step - 10800;
++    $daily = array();
++    for ($time = $first; $time < $end; $time += $step) $daily[] = array('at'=>gmdate('Y-m-d\TH:i:s.000\Z', max($time,$start)), 'end'=>gmdate('Y-m-d\TH:i:s.000\Z', min($time+$step,$end)), 'visits'=>0,'views'=>0,'articles'=>0,'leads'=>0);
++    return array('start'=>$start,'end'=>$end,'step'=>$step,'first'=>$first,'daily'=>$daily);
++}
++function nwdStatisticsSource($value) {
++    if (strpos($value,'utm:') === 0) return 'UTM · '.substr($value,4);
++    if (strpos($value,'ref:') === 0) return substr($value,4);
++    return array('direct'=>'Прямой заход','internal'=>'Со страниц сайта','unknown'=>'Источник не определён')[$value] ?? 'Источник не определён';
++}
++function nwdStatisticsPacket($now) {
++    $reports = array();
++    $views = panelTable('panel_traffic_view');
++    $feedback = panelTable('feedback');
++    foreach (array('24h','7','30','90') as $key) {
++        $r = nwdStatisticsPeriod($key,$now); $daily = $r['daily']; $period = array($r['start'],$r['end']);
++        $rows = panelRows("SELECT FLOOR((viewed_at-?)/?) slot, COUNT(*) views,SUM(entry) visits,SUM(article_site_id>0) articles FROM $views WHERE viewed_at>=? AND viewed_at<? GROUP BY slot",array($r['first'],$r['step'],$r['start'],$r['end']));
++        foreach ($rows as $row) foreach (array('visits','views','articles') as $field) $daily[(int)$row['slot']][$field] = (int)$row[$field];
++        $rows = panelRows("SELECT FLOOR((created-?)/?) slot,COUNT(*) amount FROM $feedback WHERE trash='0' AND created>=? AND created<? GROUP BY slot",array($r['first'],$r['step'],$r['start'],$r['end']));
++        foreach ($rows as $row) $daily[(int)$row['slot']]['leads']=(int)$row['amount'];
++        $totals = array(); foreach(array('visits','views','articles','leads') as $field) $totals[$field]=array_sum(array_column($daily,$field));
++        $sources = array();
++        foreach(panelRows("SELECT source,COUNT(*) amount FROM $views WHERE viewed_at>=? AND viewed_at<? AND entry=1 GROUP BY source ORDER BY amount DESC,source LIMIT 20",$period) as $row) {
++            $label=nwdStatisticsSource($row['source']);$sources[$label]=($sources[$label] ?? 0)+(int)$row['amount'];
++        }
++        $sourceRows=array();foreach($sources as $name=>$amount)$sourceRows[]=array('name'=>$name,'visits'=>$amount);
++        $pages=array();foreach(panelRows("SELECT path,COUNT(*) amount FROM $views WHERE viewed_at>=? AND viewed_at<? GROUP BY path ORDER BY amount DESC,path LIMIT 20",$period) as $row)$pages[]=array('path'=>$row['path'],'title'=>$row['path'],'views'=>(int)$row['amount']);
++        $ranked=panelRows("SELECT ranked.path,ranked.amount,a.title FROM (SELECT article_site_id,MIN(path) path,COUNT(*) amount FROM $views WHERE viewed_at>=? AND viewed_at<? AND article_site_id>0 GROUP BY article_site_id ORDER BY amount DESC,article_site_id LIMIT 20) ranked LEFT JOIN ".panelTable('panel_article')." a ON a.site_id=ranked.article_site_id ORDER BY ranked.amount DESC,ranked.article_site_id",$period);
++        $articles=array();foreach($ranked as $row){$p=$row['path'];if(isset($articles[$p]))$articles[$p]['views']+=(int)$row['amount'];else $articles[$p]=array('path'=>$p,'title'=>$row['title'] ?: $p,'views'=>(int)$row['amount']);}
++        $reports[]=array('key'=>$key,'period'=>array('from'=>gmdate('Y-m-d\TH:i:s.000\Z',$r['start']),'to'=>gmdate('Y-m-d\TH:i:s.000\Z',$r['end']),'group'=>$key==='24h'?'hour':'day'),'totals'=>$totals,'daily'=>$daily,'sources'=>$sourceRows,'pages'=>$pages,'articles'=>array_values($articles));
++    }
++    return array('version'=>1,'host'=>'nwdelectricity.ru','source'=>'nwd','generatedAt'=>gmdate('Y-m-d\TH:i:s.000\Z',(int)floor($now/60)*60),'reports'=>$reports);
++}
+diff --git a/integrations/statistics/run-nwd.php b/integrations/statistics/run-nwd.php
+new file mode 100644
+index 0000000000000000000000000000000000000000..066293b0d3147b6ae6b523608ff62e2abbd26020
+--- /dev/null
++++ b/integrations/statistics/run-nwd.php
+@@ -0,0 +1,36 @@
++<?php
++if (PHP_SAPI !== 'cli' || PHP_VERSION_ID < 70300 || $argc !== 2) exit(2);
++umask(0077);
++require __DIR__.'/nwd.php';
++$config=require $argv[1];
++if (!isset($config['root'],$config['state_dir'],$config['endpoint'],$config['token']) || !preg_match('/^[a-f0-9]{64}$/D',$config['token'])) exit(2);
++$url=parse_url($config['endpoint']);
++if (!$url || $url['scheme']!=='https' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || ($url['path'] ?? '')!=='/hooks/leads/nwd') exit(2);
++$endpoint='https://'.$url['host'].(isset($url['port'])?':'.$url['port']:'').'/hooks/statistics/nwd';
++$state=rtrim($config['state_dir'],'/').'/statistics';
++if (!is_dir($state) && !mkdir($state,0700,true)) exit(1);
++$lock=fopen($state.'/sync.lock','c');if(!$lock || !flock($lock,LOCK_EX|LOCK_NB))exit(0);
++$packet=null;
++try {
++    define('NWD_PANEL',true);
++    require $config['root'].'/redaktsiya/lib/db.php';
++    $db=panelDb();
++    $db->begin_transaction(MYSQLI_TRANS_START_READ_ONLY | MYSQLI_TRANS_START_WITH_CONSISTENT_SNAPSHOT);
++    try { $packet=nwdStatisticsPacket(time()); $db->commit(); } catch(Throwable $e) { $db->rollback(); throw $e; }
++    $json=json_encode($packet,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
++    $tmp=tempnam($state,'.packet-');if(file_put_contents($tmp,$json,LOCK_EX)===false)throw new RuntimeException('STATE_WRITE_FAILED');chmod($tmp,0600);if(!rename($tmp,$state.'/last-packet.json'))throw new RuntimeException('STATE_WRITE_FAILED');
++} catch (Throwable $error) {
++    $json=@file_get_contents($state.'/last-packet.json');
++    $packet=is_string($json)?json_decode($json,true):null;
++    if(!is_array($packet) || ($packet['host'] ?? '')!=='nwdelectricity.ru'){echo "NWD_STATISTICS=SOURCE_CHECK_REQUIRED\n";exit(1);}
++}
++$status=0;
++try {
++    $curl=curl_init($endpoint);
++    curl_setopt_array($curl,array(CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$json,CURLOPT_HTTPHEADER=>array('Content-Type: application/json','Authorization: Bearer '.$config['token']),CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>20,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2));
++    $body=curl_exec($curl);$status=(int)curl_getinfo($curl,CURLINFO_HTTP_CODE);curl_close($curl);
++    $ack=is_string($body)?json_decode($body,true):null;
++    if(!in_array($status,array(200,201),true) || !is_array($ack) || ($ack['ok'] ?? false)!==true || ($ack['siteId'] ?? '')!=='nwd' || ($ack['generatedAt'] ?? '')!==$packet['generatedAt'])throw new RuntimeException('DELIVERY_NOT_CONFIRMED');
++    if(time()-strtotime($packet['generatedAt'])>180){echo "NWD_STATISTICS=STALE\n";exit(1);}
++    echo 'NWD_STATISTICS=OK GENERATED_AT='.$packet['generatedAt']."\n";
++} catch(Throwable $error){echo 'NWD_STATISTICS=DELIVERY_CHECK_REQUIRED HTTP='.$status."\n";exit(1);}
+diff --git a/integrations/statistics/security-bots.mjs b/integrations/statistics/security-bots.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..53de49237a43320ae26c9a588248019ae1328328
+--- /dev/null
++++ b/integrations/statistics/security-bots.mjs
+@@ -0,0 +1,23 @@
++const BOT_USER_AGENT_PATTERN =
++  /googlebot|googleother|google-inspectiontool|adsbot-google|mediapartners-google|bingbot|bingpreview|yandexbot|yandexrenderresourcesbot|yandexuserproxy|applebot|baiduspider|duckduckbot|slurp|petalbot|bytespider|ahrefsbot|semrushbot|mj12bot|dotbot|oai-searchbot|gptbot|chatgpt-user|claudebot|claude-web|perplexitybot|facebookexternalhit|facebot|twitterbot|linkedinbot|telegrambot|discordbot|dataprovider|chrome-lighthouse|lighthouse|headlesschrome|crawler|spider|scrapy|uptimerobot|statuscake|pingdom|python-requests|curl\/|wget\/|go-http-client|node-fetch|undici|bot\b/i;
++
++export function isBotUserAgent(value = "") {
++  const userAgent = String(value).trim();
++
++  /*
++   * Обычный браузер при запросе /api/visits
++   * передаёт User-Agent.
++   *
++   * Запрос без User-Agent для внутренней
++   * статистики считаем автоматическим.
++   */
++  if (!userAgent) {
++    return true;
++  }
++
++  return BOT_USER_AGENT_PATTERN.test(userAgent);
++}
++
++export function isBotVisit(visit) {
++  return isBotUserAgent(visit?.meta?.userAgent || "");
++}
+diff --git a/integrations/statistics/source_config.py b/integrations/statistics/source_config.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..02308bcc988dce1762b9007c84ce7fc651525a85
+--- /dev/null
++++ b/integrations/statistics/source_config.py
+@@ -0,0 +1,39 @@
++"""Read only the source paths needed by the native statistics installer."""
++import pathlib
++import re
++import shlex
++
++
++def read_env(file, names):
++    result = {}
++    for line in pathlib.Path(file).read_text().splitlines():
++        match = re.match(r'\s*(?:export\s+)?([A-Z_0-9]+)\s*=\s*(.*)$', line)
++        if not match or match[1] not in names:
++            continue
++        values = shlex.split(match[2], comments=True, posix=True)
++        if len(values) != 1:
++            if not values:
++                result[match[1]] = ''
++                continue
++            raise ValueError('NATIVE_SOURCE_CONFIGURATION_INVALID')
++        result[match[1]] = values[0]
++    return result
++
++
++def security_paths(cwd, live, visits_override='', leads_override=''):
++    cwd = pathlib.Path(cwd)
++    env_file = pathlib.Path(live.get('SERVER_ENV_FILE') or '.env.server')
++    if not env_file.is_absolute():
++        env_file = cwd / env_file
++    values = read_env(env_file, {'PASSPORT_PROJECT_ROOT', 'VISITS_FILE', 'LEADS_FILE'})
++    values.update(live)  # Match dotenv: process-level variables take precedence.
++    root = pathlib.Path(values.get('PASSPORT_PROJECT_ROOT', '').strip() or cwd)
++    if not root.is_absolute():
++        root = cwd / root
++    visits = pathlib.Path(visits_override or values.get('VISITS_FILE') or 'data/visits.jsonl')
++    leads = pathlib.Path(leads_override or values.get('LEADS_FILE') or 'data/leads.jsonl')
++    if not visits.is_absolute():
++        visits = root / visits
++    if not leads.is_absolute():
++        leads = root / leads
++    return visits.resolve(), leads.resolve()
+diff --git a/scripts/deploy-statistics.sh b/scripts/deploy-statistics.sh
+index 3ae72e008cf6fa86fb9ab107b3651a55881abe91..174cdcf4d0ae918cb0dc26330919b49291e994fd 100644
+--- a/scripts/deploy-statistics.sh
++++ b/scripts/deploy-statistics.sh
+@@ -48,14 +48,16 @@ import { DatabaseSync } from 'node:sqlite';
+ const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
+ try {
+  if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
+- for(const table of ['statistics_settings','statistics_cache'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('STATISTICS_MIGRATION_MISSING');
++ for(const table of ['statistics_native_reports'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('STATISTICS_MIGRATION_MISSING');
+ }finally{db.close();}
+ const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
+ if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
+-for(const route of ['/api/statistics/sites','/api/statistics/counters','/api/statistics/report?site=nwd&period=24h']){
++for(const route of ['/api/statistics/sites','/api/statistics/report?site=nwd&period=24h']){
+  const response=await fetch('http://127.0.0.1:8787'+route,{signal:AbortSignal.timeout(10000)});
+  if(response.status!==401)throw Error('STATISTICS_AUTH_CHECK_FAILED');
+ }
++const hook=await fetch('http://127.0.0.1:8787/hooks/statistics/nwd',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
++if(hook.status!==401)throw Error('STATISTICS_HOOK_AUTH_FAILED');
+ console.log('STATISTICS_MODULE=OK\nSTATISTICS_AUTH=OK');
+ VERIFY_STATISTICS
+ docker compose ps
+diff --git a/scripts/install-native-statistics-nwd.sh b/scripts/install-native-statistics-nwd.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..e5d17ef482623aa4e15d774d3d8a614cdc4fd51e
+--- /dev/null
++++ b/scripts/install-native-statistics-nwd.sh
+@@ -0,0 +1,14 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++private="${HOME}/.nwd-production/boykov-leads"
++php_bin=/usr/local/bin/php7.3
++[[ -f "$private/config.php" && -x "$php_bin" ]] || { echo NWD_EXISTING_CONNECTION_OR_PHP_NOT_FOUND; exit 1; }
++version=$(mktemp -d "$private/statistics-code-XXXXXXXX")
++chmod 700 "$version"
++cp integrations/statistics/nwd.php integrations/statistics/run-nwd.php "$version/"
++chmod 600 "$version/nwd.php" "$version/run-nwd.php"
++"$php_bin" "$version/run-nwd.php" "$private/config.php"
++printf 'NWD_STATISTICS_CRON_COMMAND=%s %s %s >>%s/statistics.log 2>&1\n' "$php_bin" "$version/run-nwd.php" "$private/config.php" "$private"
++printf 'NWD_STATISTICS_CRON_INTERVAL=* * * * *\nNWD_STATISTICS_CONNECTION=OK\n'
+diff --git a/scripts/install-native-statistics.sh b/scripts/install-native-statistics.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..37cabfbd74349edcef4e7776485288a56c044086
+--- /dev/null
++++ b/scripts/install-native-statistics.sh
+@@ -0,0 +1,100 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo NATIVE_INSTALL_REQUIRES_ROOT; exit 1; }
++kind=${1:-}
++[[ "$kind" == accessibility || "$kind" == security ]] || { echo 'Usage: bash scripts/install-native-statistics.sh accessibility|security [VISITS_FILE LEADS_FILE]'; exit 2; }
++export NATIVE_INSTALL_KIND="$kind" NATIVE_SOURCE_ROOT="$PWD"
++export NATIVE_VISITS_OVERRIDE="${2:-}" NATIVE_LEADS_OVERRIDE="${3:-}"
++python3 - <<'PY'
++import os,json,subprocess,pathlib,pwd,re,shutil,datetime,sys
++kind=os.environ['NATIVE_INSTALL_KIND'];source=pathlib.Path(os.environ['NATIVE_SOURCE_ROOT'])
++sys.path.insert(0,str(source/'integrations/statistics'))
++from source_config import read_env,security_paths
++base=pathlib.Path('/opt/boykov-native-statistics-'+kind);base.mkdir(parents=True,exist_ok=True)
++stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())
++backup=base/('backup-'+stamp);backup.mkdir(mode=0o700)
++for name in ['config.json','compose.json','collector.service']:
++ if (base/name).is_file():shutil.copy2(base/name,backup/name)
++code=base/('code-'+stamp)
++for relative in ['shared/statistics.js','integrations/statistics/agent.mjs','integrations/statistics/collect.mjs','integrations/statistics/security-bots.mjs']:
++ target=code/relative;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source/relative,target);target.chmod(0o644)
++for d,_,_ in os.walk(code):os.chmod(d,0o755)
++def inspect(name):return json.loads(subprocess.check_output(['docker','inspect',name],text=True))[0]
++if kind=='accessibility':
++ agent=inspect('boykov-leads-accessibility-delivery-1');app=inspect('accessibility-passport-app-1')
++ env=dict(x.split('=',1) for x in agent['Config']['Env'] if '=' in x)
++ mount=next((m for m in app['Mounts'] if m['Destination']=='/app/data'),None)
++ if not mount:raise SystemExit('NATIVE_SITE_DATA_MOUNT_NOT_FOUND')
++ uid=int(subprocess.check_output(['docker','exec',app['Id'],'id','-u'],text=True));gid=int(subprocess.check_output(['docker','exec',app['Id'],'id','-g'],text=True))
++ config={'kind':kind,'host':'pasport-dostupnosty.ru','sourceFile':'/source/site.sqlite','stateDir':'/state','leadsEndpoint':env.get('LEADS_ENDPOINT'),'token':env.get('LEADS_TOKEN')}
++ image=agent['Image']
++else:
++ env=read_env('/etc/boykov-leads-security.env',{'LEADS_ENDPOINT','LEADS_TOKEN'})
++ socket=subprocess.check_output(['ss','-lntp','sport = :8787'],text=True)
++ match=re.search(r'pid=(\d+)',socket)
++ if not match:raise SystemExit('NATIVE_BACKEND_PROCESS_NOT_FOUND')
++ pid=match[1];uid=pathlib.Path('/proc/'+pid).stat().st_uid;gid=pwd.getpwuid(uid).pw_gid;user=pwd.getpwuid(uid).pw_name
++ live=dict(x.decode().split('=',1) for x in pathlib.Path('/proc/'+pid+'/environ').read_bytes().split(b'\0') if b'=' in x)
++ cwd=os.readlink('/proc/'+pid+'/cwd')
++ visits,leads=security_paths(cwd,live,os.environ.get('NATIVE_VISITS_OVERRIDE',''),os.environ.get('NATIVE_LEADS_OVERRIDE',''))
++ if not visits.is_file() or not leads.is_file():
++  print('NATIVE_VISITS_FILE='+str(visits));print('NATIVE_LEADS_FILE='+str(leads));raise SystemExit('NATIVE_SOURCE_FILE_NOT_FOUND: pass the actual VISITS_FILE and LEADS_FILE as arguments 2 and 3; no existing services changed.')
++ config={'kind':kind,'host':'pasport-bezopasnosty.ru','sourceFile':str(visits),'leadsFile':str(leads),'stateDir':'/var/lib/boykov-native-statistics-security','leadsEndpoint':env.get('LEADS_ENDPOINT'),'token':env.get('LEADS_TOKEN')}
++if not re.fullmatch(r'[a-f0-9]{64}',config.get('token') or '') or not re.fullmatch(r'https://[^/?#]+/hooks/leads/[A-Za-z0-9_-]+',config.get('leadsEndpoint') or ''):raise SystemExit('NATIVE_EXISTING_LEADS_CONNECTION_NOT_FOUND: no keys were changed.')
++state=pathlib.Path(config['stateDir']) if kind=='security' else base/'state';state.mkdir(parents=True,exist_ok=True);state.chmod(0o700);os.chown(state,uid,gid)
++file=base/'config.json';temporary=base/('.config-'+stamp);temporary.write_text(json.dumps(config));temporary.chmod(0o600);os.chown(temporary,uid,gid);temporary.replace(file)
++if kind=='accessibility':
++ compose={'name':'boykov-native-statistics-accessibility','services':{'collector':{'image':image,'pull_policy':'never','init':True,'restart':'unless-stopped','user':str(uid)+':'+str(gid),'read_only':True,'tmpfs':['/tmp'],'command':['node','/collector/integrations/statistics/agent.mjs','/config/config.json'],'volumes':[str(code)+':/collector:ro',str(file)+':/config/config.json:ro',mount['Source']+':/source:ro',str(state)+':/state'],'mem_limit':'256m','logging':{'driver':'json-file','options':{'max-size':'5m','max-file':'3'}},'healthcheck':{'test':['CMD','node','-e',"const f=require('node:fs');try{const s=JSON.parse(f.readFileSync('/state/status.json'));process.exit(s.ok&&Date.now()-Date.parse(s.generatedAt)<180000?0:1)}catch{process.exit(1)}"],'interval':'30s','timeout':'5s','start_period':'30s','retries':3}}}}
++ (base/'compose.json').write_text(json.dumps(compose,indent=2))
++else:
++ node=shutil.which('node')
++ if not node or int(subprocess.check_output([node,'-p','process.versions.node.split(".")[0]'],text=True))!=24:raise SystemExit('NATIVE_REQUIRES_NODE_24')
++ unit='''[Unit]
++Description=Native statistics for Security Passport
++After=network-online.target
++Wants=network-online.target
++[Service]
++Type=simple
++User=USER_VALUE
++Group=GROUP_VALUE
++UMask=0077
++ExecStart=NODE_VALUE CODE_VALUE/integrations/statistics/agent.mjs CONFIG_VALUE
++Restart=always
++RestartSec=15
++TimeoutStopSec=30
++NoNewPrivileges=true
++PrivateTmp=true
++ProtectSystem=strict
++ProtectHome=true
++ReadWritePaths=STATE_VALUE
++RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
++CapabilityBoundingSet=
++MemoryMax=256M
++[Install]
++WantedBy=multi-user.target
++'''
++ for key,value in {'USER_VALUE':user,'GROUP_VALUE':str(gid),'NODE_VALUE':node,'CODE_VALUE':str(code),'CONFIG_VALUE':str(file),'STATE_VALUE':str(state)}.items():unit=unit.replace(key,value)
++ (base/'collector.service').write_text(unit)
++ (base/'node-path.txt').write_text(node)
++ (base/'code-path.txt').write_text(str(code))
++print('NATIVE_BACKUP='+str(backup))
++PY
++base="/opt/boykov-native-statistics-$kind"
++if [[ "$kind" == accessibility ]]; then
++  docker compose -f "$base/compose.json" run --rm --no-deps collector node /collector/integrations/statistics/agent.mjs /config/config.json --once
++  docker compose -f "$base/compose.json" up -d --wait --wait-timeout 120
++  docker compose -f "$base/compose.json" ps
++else
++  node_path=$(cat "$base/node-path.txt")
++  code_path=$(cat "$base/code-path.txt")
++  owner=$(stat -c %U "$base/config.json")
++  runuser -u "$owner" -- "$node_path" "$code_path/integrations/statistics/agent.mjs" "$base/config.json" --once
++  install -m 644 "$base/collector.service" /etc/systemd/system/boykov-native-statistics-security.service
++  systemctl daemon-reload
++  systemctl enable boykov-native-statistics-security.service
++  systemctl restart boykov-native-statistics-security.service
++  systemctl is-active boykov-native-statistics-security.service
++fi
++printf 'NATIVE_STATISTICS_CONNECTION=OK SOURCE=%s\n' "$kind"
+diff --git a/server/app.js b/server/app.js
+index 859dbdd79e7bbc7e4793341ecc58a842e83140ed..5dacc7e3b2a964d444de2abcd8d67393212b2209 100644
+--- a/server/app.js
++++ b/server/app.js
+@@ -65,9 +65,10 @@ export async function createApp(options) {
+   app.locals.technical = technical;
+   app.post("/hooks/technical/sync", technical.webhook);
+   technical.registerPushHooks(app);
+-  installAuth(app, { ...options, db });
+   const statistics = await createStatisticsModule(db, options);
+   app.locals.statistics = statistics;
++  app.post("/hooks/statistics/:siteId", statistics.receive);
++  installAuth(app, { ...options, db });
+   statistics.register(app);
+   leads.register(app);
+   technical.registerRoutes(app);
+@@ -289,7 +290,7 @@ export async function createApp(options) {
+       return res
+         .status(413)
+         .json({ error: "Допустим один файл размером до 20 МБ." });
+-    const status = [400, 403, 404, 409, 413, 415, 422, 429, 503].includes(
++    const status = [400, 401, 403, 404, 409, 413, 415, 422, 429, 503].includes(
+       error.status,
+     )
+       ? error.status
+diff --git a/server/modules/statistics/index.js b/server/modules/statistics/index.js
+index 1d5b732aa0f724cedc7aecc4edf56a44a99484ed..af6fe5a12ef1547695f775c75575ca93bb49de98 100644
+--- a/server/modules/statistics/index.js
++++ b/server/modules/statistics/index.js
+@@ -1,309 +1,181 @@
+-import path from "node:path";
+-import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
+-import { randomUUID, createHash } from "node:crypto";
+-import { MetrikaClient } from "./metrika.js";
+-import { defaults, validateSettings, reportPeriod } from "./period.js";
+-
++import { createHash, timingSafeEqual } from "node:crypto";
++import { nativeSources, reportPeriod } from "../../../shared/statistics.js";
++import { validateNativePacket } from "./validation.js";
+ const bad = (message, status = 400) =>
+   Object.assign(new Error(message), { status });
++const digest = (text) => createHash("sha256").update(text).digest("hex");
+ const wrap = (fn) => (req, res, next) =>
+   Promise.resolve()
+     .then(() => fn(req, res))
+     .catch(next);
+ export async function createStatisticsModule(db, options) {
+-  db.exec(`CREATE TABLE IF NOT EXISTS statistics_settings (
+-    site_id TEXT PRIMARY KEY,counter_ids TEXT NOT NULL,article_prefixes TEXT NOT NULL,
+-    include_subdomains INTEGER NOT NULL DEFAULT 0,version INTEGER NOT NULL DEFAULT 1,verified_at TEXT);
+-    CREATE TABLE IF NOT EXISTS statistics_cache (
+-      site_id TEXT NOT NULL,period TEXT NOT NULL,signature TEXT NOT NULL,report TEXT NOT NULL,fetched_at INTEGER NOT NULL,
+-      PRIMARY KEY(site_id,period));`);
+-  const now = options.now || Date.now,
+-    client = new MetrikaClient({ fetcher: options.statisticsFetch || fetch });
+-  const privateDirectory = path.join(options.dataDir, "statistics");
+-  const secretFile = path.join(privateDirectory, "metrika.json");
+-  let credentials = null;
+-  try {
+-    const saved = JSON.parse(await readFile(secretFile, "utf8"));
+-    if (typeof saved.token === "string" && typeof saved.revision === "string")
+-      credentials = saved;
+-  } catch {}
+-  if (options.statisticsToken)
+-    credentials = { token: options.statisticsToken, revision: "fixture" };
+-  let counterList = [],
+-    counterListAt = 0;
+-  const inflight = new Map(),
+-    failures = new Map();
+-  function site(id) {
+-    const row = db
++  db.exec(`CREATE TABLE IF NOT EXISTS statistics_native_reports (
++    site_id TEXT NOT NULL, period TEXT NOT NULL, source_host TEXT NOT NULL, report TEXT NOT NULL,
++    generated_at TEXT NOT NULL, received_at TEXT NOT NULL, packet_hash TEXT NOT NULL,
++    PRIMARY KEY(site_id,period));`);
++  const now = options.now || Date.now;
++  const getSite = (id) => {
++    const s = db
+       .prepare("SELECT id,name,host,created_at FROM sales_sites WHERE id=?")
+       .get(id);
+-    if (!row) throw bad("Сайт не найден.", 404);
+-    return row;
+-  }
+-  function settings(id) {
+-    const s = site(id),
+-      preset = defaults(s.host);
+-    db.prepare(
+-      "INSERT OR IGNORE INTO statistics_settings(site_id,counter_ids,article_prefixes,include_subdomains) VALUES(?,?,?,?)",
+-    ).run(
+-      id,
+-      JSON.stringify(preset.counterIds),
+-      JSON.stringify(preset.articlePrefixes),
+-      Number(preset.includeSubdomains),
+-    );
+-    const row = db
+-      .prepare("SELECT * FROM statistics_settings WHERE site_id=?")
+-      .get(id);
+-    return {
+-      counterIds: JSON.parse(row.counter_ids),
+-      articlePrefixes: JSON.parse(row.article_prefixes),
+-      includeSubdomains: !!row.include_subdomains,
+-      version: row.version,
+-      verifiedAt: row.verified_at,
+-    };
+-  }
++    if (!s) throw bad("Сайт не найден.", 404);
++    return s;
++  };
+   function list() {
+     return db
+       .prepare("SELECT id FROM sales_sites ORDER BY name COLLATE NOCASE,host")
+       .all()
+       .map(({ id }) => {
+-        const s = site(id),
+-          p = settings(id);
++        const s = getSite(id),
++          latest = db
++            .prepare(
++              "SELECT MAX(generated_at) generated_at,MAX(received_at) received_at FROM statistics_native_reports WHERE site_id=? AND source_host=?",
++            )
++            .get(id, s.host);
+         return {
+           ...s,
+-          settings: p,
+-          connected: !!(credentials && p.verifiedAt),
++          connected: !!latest.generated_at,
++          source: nativeSources[s.host] || null,
++          lastSyncedAt: latest.generated_at || null,
++          lastReceivedAt: latest.received_at || null,
+         };
+       });
+   }
+-  async function counters() {
+-    if (!credentials) throw bad("Подключите доступ к Яндекс Метрике.", 409);
+-    if (now() - counterListAt > 300000 || !counterListAt) {
+-      counterList = await client.counters(credentials.token);
+-      counterListAt = now();
+-    }
+-    return counterList;
+-  }
+-  async function connect(token) {
+-    if (typeof token !== "string" || !/^[\x21-\x7e]{20,4096}$/.test(token))
+-      throw bad("Вставьте токен без пробелов и префикса OAuth.");
+-    const accessible = await client.counters(token),
+-      revision = randomUUID();
+-    if (!accessible.length)
+-      throw bad(
+-        "У этого аккаунта нет доступных счётчиков Метрики. Проверьте аккаунт Яндекса и права просмотра.",
+-        403,
+-      );
+-    await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
+-    const temporary = path.join(privateDirectory, ".metrika-" + randomUUID());
+-    try {
+-      await writeFile(temporary, JSON.stringify({ token, revision }), {
+-        mode: 0o600,
+-        flag: "wx",
++  function receive(req, res) {
++    const site = db
++      .prepare("SELECT * FROM sales_sites WHERE id=?")
++      .get(req.params.siteId);
++    const token = /^Bearer ([a-f0-9]{64})$/.exec(
++      req.get("authorization") || "",
++    )?.[1];
++    const expected = Buffer.from(site?.token_hash || "0".repeat(64), "hex"),
++      actual = Buffer.from(digest(token || ""), "hex");
++    if (
++      !token ||
++      !site?.token_hash ||
++      expected.length !== actual.length ||
++      !timingSafeEqual(actual, expected)
++    )
++      throw bad("Нет доступа к приёму статистики.", 401);
++    const packet = validateNativePacket(req.body, site, now()),
++      hash = digest(JSON.stringify(packet));
++    const saved = db
++      .prepare(
++        "SELECT generated_at,packet_hash FROM statistics_native_reports WHERE site_id=? AND source_host=? LIMIT 1",
++      )
++      .get(site.id, site.host);
++    if (saved && packet.generatedAt < saved.generated_at)
++      return res.json({
++        ok: true,
++        siteId: site.id,
++        generatedAt: packet.generatedAt,
++        ignored: true,
++      });
++    if (saved && packet.generatedAt === saved.generated_at) {
++      if (hash !== saved.packet_hash)
++        throw bad("Отчёт за это время уже сохранён с другими данными.", 409);
++      return res.json({
++        ok: true,
++        siteId: site.id,
++        generatedAt: packet.generatedAt,
++        duplicate: true,
+       });
+-      await rename(temporary, secretFile);
+-    } catch (error) {
+-      await unlink(temporary).catch(() => {});
+-      throw bad("Не удалось сохранить подключение Метрики.", 500);
+     }
+-    credentials = { token, revision };
+-    counterList = accessible;
+-    counterListAt = now();
+     db.exec("BEGIN IMMEDIATE");
+     try {
+-      for (const s of list()) {
+-        const ids = s.settings.counterIds;
+-        const verified =
+-          ids.length &&
+-          ids.every((id) =>
+-            accessible.some((c) => c.id === id && c.status !== "Deleted"),
+-          );
+-        db.prepare(
+-          "UPDATE statistics_settings SET verified_at=?,version=version+1 WHERE site_id=?",
+-        ).run(verified ? new Date(now()).toISOString() : null, s.id);
+-      }
+-      db.exec("DELETE FROM statistics_cache; COMMIT");
+-      failures.clear();
++      const save = db.prepare(
++        "INSERT INTO statistics_native_reports(site_id,period,source_host,report,generated_at,received_at,packet_hash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(site_id,period) DO UPDATE SET source_host=excluded.source_host,report=excluded.report,generated_at=excluded.generated_at,received_at=excluded.received_at,packet_hash=excluded.packet_hash",
++      );
++      for (const report of packet.reports)
++        save.run(
++          site.id,
++          report.key,
++          site.host,
++          JSON.stringify(report),
++          packet.generatedAt,
++          new Date(now()).toISOString(),
++          hash,
++        );
++      db.exec("COMMIT");
+     } catch (error) {
+-      db.exec("ROLLBACK");
++      if (db.isTransaction) db.exec("ROLLBACK");
+       throw error;
+     }
+-    return { ok: true, counters: accessible.length };
+-  }
+-  async function saveSettings(id, input) {
+-    const old = settings(id),
+-      next = validateSettings(input);
+-    if (input.version !== old.version)
+-      throw bad("Подключение уже изменилось. Обновите страницу.", 409);
+-    if (!credentials) throw bad("Сначала подключите доступ к Метрике.", 409);
+-    const revision = credentials.revision;
+-    await client.verify(next.counterIds, credentials.token);
+-    if (credentials.revision !== revision)
+-      throw bad("Токен изменился. Повторите сохранение.", 409);
+-    const result = db
+-      .prepare(
+-        "UPDATE statistics_settings SET counter_ids=?,article_prefixes=?,include_subdomains=?,verified_at=?,version=version+1 WHERE site_id=? AND version=?",
+-      )
+-      .run(
+-        JSON.stringify(next.counterIds),
+-        JSON.stringify(next.articlePrefixes),
+-        Number(next.includeSubdomains),
+-        new Date(now()).toISOString(),
+-        id,
+-        old.version,
+-      );
+-    if (result.changes !== 1)
+-      throw bad("Подключение уже изменилось. Обновите страницу.", 409);
+-    db.prepare("DELETE FROM statistics_cache WHERE site_id=?").run(id);
+-    for (const key of failures.keys())
+-      if (key.startsWith(id + ":")) failures.delete(key);
+-    return { ok: true };
+-  }
+-  function signature(s, p) {
+-    return createHash("sha256")
+-      .update(
+-        JSON.stringify([
+-          s.host,
+-          p.counterIds,
+-          p.articlePrefixes,
+-          p.includeSubdomains,
+-          p.version,
+-          credentials?.revision,
+-        ]),
+-      )
+-      .digest("hex");
++    res
++      .status(201)
++      .json({ ok: true, siteId: site.id, generatedAt: packet.generatedAt });
+   }
+-  function leads(id, range) {
+-    const total = db
++  function report(id, key) {
++    const s = getSite(id),
++      range = reportPeriod(key, now());
++    const saved = db
+       .prepare(
+-        "SELECT COUNT(*) amount FROM sales_leads WHERE site_id=? AND created_at>=? AND created_at<?",
++        "SELECT * FROM statistics_native_reports WHERE site_id=? AND period=? AND source_host=?",
+       )
+-      .get(id, range.from, range.to).amount;
+-    const step = range.group === "hour" ? 3600000 : 86400000,
+-      first = range.buckets[0]?.key || range.start;
+-    const rows = db
++      .get(id, key, s.host);
++    if (saved) {
++      const value = JSON.parse(saved.report),
++        stale =
++          now() - Date.parse(saved.generated_at) > 180000 ||
++          (key !== "24h" && value.period.from !== range.from);
++      return {
++        site: s,
++        period: { key, ...value.period },
++        status: stale ? "stale" : "ready",
++        error: stale
++          ? "От сайта давно не поступал свежий отчёт. Проверьте синхронизацию."
++          : null,
++        fetchedAt: saved.generated_at,
++        receivedAt: saved.received_at,
++        checkedAt: new Date(now()).toISOString(),
++        provider: nativeSources[s.host]?.label || "Статистика сайта",
++        leadsOrigin: "native",
++        ...Object.fromEntries(
++          ["totals", "daily", "sources", "pages", "articles"].map((k) => [
++            k,
++            value[k],
++          ]),
++        ),
++      };
++    }
++    const step = range.group === "hour" ? 3600000 : 86400000;
++    const first = range.buckets[0]?.key ?? range.start;
++    const counts = db
+       .prepare(
+-        "SELECT CAST((unixepoch(created_at)*1000-?)/? AS INTEGER) slot,COUNT(*) amount FROM sales_leads WHERE site_id=? AND created_at>=? AND created_at<? GROUP BY slot",
++        "SELECT CAST((unixepoch(created_at)*1000-?)/? AS INTEGER) slot,count(*) amount FROM sales_leads WHERE site_id=? AND created_at>=? AND created_at<? GROUP BY slot",
+       )
+       .all(first, step, id, range.from, range.to);
+-    const slots = new Map(rows.map((r) => [r.slot, r.amount]));
+-    return { total, slots };
+-  }
+-  function emptyTraffic(range) {
++    const slots = new Map(counts.map((r) => [r.slot, r.amount]));
++    const daily = range.buckets.map((b, i) => ({
++      at: new Date(b.from).toISOString(),
++      end: new Date(b.to).toISOString(),
++      visits: null,
++      views: null,
++      articles: null,
++      leads: slots.get(i) || 0,
++    }));
+     return {
+-      totals: { visits: null, views: null, articles: null },
+-      daily: range.buckets.map((b) => ({
+-        at: new Date(b.from).toISOString(),
+-        end: new Date(b.to).toISOString(),
++      site: s,
++      period: { key, from: range.from, to: range.to, group: range.group },
++      status: "unconfigured",
++      error: null,
++      fetchedAt: null,
++      receivedAt: null,
++      checkedAt: new Date(now()).toISOString(),
++      provider: nativeSources[s.host]?.label || "Статистика сайта",
++      leadsOrigin: "hub",
++      totals: {
+         visits: null,
+         views: null,
+         articles: null,
+-      })),
++        leads: daily.reduce((n, p) => n + p.leads, 0),
++      },
++      daily,
+       sources: [],
+       pages: [],
+       articles: [],
+-      sampled: false,
+-      dataLag: 0,
+-      truncated: false,
+-      provider: "Яндекс Метрика",
+-    };
+-  }
+-  async function report(id, key) {
+-    const s = site(id),
+-      p = settings(id),
+-      range = reportPeriod(key, now()),
+-      sig = signature(s, p),
+-      cacheKey = id + ":" + key;
+-    const saved = db
+-      .prepare(
+-        "SELECT * FROM statistics_cache WHERE site_id=? AND period=? AND signature=?",
+-      )
+-      .get(id, key, sig);
+-    let value = saved ? JSON.parse(saved.report) : null,
+-      status = "ready",
+-      error = null,
+-      fetchedAt = saved?.fetched_at || null;
+-    const ttl = key === "24h" ? 120000 : 600000;
+-    const connected = !!(credentials && p.verifiedAt);
+-    if (!connected) {
+-      value = { traffic: emptyTraffic(range), range };
+-      status = "unconfigured";
+-    } else if (
+-      !saved ||
+-      now() - saved.fetched_at >= ttl ||
+-      saved.fetched_at > now() ||
+-      (key !== "24h" &&
+-        (value.range.date1 !== range.date1 ||
+-          value.range.date2 !== range.date2))
+-    ) {
+-      const failed = failures.get(cacheKey);
+-      if (failed && failed.until > now()) {
+-        error = failed.message;
+-        status = saved ? "stale" : "error";
+-      } else {
+-        const flightKey = cacheKey + ":" + sig;
+-        if (!inflight.has(flightKey)) {
+-          const credential = credentials;
+-          const pending = (async () => {
+-            const traffic = await client.report(s, p, range, credential.token);
+-            if (signature(site(id), settings(id)) !== sig)
+-              throw bad("Подключение изменилось. Обновите отчёт.", 409);
+-            const output = { traffic, range },
+-              time = now();
+-            db.prepare(
+-              "INSERT INTO statistics_cache(site_id,period,signature,report,fetched_at) VALUES(?,?,?,?,?) ON CONFLICT(site_id,period) DO UPDATE SET signature=excluded.signature,report=excluded.report,fetched_at=excluded.fetched_at",
+-            ).run(id, key, sig, JSON.stringify(output), time);
+-            failures.delete(cacheKey);
+-            return { value: output, fetchedAt: time };
+-          })().finally(() => inflight.delete(flightKey));
+-          inflight.set(flightKey, pending);
+-        }
+-        try {
+-          const result = await inflight.get(flightKey);
+-          value = result.value;
+-          fetchedAt = result.fetchedAt;
+-        } catch (e) {
+-          error = e.message;
+-          failures.set(cacheKey, { message: error, until: now() + 60000 });
+-          status = saved ? "stale" : "error";
+-        }
+-      }
+-    }
+-    if (!value) value = { traffic: emptyTraffic(range), range };
+-    const local = leads(id, value.range),
+-      t = value.traffic;
+-    return {
+-      site: { id: s.id, name: s.name, host: s.host },
+-      period: {
+-        key,
+-        from: value.range.from,
+-        to: value.range.to,
+-        group: value.range.group,
+-      },
+-      status,
+-      error,
+-      fetchedAt: fetchedAt ? new Date(fetchedAt).toISOString() : null,
+-      checkedAt: new Date(now()).toISOString(),
+-      refreshSeconds: 30,
+-      trafficRefreshSeconds: ttl / 1000,
+-      provider: t.provider,
+-      dataLag: t.dataLag,
+-      sampled: t.sampled,
+-      truncated: t.truncated,
+-      totals: { ...t.totals, leads: local.total },
+-      daily: t.daily.map((d, i) => ({ ...d, leads: local.slots.get(i) || 0 })),
+-      sources: t.sources,
+-      pages: t.pages,
+-      articles: t.articles,
+-      articlePrefixes: p.articlePrefixes,
+-      leadsSince: s.created_at,
+-      counterIds: p.counterIds,
+     };
+   }
+-  const admin = (req) => {
+-    if (req.actor?.role !== "admin")
+-      throw bad("Настраивать статистику может администратор.", 403);
+-  };
+   function register(app) {
+     app.use("/api/statistics", (req, res, next) => {
+       res.set("Cache-Control", "private, no-store");
+@@ -312,45 +184,20 @@ export async function createStatisticsModule(db, options) {
+     app.get(
+       "/api/statistics/sites",
+       wrap((req, res) =>
+-        res.json({
+-          sites: list(),
+-          oauthConfigured: !!credentials,
+-          canConfigure: req.actor?.role === "admin",
+-        }),
++        res.json({ sites: list(), canConfigure: req.actor?.role === "admin" }),
+       ),
+     );
+     app.get(
+       "/api/statistics/report",
+-      wrap(async (req, res) =>
++      wrap((req, res) =>
+         res.json(
+-          await report(
++          report(
+             String(req.query.site || ""),
+-            String(req.query.period || "30"),
++            String(req.query.period || "24h"),
+           ),
+         ),
+       ),
+     );
+-    app.get(
+-      "/api/statistics/counters",
+-      wrap(async (req, res) => {
+-        admin(req);
+-        res.json({ counters: await counters() });
+-      }),
+-    );
+-    app.post(
+-      "/api/statistics/connection",
+-      wrap(async (req, res) => {
+-        admin(req);
+-        res.json(await connect(req.body?.token));
+-      }),
+-    );
+-    app.patch(
+-      "/api/statistics/sites/:id",
+-      wrap(async (req, res) => {
+-        admin(req);
+-        res.json(await saveSettings(req.params.id, req.body));
+-      }),
+-    );
+   }
+-  return { register, connect, report, list, saveSettings };
++  return { register, receive: wrap(receive), report, list };
+ }
+diff --git a/server/modules/statistics/metrika.js b/server/modules/statistics/metrika.js
+deleted file mode 100644
+index 77bf7f64861a8cbb8b81ad753335aa510778b05a..0000000000000000000000000000000000000000
+--- a/server/modules/statistics/metrika.js
++++ /dev/null
+@@ -1,291 +0,0 @@
+-import { moscowText, parseMoscow, hostMatches } from "./period.js";
+-
+-const ORIGIN = "https://api-metrika.yandex.net";
+-const failure = (message, status = 503) =>
+-  Object.assign(new Error(message), { status });
+-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+-const count = (value) => {
+-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+-    throw failure("Метрика вернула некорректные значения.");
+-  return Math.round(value);
+-};
+-const sourceLabels = {
+-  direct: "Прямой заход",
+-  organic: "Поисковые системы",
+-  referral: "Переходы с сайтов",
+-  internal: "Со страниц сайта",
+-  ad: "Реклама",
+-  social: "Социальные сети",
+-  messenger: "Мессенджеры",
+-  recommend: "Рекомендательные системы",
+-  saved: "Сохранённые страницы",
+-};
+-
+-export class MetrikaClient {
+-  constructor({ fetcher = fetch, timeout = 12000 } = {}) {
+-    this.fetcher = fetcher;
+-    this.timeout = timeout;
+-    this.active = 0;
+-    this.waiting = [];
+-    this.cooldown = 0;
+-  }
+-  async request(route, params, token) {
+-    if (Date.now() < this.cooldown)
+-      throw failure(
+-        "Метрика ограничила частоту запросов. Данные обновятся после паузы.",
+-      );
+-    if (this.active >= 2)
+-      await new Promise((resolve) => this.waiting.push(resolve));
+-    else this.active++;
+-    try {
+-      if (Date.now() < this.cooldown)
+-        throw failure(
+-          "Метрика ограничила частоту запросов. Данные обновятся после паузы.",
+-        );
+-      const url = new URL(route, ORIGIN);
+-      for (const [key, value] of Object.entries(params || {}))
+-        url.searchParams.set(key, String(value));
+-      let response;
+-      try {
+-        response = await this.fetcher(url, {
+-          headers: { Authorization: "OAuth " + token },
+-          signal: AbortSignal.timeout(this.timeout),
+-          redirect: "error",
+-        });
+-      } catch {
+-        throw failure(
+-          "Не удалось получить данные Метрики. Сохранённый отчёт остаётся доступен.",
+-        );
+-      }
+-      if (response.status === 401 || response.status === 403)
+-        throw failure(
+-          "Нет доступа к счётчику. Проверьте токен Метрики и права аккаунта.",
+-          403,
+-        );
+-      if (response.status === 429) {
+-        this.cooldown = Date.now() + 60000;
+-        throw failure(
+-          "Достигнут лимит запросов Метрики. Повторим после паузы.",
+-        );
+-      }
+-      if (!response.ok)
+-        throw failure(
+-          response.status === 400
+-            ? "Метрика отклонила параметры отчёта. Проверьте подключение."
+-            : "Метрика временно недоступна.",
+-        );
+-      const text = await response.text();
+-      if (Buffer.byteLength(text) > 5000000)
+-        throw failure("Ответ Метрики слишком большой.");
+-      try {
+-        return JSON.parse(text);
+-      } catch {
+-        throw failure("Не удалось прочитать ответ Метрики.");
+-      }
+-    } finally {
+-      const next = this.waiting.shift();
+-      if (next) next();
+-      else this.active--;
+-    }
+-  }
+-  async counters(token) {
+-    const result = await this.request(
+-      "/management/v1/counters",
+-      { per_page: 1000 },
+-      token,
+-    );
+-    if (!Array.isArray(result.counters))
+-      throw failure("Не удалось прочитать список счётчиков.");
+-    return result.counters.map((c) => ({
+-      id: String(c.id),
+-      name: String(c.name || c.site || c.id),
+-      site: String(c.site2?.site || c.site || ""),
+-      status: c.status,
+-    }));
+-  }
+-  async verify(ids, token) {
+-    for (const id of ids) {
+-      const data = await this.request(
+-        "/management/v1/counter/" + id,
+-        {},
+-        token,
+-      );
+-      if (String(data.counter?.id) !== id || data.counter?.status === "Deleted")
+-        throw failure("Этот счётчик недоступен.", 400);
+-    }
+-  }
+-  filters(site, settings, range, kind, articles = false) {
+-    const field = kind === "s" ? "ym:s:startURLDomain" : "ym:pv:URLDomain";
+-    const domain = site.host.split(".").map(escapeRegex).join("[.]");
+-    const hostPattern = settings.includeSubdomains
+-      ? "(^|[.])" + domain + "$"
+-      : "^(www[.])?" + domain + "$";
+-    let filter = `${field}=~'${hostPattern}' AND ym:${kind}:dateTime>='${moscowText(range.start)}' AND ym:${kind}:dateTime<'${moscowText(range.end)}'`;
+-    if (articles) {
+-      const paths = settings.articlePrefixes.map(escapeRegex).join("|");
+-      filter += ` AND ym:pv:URLPath=~'^(?:${paths})[^/]+/?$'`;
+-    }
+-    return filter;
+-  }
+-  async report(site, settings, range, token) {
+-    const common = {
+-      ids: settings.counterIds.join(","),
+-      date1: range.date1,
+-      date2: range.date2,
+-      timezone: "+03:00",
+-      accuracy: "full",
+-      lang: "ru",
+-      include_undefined: true,
+-    };
+-    const series = (kind, articles = false) =>
+-      this.request(
+-        "/stat/v1/data/bytime",
+-        {
+-          ...common,
+-          metrics: kind === "s" ? "ym:s:visits" : "ym:pv:pageviews",
+-          group: range.group,
+-          filters: this.filters(site, settings, range, kind, articles),
+-        },
+-        token,
+-      );
+-    const table = (kind, dimensions, extra = {}, articles = false) =>
+-      this.request(
+-        "/stat/v1/data",
+-        {
+-          ...common,
+-          metrics: kind === "s" ? "ym:s:visits" : "ym:pv:pageviews",
+-          dimensions,
+-          sort: kind === "s" ? "-ym:s:visits" : "-ym:pv:pageviews",
+-          filters: this.filters(site, settings, range, kind, articles),
+-          limit: 1000,
+-          ...extra,
+-        },
+-        token,
+-      );
+-    const hasArticles = settings.articlePrefixes.length > 0;
+-    const data = await Promise.all([
+-      series("s"),
+-      series("pv"),
+-      table(
+-        "s",
+-        "ym:s:lastTrafficSource,ym:s:lastSearchEngineRoot,ym:s:lastReferalSource",
+-      ),
+-      table("pv", "ym:pv:URLDomain,ym:pv:URLPath"),
+-      hasArticles ? series("pv", true) : null,
+-      hasArticles
+-        ? table("pv", "ym:pv:URLDomain,ym:pv:URLPath,ym:pv:title", {}, true)
+-        : null,
+-    ]);
+-    const toSeries = (response) => {
+-      if (
+-        !Array.isArray(response.time_intervals) ||
+-        !Array.isArray(response.data)
+-      )
+-        throw failure("Метрика вернула неполный график.");
+-      const values = response.data[0]?.metrics?.[0] || [];
+-      if (
+-        response.time_intervals.length !== values.length &&
+-        response.data.length
+-      )
+-        throw failure("Метрика вернула неполный график.");
+-      const result = new Map();
+-      response.time_intervals.forEach((interval, i) => {
+-        if (!Array.isArray(interval))
+-          throw failure("Некорректный интервал графика.");
+-        result.set(parseMoscow(interval[0]), count(values[i] ?? 0));
+-      });
+-      return result;
+-    };
+-    const visits = toSeries(data[0]),
+-      views = toSeries(data[1]),
+-      articleViews = hasArticles ? toSeries(data[4]) : null;
+-    const daily = range.buckets.map((b) => ({
+-      at: new Date(b.from).toISOString(),
+-      end: new Date(b.to).toISOString(),
+-      visits: visits.get(b.key) || 0,
+-      views: views.get(b.key) || 0,
+-      articles: articleViews ? articleViews.get(b.key) || 0 : null,
+-    }));
+-    const totals = {
+-      visits: daily.reduce((n, r) => n + r.visits, 0),
+-      views: daily.reduce((n, r) => n + r.views, 0),
+-      articles: articleViews ? daily.reduce((n, r) => n + r.articles, 0) : null,
+-    };
+-    if (
+-      !Array.isArray(data[2].data) ||
+-      !Array.isArray(data[3].data) ||
+-      (hasArticles && !Array.isArray(data[5].data))
+-    )
+-      throw failure("Метрика вернула неполные таблицы.");
+-    const sourceMap = new Map();
+-    for (const row of data[2].data) {
+-      const type = row.dimensions?.[0]?.id,
+-        engine = row.dimensions?.[1]?.name,
+-        ref = row.dimensions?.[2]?.name;
+-      let name =
+-        sourceLabels[type] ||
+-        row.dimensions?.[0]?.name ||
+-        "Источник не определён";
+-      if (type === "organic" && engine && engine !== "Не определено")
+-        name = engine;
+-      if (type === "referral" && ref) {
+-        try {
+-          name = new URL(ref.includes("://") ? ref : "https://" + ref).hostname;
+-        } catch {
+-          name = "Переходы с сайтов";
+-        }
+-      }
+-      sourceMap.set(name, (sourceMap.get(name) || 0) + count(row.metrics?.[0]));
+-    }
+-    const sources = [...sourceMap]
+-      .map(([name, visits]) => ({ name, visits }))
+-      .sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name));
+-    const pages = (response, article = false) => {
+-      const grouped = new Map();
+-      for (const row of response.data) {
+-        const host = String(
+-            row.dimensions?.[0]?.name || site.host,
+-          ).toLowerCase(),
+-          raw = String(row.dimensions?.[1]?.name || "/");
+-        if (
+-          !hostMatches(host, site.host, settings.includeSubdomains) ||
+-          !raw.startsWith("/") ||
+-          raw.startsWith("//") ||
+-          /[\u0000-\u001f]/.test(raw)
+-        )
+-          continue;
+-        const url = new URL(raw, "https://" + host);
+-        if (url.hostname !== host) continue;
+-        url.search = "";
+-        url.hash = "";
+-        const key = url.href,
+-          old = grouped.get(key);
+-        const views = count(row.metrics?.[0]);
+-        if (old) old.views += views;
+-        else
+-          grouped.set(key, {
+-            path: (host === site.host ? "" : host) + url.pathname,
+-            url: key,
+-            title: article
+-              ? String(row.dimensions?.[2]?.name || url.pathname)
+-              : url.pathname,
+-            views,
+-          });
+-      }
+-      return [...grouped.values()]
+-        .sort((a, b) => b.views - a.views || a.path.localeCompare(b.path))
+-        .slice(0, 20);
+-    };
+-    return {
+-      totals,
+-      daily,
+-      sources: sources.slice(0, 12),
+-      pages: pages(data[3]),
+-      articles: hasArticles ? pages(data[5], true) : [],
+-      sampled: data.some((r) => r?.sampled === true),
+-      dataLag: Math.max(0, ...data.map((r) => Number(r?.data_lag) || 0)),
+-      truncated: data.some((r) => r && Number(r.total_rows) > 1000),
+-      provider: "Яндекс Метрика",
+-    };
+-  }
+-}
+diff --git a/server/modules/statistics/period.js b/server/modules/statistics/period.js
+index b54e71a30d33b090e51880d6841647c65dd77b1e..dd707387bda3b1bf528a56bf96974ff879993264 100644
+--- a/server/modules/statistics/period.js
++++ b/server/modules/statistics/period.js
+@@ -1,106 +1 @@
+-const DAY = 86400000,
+-  HOUR = 3600000,
+-  OFFSET = 3 * HOUR;
+-export const periods = ["24h", "7", "30", "90"];
+-export const moscowText = (ms) =>
+-  new Date(ms + OFFSET).toISOString().slice(0, 19).replace("T", " ");
+-export function reportPeriod(key, now = Date.now()) {
+-  if (!periods.includes(key))
+-    throw Object.assign(new Error("Выберите доступный период отчёта."), {
+-      status: 400,
+-    });
+-  const end = Math.floor(now / 60000) * 60000;
+-  const today = Math.floor((end + OFFSET) / DAY) * DAY - OFFSET;
+-  const start = key === "24h" ? end - DAY : today - (Number(key) - 1) * DAY;
+-  const step = key === "24h" ? HOUR : DAY;
+-  const first = Math.floor((start + OFFSET) / step) * step - OFFSET;
+-  const buckets = [];
+-  for (let time = first; time < end; time += step)
+-    buckets.push({
+-      key: time,
+-      from: Math.max(time, start),
+-      to: Math.min(time + step, end),
+-    });
+-  return {
+-    key,
+-    start,
+-    end,
+-    from: new Date(start).toISOString(),
+-    to: new Date(end).toISOString(),
+-    date1: moscowText(start).slice(0, 10),
+-    date2: moscowText(Math.max(start, end - 1)).slice(0, 10),
+-    group: key === "24h" ? "hour" : "day",
+-    buckets,
+-  };
+-}
+-export function parseMoscow(value) {
+-  if (typeof value !== "string") throw new Error("INVALID_METRIKA_TIME");
+-  const normalized =
+-    value.length === 10 ? value + "T00:00:00+03:00" : value.replace(" ", "T");
+-  const ms = Date.parse(
+-    /(?:Z|[+-]\d\d:\d\d)$/.test(normalized)
+-      ? normalized
+-      : normalized + "+03:00",
+-  );
+-  if (!Number.isFinite(ms)) throw new Error("INVALID_METRIKA_TIME");
+-  return ms;
+-}
+-export function defaults(host) {
+-  const presets = {
+-    "nwdelectricity.ru": [["114341229"], ["/articles/", "/zhurnal/"]],
+-    "pasport-dostupnosty.ru": [["114185674"], ["/blog/"]],
+-    "pasport-bezopasnosty.ru": [["112564818"], ["/blog/"]],
+-    "boykovgroup.ru": [["106986222"], []],
+-    "energo-365.ru": [["87477971", "113826112"], []],
+-    "elektrolaboratoriya-techotchet.ru": [["113216650"], []],
+-  };
+-  const preset = presets[host] || [[], []];
+-  return {
+-    counterIds: preset[0],
+-    articlePrefixes: preset[1],
+-    includeSubdomains: host === "energo-365.ru",
+-  };
+-}
+-export function validateSettings(input) {
+-  if (
+-    !input ||
+-    !Array.isArray(input.counterIds) ||
+-    !input.counterIds.length ||
+-    input.counterIds.length > 10 ||
+-    input.counterIds.some(
+-      (id) => typeof id !== "string" || !/^[1-9]\d{3,11}$/.test(id),
+-    ) ||
+-    new Set(input.counterIds).size !== input.counterIds.length
+-  )
+-    throw Object.assign(
+-      new Error("Укажите от одного до десяти разных номеров счётчиков."),
+-      { status: 400 },
+-    );
+-  if (
+-    !Array.isArray(input.articlePrefixes) ||
+-    input.articlePrefixes.length > 10 ||
+-    input.articlePrefixes.some(
+-      (p) =>
+-        typeof p !== "string" ||
+-        p.length > 200 ||
+-        !/^\/(?:[\p{L}\p{N}_-]+\/)+$/u.test(p),
+-    ) ||
+-    typeof input.includeSubdomains !== "boolean"
+-  )
+-    throw Object.assign(
+-      new Error("Проверьте разделы статей и настройку поддоменов."),
+-      { status: 400 },
+-    );
+-  return {
+-    counterIds: input.counterIds,
+-    articlePrefixes: [...new Set(input.articlePrefixes)],
+-    includeSubdomains: input.includeSubdomains,
+-  };
+-}
+-export function hostMatches(host, site, includeSubdomains) {
+-  return (
+-    host === site ||
+-    host === "www." + site ||
+-    (includeSubdomains && host.endsWith("." + site))
+-  );
+-}
++export { reportPeriod } from "../../../shared/statistics.js";
+diff --git a/server/modules/statistics/validation.js b/server/modules/statistics/validation.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..031ad1bf58dfbc4778abf6742f2c01b56f240641
+--- /dev/null
++++ b/server/modules/statistics/validation.js
+@@ -0,0 +1,150 @@
++import {
++  nativeSources,
++  statisticsPeriods,
++  reportPeriod,
++  cleanPath,
++} from "../../../shared/statistics.js";
++const bad = () =>
++  Object.assign(new Error("Проверьте состав отчёта статистики."), {
++    status: 400,
++  });
++const count = (n) => {
++  if (!Number.isSafeInteger(n) || n < 0 || n > 1e12) throw bad();
++  return n;
++};
++const text = (v, max) => {
++  if (
++    typeof v !== "string" ||
++    !v.trim() ||
++    v.length > max ||
++    /[\u0000-\u001f]/.test(v)
++  )
++    throw bad();
++  return v.trim();
++};
++export function validateNativePacket(input, site, now) {
++  const generated = Date.parse(input?.generatedAt);
++  if (
++    !input ||
++    input.version !== 1 ||
++    input.host !== site.host ||
++    nativeSources[site.host]?.kind !== input.source ||
++    !Number.isFinite(generated) ||
++    input.generatedAt !== new Date(generated).toISOString() ||
++    generated % 60000 ||
++    generated > now + 120000 ||
++    now - generated > 92 * 86400000 ||
++    !Array.isArray(input.reports) ||
++    input.reports.length !== 4
++  )
++    throw bad();
++  const seen = new Set();
++  const reports = input.reports.map((report) => {
++    if (
++      !report ||
++      !statisticsPeriods.includes(report.key) ||
++      seen.has(report.key)
++    )
++      throw bad();
++    seen.add(report.key);
++    const range = reportPeriod(report.key, generated);
++    if (
++      report.period?.from !== range.from ||
++      report.period?.to !== range.to ||
++      report.period?.group !== range.group ||
++      !Array.isArray(report.daily) ||
++      report.daily.length !== range.buckets.length
++    )
++      throw bad();
++    const totals = Object.fromEntries(
++      ["visits", "views", "articles", "leads"].map((k) => [
++        k,
++        report.totals?.[k] === null && k !== "leads"
++          ? null
++          : count(report.totals?.[k]),
++      ]),
++    );
++    if (totals.visits === null) throw bad();
++    const daily = report.daily.map((point, i) => {
++      if (
++        !point ||
++        point.at !== new Date(range.buckets[i].from).toISOString() ||
++        point.end !== new Date(range.buckets[i].to).toISOString()
++      )
++        throw bad();
++      return {
++        at: point.at,
++        end: point.end,
++        ...Object.fromEntries(
++          Object.keys(totals).map((k) => {
++            if (totals[k] === null) {
++              if (point[k] !== null) throw bad();
++              return [k, null];
++            }
++            return [k, count(point[k])];
++          }),
++        ),
++      };
++    });
++    for (const key of Object.keys(totals))
++      if (
++        totals[key] !== null &&
++        totals[key] !== daily.reduce((n, p) => n + p[key], 0)
++      )
++        throw bad();
++    if (
++      totals.articles !== null &&
++      (totals.views === null || totals.articles > totals.views)
++    )
++      throw bad();
++    if (!Array.isArray(report.sources) || report.sources.length > 20)
++      throw bad();
++    const sources = report.sources.map((s) => {
++      if (!s) throw bad();
++      return { name: text(s.name, 160), visits: count(s.visits) };
++    });
++    if (
++      new Set(sources.map((s) => s.name)).size !== sources.length ||
++      sources.reduce((n, s) => n + s.visits, 0) > totals.visits
++    )
++      throw bad();
++    function pages(rows, metric) {
++      if (!Array.isArray(rows) || rows.length > 20) throw bad();
++      const result = rows.map((p) => {
++        if (!p) throw bad();
++        const path = cleanPath(p.path);
++        if (!path || path !== p.path) throw bad();
++        return {
++          path,
++          url: "https://" + site.host + path,
++          title: text(p.title, 500),
++          views: count(p.views),
++        };
++      });
++      if (
++        new Set(result.map((p) => p.path)).size !== result.length ||
++        (totals[metric] === null && result.length) ||
++        (totals[metric] !== null &&
++          result.reduce((n, p) => n + p.views, 0) > totals[metric])
++      )
++        throw bad();
++      return result;
++    }
++    return {
++      key: report.key,
++      period: { from: range.from, to: range.to, group: range.group },
++      totals,
++      daily,
++      sources,
++      pages: pages(report.pages, "views"),
++      articles: pages(report.articles, "articles"),
++    };
++  });
++  return {
++    version: 1,
++    host: site.host,
++    source: input.source,
++    generatedAt: new Date(generated).toISOString(),
++    reports,
++  };
++}
+diff --git a/shared/statistics.js b/shared/statistics.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c9dabdf5a9df275a3ed66678ae7c7c9ca211c08
+--- /dev/null
++++ b/shared/statistics.js
+@@ -0,0 +1,164 @@
++const DAY = 86400000,
++  HOUR = 3600000,
++  OFFSET = 3 * HOUR;
++export const statisticsPeriods = ["24h", "7", "30", "90"];
++export const nativeSources = {
++  "nwdelectricity.ru": { kind: "nwd", label: "Редакция NWD" },
++  "pasport-dostupnosty.ru": {
++    kind: "accessibility",
++    label: "Админка Паспорта доступности",
++  },
++  "pasport-bezopasnosty.ru": {
++    kind: "security",
++    label: "Админка Паспорта безопасности",
++  },
++};
++export function reportPeriod(key, now = Date.now()) {
++  if (!statisticsPeriods.includes(key))
++    throw Object.assign(new Error("Выберите доступный период отчёта."), {
++      status: 400,
++    });
++  const end = Math.floor(now / 60000) * 60000;
++  const today = Math.floor((end + OFFSET) / DAY) * DAY - OFFSET;
++  const start = key === "24h" ? end - DAY : today - (Number(key) - 1) * DAY;
++  const step = key === "24h" ? HOUR : DAY;
++  const first = Math.floor((start + OFFSET) / step) * step - OFFSET;
++  const buckets = [];
++  for (let t = first; t < end; t += step)
++    buckets.push({
++      key: t,
++      from: Math.max(t, start),
++      to: Math.min(t + step, end),
++    });
++  return {
++    key,
++    start,
++    end,
++    from: new Date(start).toISOString(),
++    to: new Date(end).toISOString(),
++    group: key === "24h" ? "hour" : "day",
++    buckets,
++  };
++}
++export function cleanPath(value) {
++  if (
++    typeof value !== "string" ||
++    value.length > 1800 ||
++    !value.startsWith("/") ||
++    value.startsWith("//") ||
++    /[\\\u0000-\u001f]/.test(value)
++  )
++    return null;
++  const url = new URL(value, "https://path.invalid");
++  return url.pathname;
++}
++export function sourceLabel(value) {
++  const source = String(value || "unknown").slice(0, 160);
++  if (source.startsWith("utm:")) return "UTM · " + source.slice(4);
++  if (source.startsWith("ref:"))
++    return source.slice(4).split(/[/?#]/)[0] || "Источник не определён";
++  return (
++    {
++      direct: "Прямой заход",
++      internal: "Со страниц сайта",
++      unknown: "Источник не определён",
++    }[source] || source
++  );
++}
++// The adapters feed native records into the same four half-open time windows.
++export class NativeReportBuilder {
++  constructor({ host, kind, now = Date.now(), views = true, articles = true }) {
++    if (nativeSources[host]?.kind !== kind)
++      throw new Error("UNKNOWN_NATIVE_SOURCE");
++    this.host = host;
++    this.kind = kind;
++    this.generatedAt = new Date(Math.floor(now / 60000) * 60000).toISOString();
++    this.frames = statisticsPeriods.map((key) => {
++      const range = reportPeriod(key, now);
++      return {
++        key,
++        range,
++        daily: range.buckets.map((b) => ({
++          at: new Date(b.from).toISOString(),
++          end: new Date(b.to).toISOString(),
++          visits: 0,
++          views: views ? 0 : null,
++          articles: articles ? 0 : null,
++          leads: 0,
++        })),
++        sources: new Map(),
++        pages: new Map(),
++        articles: new Map(),
++      };
++    });
++  }
++  record(metric, time, { path, title, source } = {}) {
++    if (!["visits", "views", "leads"].includes(metric))
++      throw new Error("UNKNOWN_NATIVE_METRIC");
++    if (!Number.isFinite(time)) return;
++    const safePath = cleanPath(path);
++    for (const frame of this.frames) {
++      const r = frame.range;
++      if (time < r.start || time >= r.end) continue;
++      const step = r.group === "hour" ? HOUR : DAY;
++      const slot = Math.floor((time - r.buckets[0].key) / step);
++      const point = frame.daily[slot];
++      if (point[metric] === null) throw new Error("UNAVAILABLE_NATIVE_METRIC");
++      point[metric]++;
++      if (metric === "visits") {
++        const label = sourceLabel(source);
++        frame.sources.set(label, (frame.sources.get(label) || 0) + 1);
++      }
++      if (metric === "views" && safePath) {
++        const row = frame.pages.get(safePath) || {
++          path: safePath,
++          title: safePath,
++          views: 0,
++        };
++        row.views++;
++        frame.pages.set(safePath, row);
++        if (title && point.articles !== null) {
++          point.articles++;
++          const article = frame.articles.get(safePath) || {
++            path: safePath,
++            title: String(title).slice(0, 500),
++            views: 0,
++          };
++          article.views++;
++          frame.articles.set(safePath, article);
++        }
++      }
++    }
++  }
++  packet() {
++    return {
++      version: 1,
++      host: this.host,
++      source: this.kind,
++      generatedAt: this.generatedAt,
++      reports: this.frames.map((f) => ({
++        key: f.key,
++        period: { from: f.range.from, to: f.range.to, group: f.range.group },
++        totals: Object.fromEntries(
++          ["visits", "views", "articles", "leads"].map((k) => [
++            k,
++            f.daily.length && f.daily[0][k] === null
++              ? null
++              : f.daily.reduce((n, d) => n + (d[k] || 0), 0),
++          ]),
++        ),
++        daily: f.daily,
++        sources: [...f.sources]
++          .map(([name, visits]) => ({ name, visits }))
++          .sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name))
++          .slice(0, 20),
++        pages: [...f.pages.values()]
++          .sort((a, b) => b.views - a.views || a.path.localeCompare(b.path))
++          .slice(0, 20),
++        articles: [...f.articles.values()]
++          .sort((a, b) => b.views - a.views || a.path.localeCompare(b.path))
++          .slice(0, 20),
++      })),
++    };
++  }
++}
+diff --git a/src/pages/Statistics.tsx b/src/pages/Statistics.tsx
+index b51c497948f5f34a47418492774075fcbe1fe944..5d14361b8fd2ffabaccf87d3dd27de747c088082 100644
+--- a/src/pages/Statistics.tsx
++++ b/src/pages/Statistics.tsx
+@@ -12,7 +12,7 @@ import {
+   Settings2,
+   X,
+ } from "lucide-react";
+-import { api, dateTime, errorText, number, post } from "../api";
++import { api, dateTime, errorText, number } from "../api";
+ import { Empty, Notice, PageHead } from "../components/Common";
+ import "./Statistics.css";
+ 
+@@ -22,12 +22,8 @@ type Site = {
+   name: string;
+   host: string;
+   connected: boolean;
+-  settings: {
+-    counterIds: string[];
+-    articlePrefixes: string[];
+-    includeSubdomains: boolean;
+-    version: number;
+-  };
++  source: { kind: string; label: string } | null;
++  lastSyncedAt: string | null;
+ };
+ type Point = {
+   at: string;
+@@ -45,9 +41,8 @@ type Report = {
+   error: string | null;
+   fetchedAt: string | null;
+   checkedAt: string;
+-  dataLag: number;
+-  sampled: boolean;
+-  truncated: boolean;
++  provider: string;
++  leadsOrigin: "native" | "hub";
+   totals: {
+     visits: number | null;
+     views: number | null;
+@@ -58,9 +53,6 @@ type Report = {
+   sources: { name: string; visits: number }[];
+   pages: PageRow[];
+   articles: PageRow[];
+-  articlePrefixes: string[];
+-  leadsSince: string;
+-  counterIds: string[];
+ };
+ const periods: { key: Period; label: string }[] = [
+   { key: "24h", label: "24 часа" },
+@@ -93,13 +85,15 @@ function TrafficChart({
+ }) {
+   const [selected, setSelected] = useState<number | null>(null);
+   useEffect(() => setSelected(null), [points]);
+-  const available = points.length > 0 && points[0].views !== null;
++  const hasViews = points.length > 0 && points[0].views !== null;
++  const hasVisits = points.length > 0 && points[0].visits !== null;
++  const available = hasViews || hasVisits;
+   if (!available)
+     return (
+       <div className="stats-chart-empty">
+         <BarChart3 size={32} strokeWidth={1.3} />
+         <p>Здесь появится динамика посещаемости</p>
+-        <span>После подключения счётчика Яндекс Метрики</span>
++        <span>После подключения статистики сайта</span>
+       </div>
+     );
+   const max = Math.max(
+@@ -138,10 +132,10 @@ function TrafficChart({
+       <div className="stats-chart-readout" aria-live="polite">
+         <span>{labelDate(point.at, hourly)}</span>
+         <b>
+-          {number(point.views || 0)} <small>просмотров</small>
++          {metric(point.views)} <small>просмотров</small>
+         </b>
+         <b>
+-          {number(point.visits || 0)} <small>визитов</small>
++          {metric(point.visits)} <small>визитов</small>
+         </b>
+       </div>
+       <svg
+@@ -193,12 +187,18 @@ function TrafficChart({
+             </text>
+           </g>
+         ))}
+-        <polygon
+-          className="stats-chart-area"
+-          points={`${x(0)},${y(0)} ${line("views")} ${x(points.length - 1)},${y(0)}`}
+-        />
+-        <polyline className="stats-chart-views" points={line("views")} />
+-        <polyline className="stats-chart-visits" points={line("visits")} />
++        {hasViews && (
++          <polygon
++            className="stats-chart-area"
++            points={`${x(0)},${y(0)} ${line("views")} ${x(points.length - 1)},${y(0)}`}
++          />
++        )}
++        {hasViews && (
++          <polyline className="stats-chart-views" points={line("views")} />
++        )}
++        {hasVisits && (
++          <polyline className="stats-chart-visits" points={line("visits")} />
++        )}
+         {selected !== null && (
+           <g>
+             <line
+@@ -211,7 +211,7 @@ function TrafficChart({
+             <circle
+               className="stats-chart-point"
+               cx={x(index)}
+-              cy={y(point.views || 0)}
++              cy={y(point.views ?? point.visits ?? 0)}
+               r={4}
+             />
+           </g>
+@@ -241,90 +241,21 @@ function TrafficChart({
+ 
+ function ConnectionDialog({
+   site,
+-  oauthConfigured,
+   onClose,
+-  onChange,
+ }: {
+   site: Site;
+-  oauthConfigured: boolean;
+   onClose: () => void;
+-  onChange: (close: boolean) => Promise<void>;
+ }) {
+-  const dialog = useRef<HTMLDialogElement>(null),
+-    [token, setToken] = useState(""),
+-    [tokenOpen, setTokenOpen] = useState(!oauthConfigured),
+-    [busy, setBusy] = useState(false),
+-    [error, setError] = useState("");
+-  const [ids, setIds] = useState(site.settings.counterIds.join(", ")),
+-    [prefixes, setPrefixes] = useState(
+-      site.settings.articlePrefixes.join("\n"),
+-    ),
+-    [subdomains, setSubdomains] = useState(site.settings.includeSubdomains);
+-  const [counters, setCounters] = useState<
+-    { id: string; name: string; site: string }[]
+-  >([]);
++  const dialog = useRef<HTMLDialogElement>(null);
+   useEffect(() => {
+     dialog.current?.showModal();
++    return () => dialog.current?.close();
+   }, []);
+-  useEffect(() => {
+-    setIds(site.settings.counterIds.join(", "));
+-    setPrefixes(site.settings.articlePrefixes.join("\n"));
+-    setSubdomains(site.settings.includeSubdomains);
+-  }, [site.id, site.settings.version]);
+-  useEffect(() => {
+-    if (!oauthConfigured) return;
+-    const c = new AbortController();
+-    void api<{ counters: typeof counters }>("/statistics/counters", {
+-      signal: c.signal,
+-    })
+-      .then((r) => setCounters(r.counters))
+-      .catch(() => {});
+-    return () => c.abort();
+-  }, [oauthConfigured, site.settings.version]);
+-  async function connect(e: React.FormEvent) {
+-    e.preventDefault();
+-    setBusy(true);
+-    setError("");
+-    try {
+-      await post("/statistics/connection", { token: token.trim() });
+-      setToken("");
+-      setTokenOpen(false);
+-      await onChange(false);
+-    } catch (e) {
+-      setError(errorText(e));
+-    } finally {
+-      setBusy(false);
+-    }
+-  }
+-  async function save(e: React.FormEvent) {
+-    e.preventDefault();
+-    setBusy(true);
+-    setError("");
+-    try {
+-      await api(`/statistics/sites/${site.id}`, {
+-        method: "PATCH",
+-        body: JSON.stringify({
+-          counterIds: ids.split(/[\s,;]+/).filter(Boolean),
+-          articlePrefixes: prefixes
+-            .split(/[\n,;]+/)
+-            .map((v) => v.trim())
+-            .filter(Boolean),
+-          includeSubdomains: subdomains,
+-          version: site.settings.version,
+-        }),
+-      });
+-      await onChange(true);
+-    } catch (e) {
+-      setError(errorText(e));
+-    } finally {
+-      setBusy(false);
+-    }
+-  }
+   return (
+     <dialog ref={dialog} className="stats-dialog" onCancel={onClose}>
+       <div className="stats-dialog-heading">
+         <div>
+-          <span className="eyebrow">ПОДКЛЮЧЕНИЕ СТАТИСТИКИ</span>
++          <span className="eyebrow">СТАТИСТИКА САЙТА</span>
+           <h2>{site.name}</h2>
+           <p>{site.host}</p>
+         </div>
+@@ -336,115 +267,33 @@ function ConnectionDialog({
+           <X size={21} />
+         </button>
+       </div>
+-      {error && <Notice tone="error">{error}</Notice>}
+-      {oauthConfigured && !tokenOpen && (
+-        <div className="stats-token-status">
+-          <span>Доступ к Метрике подключён</span>
+-          <button className="text-button" onClick={() => setTokenOpen(true)}>
+-            Изменить токен
+-          </button>
+-        </div>
+-      )}
+-      {tokenOpen && (
+-        <form onSubmit={connect} className="stats-token-form">
+-          <h3>Доступ к Яндекс Метрике</h3>
+-          <p>
+-            Один токен с правом просмотра для всех доступных вам счётчиков.{" "}
+-            <a
+-              href="https://yandex.ru/dev/metrika/ru/intro/authorization"
+-              target="_blank"
+-              rel="noopener noreferrer"
+-            >
+-              Как получить токен
+-            </a>
+-          </p>
+-          <label>
+-            Токен Метрики
+-            <input
+-              type="password"
+-              autoComplete="new-password"
+-              value={token}
+-              onChange={(e) => setToken(e.target.value)}
+-              required
+-              placeholder="Вставьте токен"
+-            />
+-            <small>
+-              Токен сохраняется на сервере. Пароль Яндекса вводить не нужно.
+-            </small>
+-          </label>
+-          <button className="button secondary" disabled={busy || !token.trim()}>
+-            Подключить доступ
+-          </button>
+-        </form>
++      <div className="stats-token-form">
++        <h3>{site.source?.label || "Источник ещё не подключён"}</h3>
++        <p>
++          {site.source
++            ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
++            : site.host === "energo-365.ru"
++              ? "Нужно определить плагин статистики WordPress, чтобы подключить его данные вместе с поддоменами."
++              : "Для этого сайта пока нет подключённой выгрузки статистики. Недоступные показатели отмечены прочерком."}
++        </p>
++        <p>
++          {site.lastSyncedAt
++            ? `Последний отчёт: ${dateTime(site.lastSyncedAt)} · Москва`
++            : "Ожидаем первый отчёт сайта."}
++        </p>
++      </div>
++      {site.source && (
++        <p>
++          Инструкции установки синхронизации находятся в архиве обновления.
++          Используется существующее защищённое подключение сайта к разделу
++          «Заявки».
++        </p>
+       )}
+-      <form onSubmit={save} className="stats-connection-form">
+-        <h3>Счётчики и материалы сайта</h3>
+-        <label>
+-          Номера счётчиков
+-          <input
+-            value={ids}
+-            onChange={(e) => setIds(e.target.value)}
+-            placeholder="Например, 114341229"
+-            required
+-            disabled={!oauthConfigured}
+-          />
+-          <small>
+-            Через запятую. Для поддоменов можно указать несколько счётчиков. Два
+-            счётчика на одной странице могут дублировать данные.
+-          </small>
+-        </label>
+-        {counters.length > 0 && (
+-          <details className="stats-counter-list">
+-            <summary>Доступные счётчики · {counters.length}</summary>
+-            <ul>
+-              {counters.map((c) => (
+-                <li key={c.id}>
+-                  <span>
+-                    {c.name}
+-                    <small>{c.site}</small>
+-                  </span>
+-                  <code>{c.id}</code>
+-                </li>
+-              ))}
+-            </ul>
+-          </details>
+-        )}
+-        <label className="stats-checkbox">
+-          <input
+-            type="checkbox"
+-            checked={subdomains}
+-            onChange={(e) => setSubdomains(e.target.checked)}
+-            disabled={!oauthConfigured}
+-          />
+-          Учитывать все поддомены этого сайта
+-        </label>
+-        <label>
+-          Разделы статей
+-          <textarea
+-            rows={3}
+-            value={prefixes}
+-            onChange={(e) => setPrefixes(e.target.value)}
+-            placeholder={"/blog/\n/articles/"}
+-            disabled={!oauthConfigured}
+-          />
+-          <small>
+-            По одному пути на строку. Считаются страницы вида
+-            /blog/название-статьи/. Пустое поле оставляет статистику статей без
+-            подключения.
+-          </small>
+-        </label>
+-        <div className="stats-dialog-actions">
+-          <button type="button" className="button secondary" onClick={onClose}>
+-            Закрыть
+-          </button>
+-          <button
+-            className="button primary"
+-            disabled={busy || !oauthConfigured}
+-          >
+-            {busy ? "Проверяем…" : "Сохранить подключение"}
+-          </button>
+-        </div>
+-      </form>
++      <div className="stats-dialog-actions">
++        <button className="button primary" onClick={onClose}>
++          Понятно
++        </button>
++      </div>
+     </dialog>
+   );
+ }
+@@ -453,7 +302,6 @@ export default function Statistics({ active }: { active: boolean }) {
+   const [sites, setSites] = useState<Site[]>([]),
+     [selected, setSelected] = useState(""),
+     [period, setPeriod] = useState<Period>("24h"),
+-    [oauth, setOauth] = useState(false),
+     [canConfigure, setCanConfigure] = useState(false);
+   const [report, setReport] = useState<Report | null>(null),
+     [error, setError] = useState(""),
+@@ -467,11 +315,9 @@ export default function Statistics({ active }: { active: boolean }) {
+     try {
+       const data = await api<{
+         sites: Site[];
+-        oauthConfigured: boolean;
+         canConfigure: boolean;
+       }>("/statistics/sites");
+       setSites(data.sites);
+-      setOauth(data.oauthConfigured);
+       setCanConfigure(data.canConfigure);
+       setSelected((value) =>
+         data.sites.some((s) => s.id === value)
+@@ -505,6 +351,17 @@ export default function Statistics({ active }: { active: boolean }) {
+         );
+         if (!disposed && sequence.current === own) {
+           setReport(result);
++          setSites((current) =>
++            current.map((s) =>
++              s.id === result.site.id
++                ? {
++                    ...s,
++                    connected: result.status !== "unconfigured",
++                    lastSyncedAt: result.fetchedAt,
++                  }
++                : s,
++            ),
++          );
+           setError("");
+         }
+       } catch (e) {
+@@ -540,7 +397,7 @@ export default function Statistics({ active }: { active: boolean }) {
+         : null;
+   const hourly = period === "24h",
+     connected =
+-      visible?.totals.views !== null && visible?.totals.views !== undefined;
++      visible?.totals.visits !== null && visible?.totals.visits !== undefined;
+   const metricCards = [
+     {
+       key: "visits" as const,
+@@ -554,23 +411,30 @@ export default function Statistics({ active }: { active: boolean }) {
+       label: "Просмотры страниц",
+       icon: Eye,
+       tone: "white",
+-      note: "По данным Яндекс Метрики",
++      note:
++        visible?.totals.views === null
++          ? "Источник не ведёт этот показатель"
++          : "По данным админки сайта",
+     },
+     {
+       key: "articles" as const,
+       label: "Просмотры статей",
+       icon: Newspaper,
+       tone: "pink",
+-      note: visible?.articlePrefixes.length
+-        ? "Материалы в разделах сайта"
+-        : "Раздел статей не указан",
++      note:
++        visible?.totals.articles === null
++          ? "Источник не ведёт этот показатель"
++          : "По сохранённым просмотрам материалов",
+     },
+     {
+       key: "leads" as const,
+       label: "Заявки с сайта",
+       icon: Inbox,
+       tone: "white",
+-      note: "Получены в Boykov Services",
++      note:
++        visible?.leadsOrigin === "native"
++          ? "По данным админки сайта"
++          : "Получены в Boykov Services",
+     },
+   ];
+   const shownSources = visible?.sources.slice(0, 6) || [],
+@@ -663,10 +527,9 @@ export default function Statistics({ active }: { active: boolean }) {
+           </section>
+           <div className="stats-report-meta">
+             <div>
+-              <span className="stats-provider">Яндекс Метрика</span>
+-              {site?.settings.includeSubdomains && (
+-                <span>Включая поддомены</span>
+-              )}
++              <span className="stats-provider">
++                {visible?.provider || site?.source?.label || "Статистика сайта"}
++              </span>
+               <span>
+                 {visible
+                   ? `${labelDate(visible.period.from, hourly)} — ${labelDate(visible.period.to, hourly)}`
+@@ -687,8 +550,8 @@ export default function Statistics({ active }: { active: boolean }) {
+               <div>
+                 <b>Подключите статистику {site?.host}</b>
+                 <p>
+-                  Посещаемость появится после подключения Метрики. Обращения уже
+-                  считаются по данным сервиса.
++                  Посещаемость появится после первого отчёта из админки сайта.
++                  Пока отображаются заявки, поступившие в Boykov Services.
+                 </p>
+               </div>
+               {canConfigure ? (
+@@ -696,7 +559,7 @@ export default function Statistics({ active }: { active: boolean }) {
+                   className="button primary"
+                   onClick={() => setSettingsOpen(true)}
+                 >
+-                  Подключить Метрику
++                  Как подключить
+                 </button>
+               ) : (
+                 <span>Подключение выполняет администратор</span>
+@@ -878,11 +741,13 @@ export default function Statistics({ active }: { active: boolean }) {
+                   </div>
+                 ) : (
+                   <p className="stats-table-empty">
+-                    {section.articles && !visible?.articlePrefixes.length
+-                      ? "Укажите разделы статей в настройках этого сайта, чтобы видеть просмотры материалов."
+-                      : connected
+-                        ? "За выбранный период просмотров пока нет."
+-                        : "Данные появятся после подключения Метрики."}
++                    {section.articles && visible?.totals.articles === null
++                      ? "В источнике пока нет отдельного учёта просмотров статей."
++                      : !section.articles && visible?.totals.views === null
++                        ? "Источник не ведёт отдельный учёт просмотров страниц."
++                        : connected
++                          ? "За выбранный период просмотров пока нет."
++                          : "Данные появятся после подключения статистики сайта."}
+                   </p>
+                 )}
+               </section>
+@@ -892,43 +757,22 @@ export default function Statistics({ active }: { active: boolean }) {
+             <CircleHelp size={18} />
+             <div>
+               <p>
+-                Проверка обновлений — каждые 30 секунд. Полный отчёт обновляется{" "}
+-                {hourly ? "раз в две минуты" : "раз в десять минут"}. Все
+-                показатели относятся к указанному интервалу. Метрика может
+-                передавать новые данные с задержкой.
++                Проверка обновлений — каждые 30 секунд. Сайты передают отчёты
++                раз в минуту. Все показатели относятся к указанному интервалу по
++                московскому времени.
+               </p>
+               <p>
+-                Заявки учитываются вместе с корзиной. История обращений до
+-                подключения сайта может быть неполной. Просмотры статей
+-                считаются по указанным разделам.
++                {visible?.leadsOrigin === "native"
++                  ? "Заявки и посещаемость берутся из админки сайта с её правилами подсчёта. История ограничена сохранёнными на сайте данными."
++                  : "До подключения статистики учитываются только заявки центрального сервиса, включая корзину."}{" "}
++                Прочерк означает, что источник не передаёт показатель.
+               </p>
+-              {visible?.sampled && (
+-                <p>
+-                  Метрика использовала выборку: показатели посещаемости
+-                  оценочные.
+-                </p>
+-              )}
+-              {visible?.truncated && (
+-                <p>
+-                  Таблицы ограничены наиболее популярными адресами; суммарные
+-                  показатели рассчитаны за весь период.
+-                </p>
+-              )}
+             </div>
+           </footer>
+         </>
+       )}
+       {settingsOpen && site && canConfigure && (
+-        <ConnectionDialog
+-          site={site}
+-          oauthConfigured={oauth}
+-          onClose={() => setSettingsOpen(false)}
+-          onChange={async (close) => {
+-            await loadSites();
+-            setRevision((r) => r + 1);
+-            if (close) setSettingsOpen(false);
+-          }}
+-        />
++        <ConnectionDialog site={site} onClose={() => setSettingsOpen(false)} />
+       )}
+     </>
+   );
+diff --git a/tests/helpers/metrika-fixture.js b/tests/helpers/metrika-fixture.js
+deleted file mode 100644
+index 538953bbabf527e10b58eecd24fd9e1a0272d615..0000000000000000000000000000000000000000
+--- a/tests/helpers/metrika-fixture.js
++++ /dev/null
+@@ -1,152 +0,0 @@
+-import {
+-  parseMoscow,
+-  moscowText,
+-} from "../../server/modules/statistics/period.js";
+-export function metrikaFixture() {
+-  const calls = [],
+-    state = { fail: false, delay: 0, active: 0, maxActive: 0 };
+-  const ids = [
+-    "114341229",
+-    "114185674",
+-    "112564818",
+-    "106986222",
+-    "87477971",
+-    "113826112",
+-    "113216650",
+-  ];
+-  async function fetcher(input, options) {
+-    const url = new URL(input);
+-    calls.push({ url, options });
+-    state.active++;
+-    state.maxActive = Math.max(state.maxActive, state.active);
+-    try {
+-      if (state.delay) await new Promise((r) => setTimeout(r, state.delay));
+-      if (url.pathname === "/management/v1/counters")
+-        return Response.json({
+-          counters: ids.map((id) => ({
+-            id: Number(id),
+-            name: "Счётчик " + id,
+-            site: "https://nwdelectricity.ru",
+-            status: "Active",
+-          })),
+-        });
+-      if (url.pathname.startsWith("/management/v1/counter/"))
+-        return Response.json({
+-          counter: {
+-            id: Number(url.pathname.split("/").at(-1)),
+-            status: "Active",
+-          },
+-        });
+-      if (state.fail)
+-        return Response.json(
+-          { error: "must never expose raw provider errors" },
+-          { status: 503 },
+-        );
+-      const params = url.searchParams,
+-        filter = params.get("filters") || "";
+-      const start = parseMoscow(filter.match(/dateTime>='([^']+)'/)?.[1]);
+-      const end = parseMoscow(filter.match(/dateTime<'([^']+)'/)?.[1]);
+-      const article = filter.includes("URLPath=~"),
+-        visits = params.get("metrics") === "ym:s:visits";
+-      const host = params.get("ids")?.includes("112564818")
+-        ? "pasport-bezopasnosty.ru"
+-        : params.get("ids")?.includes("87477971")
+-          ? "energo-365.ru"
+-          : "nwdelectricity.ru";
+-      if (url.pathname.endsWith("/bytime")) {
+-        const step = params.get("group") === "hour" ? 3600000 : 86400000;
+-        const first = parseMoscow(params.get("date1")),
+-          last = parseMoscow(params.get("date2")) + 86400000;
+-        const time_intervals = [],
+-          values = [];
+-        for (let t = first; t < last; t += step) {
+-          time_intervals.push([moscowText(t), moscowText(t + step - 1)]);
+-          values.push(
+-            t + step <= start || t >= end ? 0 : article ? 2 : visits ? 3 : 7,
+-          );
+-        }
+-        return Response.json({
+-          time_intervals,
+-          data: [{ dimensions: [], metrics: [values] }],
+-          sampled: false,
+-          data_lag: 90,
+-        });
+-      }
+-      if (visits)
+-        return Response.json({
+-          data: [
+-            {
+-              dimensions: [
+-                { id: "direct", name: "Прямые заходы" },
+-                { id: null, name: "Не определено" },
+-                { id: null, name: "Не определено" },
+-              ],
+-              metrics: [25],
+-            },
+-            {
+-              dimensions: [
+-                { id: "organic", name: "Поиск" },
+-                { id: "yandex", name: "Яндекс" },
+-                { id: null, name: "Не определено" },
+-              ],
+-              metrics: [17],
+-            },
+-            {
+-              dimensions: [
+-                { id: "organic", name: "Поиск" },
+-                { id: "google", name: "Google" },
+-                { id: null, name: "Не определено" },
+-              ],
+-              metrics: [10],
+-            },
+-            {
+-              dimensions: [
+-                { id: "referral", name: "Сайты" },
+-                { id: null, name: "Не определено" },
+-                {
+-                  id: "https://dzen.ru/article/?secret=x",
+-                  name: "https://dzen.ru/article/?secret=x",
+-                },
+-              ],
+-              metrics: [3],
+-            },
+-          ],
+-          total_rows: 4,
+-          sampled: false,
+-        });
+-      const row = (pathname, title, value, domain = host) => ({
+-        dimensions: [
+-          { name: domain },
+-          { name: pathname },
+-          ...(article ? [{ name: title }] : []),
+-        ],
+-        metrics: [value],
+-      });
+-      return Response.json({
+-        data: article
+-          ? [
+-              row(
+-                "/articles/test/",
+-                "Назначение ответственного за электрохозяйство",
+-                8,
+-              ),
+-              row("/articles/test/", "Старый заголовок", 2),
+-              row("/articles/second/", "Порядок технического обслуживания", 5),
+-            ]
+-          : [
+-              row("/", "", 92),
+-              row("/services/", "", 34),
+-              row("/ceny/", "", 13),
+-              row("/kontakty/", "", 12),
+-              row("//attacker.invalid/leak", "", 1),
+-              row("/bad/", "", 9, "nwdelectricity.ru.attacker.invalid"),
+-            ],
+-        total_rows: 6,
+-        sampled: false,
+-      });
+-    } finally {
+-      state.active--;
+-    }
+-  }
+-  return { fetcher, calls, state, ids };
+-}
+diff --git a/tests/helpers/statistics-nwd-fixture.php b/tests/helpers/statistics-nwd-fixture.php
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d9041b9adca4fb5efc3efbb8008c0d24eb10920
+--- /dev/null
++++ b/tests/helpers/statistics-nwd-fixture.php
+@@ -0,0 +1,22 @@
++<?php
++if(PHP_SAPI!=='cli' || !getenv('NATIVE_TEST_MYSQL_PORT'))exit(2);
++mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
++$db=new mysqli('127.0.0.1','root','','boykov_native_stats_test',(int)getenv('NATIVE_TEST_MYSQL_PORT'));
++$db->set_charset('utf8mb4');
++function panelTable($name){return '`native_test_'.$name.'`';}
++function panelRows($sql,array $values=array()){
++ global $db;$s=$db->prepare($sql);if($values){$types='';foreach($values as $v)$types.=is_int($v)?'i':'s';$s->bind_param($types,...$values);}$s->execute();return $s->get_result()->fetch_all(MYSQLI_ASSOC);
++}
++$db->query('CREATE TEMPORARY TABLE native_test_panel_traffic_view(viewed_at INT,entry INT,article_site_id INT,path VARCHAR(500),source VARCHAR(160)) ENGINE=InnoDB');
++$db->query('CREATE TEMPORARY TABLE native_test_feedback(created INT,trash CHAR(1)) ENGINE=InnoDB');
++$db->query('CREATE TEMPORARY TABLE native_test_panel_article(site_id INT,title VARCHAR(500)) ENGINE=InnoDB');
++$db->query("INSERT INTO native_test_panel_article VALUES(100,'Статья редакции')");
++require __DIR__.'/../../integrations/statistics/nwd.php';
++$now=strtotime('2026-11-19T13:34:50Z');$range=nwdStatisticsPeriod('24h',$now);
++foreach(array($range['start']-1,$range['start'],$range['end']-1,$range['end']) as $time){
++ $s=$db->prepare("INSERT INTO native_test_panel_traffic_view VALUES(?,1,100,'/zhurnal/test/','ref:yandex.ru')");$s->bind_param('i',$time);$s->execute();
++ $s=$db->prepare("INSERT INTO native_test_feedback VALUES(?,'0')");$s->bind_param('i',$time);$s->execute();
++}
++$db->query('INSERT INTO native_test_feedback VALUES('.($range['start']+100).",'1')");
++$db->begin_transaction(MYSQLI_TRANS_START_READ_ONLY|MYSQLI_TRANS_START_WITH_CONSISTENT_SNAPSHOT);
++$value=nwdStatisticsPacket($now);$db->commit();echo json_encode($value,JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR);
+diff --git a/tests/statistics.test.js b/tests/statistics.test.js
+index 9108376563fc44ce7516723d887f859c0ec85cbf..27c01648af022635f7b0bae75dc607a1bb7fe23b 100644
+--- a/tests/statistics.test.js
++++ b/tests/statistics.test.js
+@@ -1,348 +1,458 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
+-import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
++import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import path from "node:path";
+-import { randomUUID } from "node:crypto";
++import { createHash, randomUUID } from "node:crypto";
++import { DatabaseSync } from "node:sqlite";
+ import { createApp } from "../server/app.js";
+ import { hashPassword } from "../server/auth.js";
+-import { createInitialAdmin } from "../server/accounts.js";
++import { createStatisticsModule } from "../server/modules/statistics/index.js";
+ import {
++  NativeReportBuilder,
+   reportPeriod,
+-  validateSettings,
+-  parseMoscow,
+-  hostMatches,
+-} from "../server/modules/statistics/period.js";
+-import { MetrikaClient } from "../server/modules/statistics/metrika.js";
+-import { metrikaFixture } from "./helpers/metrika-fixture.js";
+-
+-const password = "statistics-fixture-password",
++  cleanPath,
++} from "../shared/statistics.js";
++import {
++  collectAccessibility,
++  collectSecurity,
++} from "../integrations/statistics/collect.mjs";
++import {
++  runNativeCycle,
++  statisticsEndpoint,
++} from "../integrations/statistics/agent.mjs";
++const password = "native-statistics-fixture-password",
+   passwordHash = await hashPassword(password),
+-  oauth = "fixture-metrika-token-no-real-access";
++  key = "d".repeat(64),
++  nowValue = Date.parse("2026-11-19T13:34:50Z");
++function packet(now = nowValue, host = "nwdelectricity.ru", kind = "nwd") {
++  const b = new NativeReportBuilder({ host, kind, now });
++  const end = b.frames[0].range.end;
++  for (let i = 0; i < 4; i++)
++    b.record("visits", end - (i + 1) * 3600000, {
++      source: i === 0 ? "ref:yandex.ru" : "direct",
++    });
++  for (let i = 0; i < 7; i++)
++    b.record("views", end - (i + 1) * 3600000, {
++      path: i % 2 ? "/" : "/zhurnal/test/",
++      title: i % 2 ? undefined : "Тестовая статья",
++    });
++  b.record("leads", end - 60000);
++  return b.packet();
++}
+ async function fixture(t) {
+-  const directory = await mkdtemp(path.join(tmpdir(), "boykov-statistics-")),
+-    remote = metrikaFixture();
+-  let clock = Date.parse("2026-11-19T13:34:50.000Z");
++  const directory = await mkdtemp(
++    path.join(tmpdir(), "boykov-native-statistics-"),
++  );
++  let clock = nowValue;
+   const app = await createApp({
+     dataDir: directory,
+     passwordHash,
+-    now: () => clock,
+     secureCookies: false,
+     allowedOrigins: [],
+-    statisticsFetch: remote.fetcher,
++    now: () => clock,
++    statisticsFetch: () => {
++      throw Error("NO_EXTERNAL_STATISTICS_ALLOWED");
++    },
+     worker: async () => Response.json({ jobs: [], ok: true }),
+     isConfigured: () => false,
+   });
+-  await createInitialAdmin(app.locals.db, {
+-    login: "stats.admin",
+-    name: "Тестовый администратор",
+-    password,
+-  });
++  const db = app.locals.db;
++  db.prepare("UPDATE sales_sites SET token_hash=? WHERE id='nwd'").run(
++    createHash("sha256").update(key).digest("hex"),
++  );
+   const server = app.listen(0, "127.0.0.1");
+   await new Promise((r) => server.once("listening", r));
+   const base = "http://127.0.0.1:" + server.address().port;
++  const login = await fetch(base + "/api/auth/login", {
++    method: "POST",
++    headers: { "Content-Type": "application/json", "X-Boykov-Request": "1" },
++    body: JSON.stringify({ password }),
++  });
++  const cookie = login.headers.get("set-cookie").split(";")[0];
+   t.after(async () => {
+     await new Promise((r) => server.close(r));
+-    app.locals.db.close();
++    db.close();
+     await rm(directory, { recursive: true, force: true });
+   });
+-  const request = (route, method = "GET", body, session = "") =>
+-    fetch(base + "/api" + route, {
+-      method,
+-      headers: {
+-        "Content-Type": "application/json",
+-        "X-Boykov-Request": "1",
+-        Cookie: session,
+-      },
+-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+-    });
+-  const adminResponse = await request("/auth/login", "POST", {
+-    login: "stats.admin",
+-    password,
+-  });
+-  const admin = adminResponse.headers.get("set-cookie").split(";")[0];
+-  const sharedResponse = await request("/auth/login", "POST", { password });
+-  const shared = sharedResponse.headers.get("set-cookie").split(";")[0];
+-  const api = (route, method = "GET", body, session = admin) =>
+-    request(route, method, body, session);
+-  const report = async (key = "24h", site = "nwd") =>
+-    await (await api(`/statistics/report?site=${site}&period=${key}`)).json();
+-  const connect = async () => {
+-    const r = await api("/statistics/connection", "POST", { token: oauth });
+-    assert.equal(r.status, 200, await r.clone().text());
+-  };
+   return {
+     app,
+-    base,
+-    api,
+-    request,
+-    admin,
+-    shared,
+-    remote,
+-    report,
+-    connect,
++    db,
+     directory,
+     now: () => clock,
+-    advance: (ms) => {
+-      clock += ms;
+-    },
++    advance: (ms) => (clock += ms),
++    post: (value, token = key, site = "nwd") =>
++      fetch(base + "/hooks/statistics/" + site, {
++        method: "POST",
++        headers: {
++          "Content-Type": "application/json",
++          Authorization: "Bearer " + token,
++        },
++        body: JSON.stringify(value),
++      }),
++    api: (route, auth = true, method = "GET", body) =>
++      fetch(base + "/api/statistics" + route, {
++        method,
++        headers: {
++          Cookie: auth ? cookie : "",
++          "Content-Type": "application/json",
++          "X-Boykov-Request": "1",
++        },
++        ...(body ? { body: JSON.stringify(body) } : {}),
++      }),
+   };
+ }
+-
+-test("statistics uses rolling 24 hours, Moscow calendar days and exact half-open boundaries", () => {
+-  const now = Date.parse("2026-01-01T00:21:46Z"),
+-    day = reportPeriod("24h", now);
+-  assert.equal(day.end - day.start, 86400000);
+-  assert.equal(day.group, "hour");
+-  assert.equal(day.buckets.length, 25);
+-  assert.equal(day.buckets[0].from, day.start);
+-  assert.equal(day.buckets.at(-1).to, day.end);
+-  assert.equal(reportPeriod("7", now).from, "2025-12-25T21:00:00.000Z");
+-  assert.equal(reportPeriod("90", now).buckets.length, 90);
++test("native statistics uses exact rolling 24 hours and Moscow calendar boundaries", () => {
++  const r = reportPeriod("24h", nowValue);
++  assert.equal(r.end - r.start, 86400000);
++  assert.equal(r.buckets.length, 25);
++  assert.equal(r.buckets[0].from, r.start);
++  assert.equal(r.buckets.at(-1).to, r.end);
+   assert.equal(
+-    parseMoscow("2026-01-01 03:21:00"),
+-    Date.parse("2026-01-01T00:21:00Z"),
+-  );
+-  assert.throws(() => reportPeriod("365", now));
+-  assert.equal(hostMatches("lp.energo-365.ru", "energo-365.ru", true), true);
+-  assert.equal(
+-    hostMatches("energo-365.ru.attacker.invalid", "energo-365.ru", true),
+-    false,
+-  );
+-  assert.throws(() =>
+-    validateSettings({
+-      counterIds: ["1' OR 1"],
+-      articlePrefixes: [],
+-      includeSubdomains: false,
+-    }),
+-  );
+-  assert.throws(() =>
+-    validateSettings({
+-      counterIds: ["123456"],
+-      articlePrefixes: ["/blog/');"],
+-      includeSubdomains: false,
+-    }),
++    reportPeriod("7", Date.parse("2026-01-01T00:21:00Z")).from,
++    "2025-12-25T21:00:00.000Z",
+   );
++  assert.throws(() => reportPeriod("365", nowValue));
++  assert.equal(cleanPath("/test/?email=private#hash"), "/test/");
++  assert.equal(cleanPath("//attacker.invalid/"), null);
++  assert.equal(cleanPath("/\\attacker.invalid/"), null);
+ });
+-
+-test("statistics is private; shared sessions can view reports and cannot read or change credentials", async (t) => {
++test("native reports remain private and do not require a Metrika connection", async (t) => {
+   const f = await fixture(t);
+-  assert.equal((await f.request("/statistics/sites")).status, 401);
+-  const sites = await f.api("/statistics/sites", "GET", undefined, f.shared);
+-  assert.equal(sites.status, 200);
++  assert.equal((await f.api("/sites", false)).status, 401);
++  const sites = await f.api("/sites");
++  assert.equal(sites.headers.get("cache-control"), "private, no-store");
+   assert.equal((await sites.json()).canConfigure, false);
+-  for (const [route, method, body] of [
+-    ["/statistics/connection", "POST", { token: oauth }],
+-    ["/statistics/counters", "GET", undefined],
+-    [
+-      "/statistics/sites/nwd",
+-      "PATCH",
+-      {
+-        counterIds: ["114341229"],
+-        articlePrefixes: [],
+-        includeSubdomains: false,
+-        version: 1,
+-      },
+-    ],
+-  ])
+-    assert.equal((await f.api(route, method, body, f.shared)).status, 403);
+-  const report = await f.report();
++  const report = await (await f.api("/report?site=nwd&period=24h")).json();
+   assert.equal(report.status, "unconfigured");
+   assert.equal(report.totals.visits, null);
+-  assert.equal(report.totals.views, null);
+-  assert.equal(report.totals.leads, 0);
+-  assert.equal(f.remote.calls.length, 0);
++  assert.equal(report.leadsOrigin, "hub");
++  assert.equal(
++    (await f.api("/connection", true, "POST", { token: "unused" })).status,
++    404,
++  );
+ });
+-
+-test("statistics token stays in a private server file and known accessible counters connect automatically", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  const response = await f.api("/statistics/sites"),
+-    text = await response.text();
+-  assert.doesNotMatch(text, new RegExp(oauth));
+-  assert.ok(JSON.parse(text).sites.find((s) => s.id === "nwd").connected);
+-  const secret = path.join(f.directory, "statistics/metrika.json");
+-  assert.equal(JSON.parse(await readFile(secret, "utf8")).token, oauth);
+-  assert.ok((await stat(secret)).isFile());
+-  // Windows uses ACLs; stat().mode does not represent Unix access permissions.
+-  if (process.platform !== "win32") {
+-    assert.equal((await stat(secret)).mode & 0o777, 0o600);
+-    assert.equal((await stat(path.dirname(secret))).mode & 0o777, 0o700);
+-  }
+-  assert.equal(response.headers.get("cache-control"), "private, no-store");
++test("native ingestion validates source credentials and host identity before storing reports", async (t) => {
++  const f = await fixture(t),
++    p = packet();
++  assert.equal((await f.post(p, "e".repeat(64))).status, 401);
++  assert.equal((await f.post(p, key, "unknown")).status, 401);
++  assert.equal((await f.post({ ...p, host: "attacker.invalid" })).status, 400);
++  assert.equal((await f.post({ ...p, source: "security" })).status, 400);
++  assert.equal(
++    f.db.prepare("SELECT count(*) amount FROM statistics_native_reports").get()
++      .amount,
++    0,
++  );
+ });
+-
+-test("statistics requests use Moscow dates, matching domain filters and exact time constraints", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  const result = await f.report();
+-  assert.equal(result.status, "ready");
+-  const calls = f.remote.calls.filter((c) =>
+-    c.url.pathname.startsWith("/stat/"),
++test("native ingestion commits all four coherent reports and uses source-side lead totals", async (t) => {
++  const f = await fixture(t),
++    p = packet(),
++    r = await f.post(p);
++  assert.equal(r.status, 201, await r.clone().text());
++  const ack = await r.json();
++  assert.equal(ack.generatedAt, p.generatedAt);
++  assert.equal(
++    f.db.prepare("SELECT count(*) amount FROM statistics_native_reports").get()
++      .amount,
++    4,
+   );
+-  assert.equal(calls.length, 6);
+-  for (const { url, options } of calls) {
+-    assert.equal(url.origin, "https://api-metrika.yandex.net");
+-    assert.equal(url.searchParams.get("timezone"), "+03:00");
+-    assert.equal(options.headers.Authorization, "OAuth " + oauth);
+-    assert.equal(options.redirect, "error");
+-    assert.doesNotMatch(url.href, new RegExp(oauth));
+-    assert.match(url.searchParams.get("filters"), /dateTime>=/);
+-    assert.match(url.searchParams.get("filters"), /nwdelectricity/);
+-  }
+-  assert.equal(result.daily.length, 25);
+-  assert.equal(result.totals.visits, 75);
+-  assert.equal(result.totals.views, 175);
+-  assert.equal(result.totals.articles, 50);
+-  assert.equal(result.articles[0].views, 10);
+-  assert.equal(result.sources.find((s) => s.name === "dzen.ru").visits, 3);
+-  assert.ok(
+-    result.pages.every((p) => new URL(p.url).hostname === "nwdelectricity.ru"),
++  const report = await (await f.api("/report?site=nwd&period=24h")).json();
++  assert.equal(report.status, "ready");
++  assert.deepEqual(report.totals, {
++    visits: 4,
++    views: 7,
++    articles: 4,
++    leads: 1,
++  });
++  assert.equal(report.leadsOrigin, "native");
++  assert.equal(
++    f.db.prepare("SELECT count(*) amount FROM sales_leads").get().amount,
++    0,
+   );
++  assert.equal(
++    report.daily.reduce((n, p) => n + p.leads, 0),
++    1,
++  );
++  assert.equal(report.pages[0].url, "https://nwdelectricity.ru/zhurnal/test/");
++  assert.ok(!JSON.stringify(report).includes(key));
+ });
+-
+-test("statistics deduplicates concurrent reports, caches traffic and keeps precise counts including trash", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  f.remote.state.delay = 5;
+-  const range = reportPeriod("24h", f.now());
+-  const add = (when, deleted = null) => {
+-    const id = randomUUID();
+-    f.app.locals.db
+-      .prepare(
+-        "INSERT INTO sales_leads(id,site_id,event_id,payload_hash,payload,search_text,created_at,received_at,updated_at,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+-      )
+-      .run(id, "nwd", id, "hash", "{}", "", when, when, when, deleted);
+-  };
+-  add(range.from);
+-  add(new Date(range.end - 1).toISOString(), new Date(f.now()).toISOString());
+-  add(range.to);
+-  add(new Date(range.start - 1).toISOString());
+-  const [one, two] = await Promise.all([f.report(), f.report()]);
+-  assert.equal(one.totals.leads, 2);
+-  assert.deepEqual(one, two);
++test("native retries are idempotent, conflicts and older packets cannot replace a fresh snapshot", async (t) => {
++  const f = await fixture(t),
++    p = packet();
++  await f.post(p);
++  assert.equal((await (await f.post(p)).json()).duplicate, true);
++  const conflict = structuredClone(p);
++  conflict.reports[0].articles[0].title = "Другой заголовок";
++  assert.equal((await f.post(conflict)).status, 409);
++  const older = packet(nowValue - 60000);
++  assert.equal((await (await f.post(older)).json()).ignored, true);
++  assert.equal(
++    f.app.locals.statistics.report("nwd", "24h").fetchedAt,
++    p.generatedAt,
++  );
++  f.advance(60000);
++  const newer = packet(f.now());
++  assert.equal((await f.post(newer)).status, 201);
+   assert.equal(
+-    one.daily.reduce((n, r) => n + r.leads, 0),
+-    2,
++    f.app.locals.statistics.report("nwd", "24h").fetchedAt,
++    newer.generatedAt,
+   );
+-  const before = f.remote.calls.length;
+-  await f.report();
+-  assert.equal(f.remote.calls.length, before);
+-  assert.ok(f.remote.state.maxActive <= 2);
+-  await f.report("7");
+-  assert.ok(f.remote.calls.length > before);
+ });
+-
+-test("statistics preserves the exact last report window after outage and never replaces values with zero", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  const first = await f.report();
+-  f.advance(180000);
+-  f.remote.state.fail = true;
+-  const stale = await f.report();
+-  assert.equal(stale.status, "stale");
+-  assert.deepEqual(stale.period, first.period);
+-  assert.equal(stale.totals.views, first.totals.views);
+-  assert.equal(stale.fetchedAt, first.fetchedAt);
+-  assert.doesNotMatch(stale.error, /must never expose/);
+-  const calls = f.remote.calls.length;
+-  await f.report();
+-  assert.equal(f.remote.calls.length, calls);
+-  const absent = await f.report("90");
+-  assert.equal(absent.status, "error");
+-  assert.equal(absent.totals.views, null);
++test("incomplete reports, inconsistent totals, unsafe paths and future frames do not damage saved data", async (t) => {
++  const f = await fixture(t),
++    p = packet();
++  await f.post(p);
++  const changes = [
++    (v) => v.reports.pop(),
++    (v) => (v.reports[0].daily[0] = null),
++    (v) => (v.reports[0].sources[0] = null),
++    (v) => (v.reports[0].pages[0] = null),
++    (v) => v.reports[0].totals.views++,
++    (v) => (v.reports[0].pages[0].path = "//attacker.invalid/"),
++    (v) => (v.reports[0].daily[0].at = "2020-01-01T00:00:00.000Z"),
++    (v) => (v.reports[0].daily[0].visits = -1),
++    (v) => (v.generatedAt = new Date(nowValue + 3600000).toISOString()),
++  ];
++  for (const change of changes) {
++    const input = structuredClone(p);
++    change(input);
++    assert.equal((await f.post(input)).status, 400);
++  }
++  assert.equal(f.app.locals.statistics.report("nwd", "24h").totals.views, 7);
+ });
+-
+-test("statistics settings cannot be overwritten concurrently or bypass counter validation", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  const initial = (await (await f.api("/statistics/sites")).json()).sites.find(
+-    (s) => s.id === "nwd",
++test("native snapshots survive application restart and stale reports preserve their original interval and figures", async (t) => {
++  const f = await fixture(t),
++    p = packet();
++  await f.post(p);
++  const before = f.app.locals.statistics.report("nwd", "24h");
++  f.advance(240000);
++  const restarted = await createStatisticsModule(f.db, { now: f.now });
++  const after = restarted.report("nwd", "24h");
++  assert.equal(after.status, "stale");
++  assert.deepEqual(after.period, before.period);
++  assert.deepEqual(after.totals, before.totals);
++});
++async function accessibilityDatabase(directory) {
++  const file = path.join(directory, "site.sqlite"),
++    db = new DatabaseSync(file);
++  db.exec(
++    `CREATE TABLE analytics_visits(id TEXT,started_at INTEGER,source TEXT);CREATE TABLE analytics_pageviews(id TEXT,visit_id TEXT,path TEXT,created_at INTEGER);CREATE TABLE leads(id TEXT,created_at TEXT);CREATE TABLE articles(slug TEXT,payload TEXT);`,
++  );
++  const r = reportPeriod("24h", nowValue);
++  db.prepare("INSERT INTO articles VALUES(?,?)").run(
++    "test",
++    JSON.stringify({ title: "Материал сайта" }),
++  );
++  for (const [i, time] of [r.start - 1, r.start, r.end - 1, r.end].entries()) {
++    db.prepare("INSERT INTO analytics_visits VALUES(?,?,?)").run(
++      "v" + i,
++      time,
++      "ref:yandex.ru",
++    );
++    db.prepare("INSERT INTO analytics_pageviews VALUES(?,?,?,?)").run(
++      "p" + i,
++      "v" + i,
++      "/blog/test/",
++      time,
++    );
++    db.prepare("INSERT INTO leads VALUES(?,?)").run(
++      "l" + i,
++      new Date(time).toISOString(),
++    );
++  }
++  db.close();
++  return file;
++}
++test("Accessibility adapter reads native SQLite events consistently, including hour edges and article aliases", async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), "native-pd-"));
++  t.after(() => rm(dir, { recursive: true, force: true }));
++  const file = await accessibilityDatabase(dir);
++  const value = collectAccessibility({ sourceFile: file, now: nowValue })
++    .reports[0];
++  assert.deepEqual(value.totals, {
++    visits: 2,
++    views: 2,
++    articles: 2,
++    leads: 2,
++  });
++  assert.equal(value.articles[0].title, "Материал сайта");
++  assert.equal(value.sources[0].name, "yandex.ru");
++  const db = new DatabaseSync(file, { readOnly: true });
++  assert.equal(db.prepare("SELECT count(*) amount FROM leads").get().amount, 4);
++  db.close();
++});
++test("Security adapter preserves native visit bot filtering and never invents missing pageviews", async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), "native-pb-"));
++  t.after(() => rm(dir, { recursive: true, force: true }));
++  const visits = path.join(dir, "visits.jsonl"),
++    leads = path.join(dir, "leads.jsonl"),
++    date = new Date(nowValue - 60000).toISOString();
++  await writeFile(
++    visits,
++    [
++      {
++        receivedAt: date,
++        referrer: "https://yandex.ru/search?secret=private",
++        meta: { userAgent: "Mozilla/5.0 Firefox/120" },
++      },
++      { receivedAt: date, meta: { userAgent: "Googlebot" } },
++      { receivedAt: date, meta: { userAgent: "" } },
++    ]
++      .map(JSON.stringify)
++      .join("\n") + '\n{"partial":',
+   );
+-  const value = {
+-    ...initial.settings,
+-    counterIds: ["114341229"],
+-    articlePrefixes: ["/zhurnal/"],
+-    includeSubdomains: false,
++  await writeFile(leads, JSON.stringify({ receivedAt: date }) + "\n");
++  const value = (
++    await collectSecurity({
++      sourceFile: visits,
++      leadsFile: leads,
++      now: nowValue,
++    })
++  ).reports[0];
++  assert.deepEqual(value.totals, {
++    visits: 1,
++    views: null,
++    articles: null,
++    leads: 1,
++  });
++  assert.equal(value.sources[0].name, "yandex.ru");
++  assert.equal(value.pages.length, 0);
++  assert.ok(!JSON.stringify(value).includes("secret"));
++});
++test("native delivery retains a complete packet for retries and requires a matching server acknowledgement", async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), "native-delivery-"));
++  t.after(() => rm(dir, { recursive: true, force: true }));
++  const sourceFile = await accessibilityDatabase(dir),
++    stateDir = path.join(dir, "state");
++  const config = {
++    kind: "accessibility",
++    host: "pasport-dostupnosty.ru",
++    sourceFile,
++    stateDir,
++    leadsEndpoint: "https://boykov-services.ru/hooks/leads/accessibility",
++    token: key,
++  };
++  let received;
++  const fetcher = async (url, options) => {
++    assert.equal(
++      url,
++      "https://boykov-services.ru/hooks/statistics/accessibility",
++    );
++    assert.equal(options.headers.Authorization, "Bearer " + key);
++    assert.equal(options.redirect, "error");
++    received = JSON.parse(options.body);
++    return Response.json({
++      ok: true,
++      siteId: "accessibility",
++      generatedAt: received.generatedAt,
++    });
+   };
+   assert.equal(
+-    (await f.api("/statistics/sites/nwd", "PATCH", value)).status,
+-    200,
++    (await runNativeCycle(config, { fetcher, now: nowValue })).ok,
++    true,
+   );
++  await rm(sourceFile);
+   assert.equal(
+-    (await f.api("/statistics/sites/nwd", "PATCH", value)).status,
+-    409,
++    (await runNativeCycle(config, { fetcher, now: nowValue + 240000 })).ok,
++    false,
+   );
+   assert.equal(
+-    (
+-      await f.api("/statistics/sites/nwd", "PATCH", {
+-        ...value,
+-        version: value.version + 1,
+-        articlePrefixes: ["/x/../../"],
+-      })
+-    ).status,
+-    400,
++    received.generatedAt,
++    new Date(Math.floor(nowValue / 60000) * 60000).toISOString(),
+   );
+-});
+-
+-test("Metrika request queue reserves at most two slots and redacts provider errors", async () => {
+-  const fixture = metrikaFixture();
+-  fixture.state.delay = 8;
+-  const client = new MetrikaClient({ fetcher: fixture.fetcher });
+-  await Promise.all(Array.from({ length: 8 }, () => client.counters(oauth)));
+-  assert.ok(fixture.state.maxActive <= 2);
+-  const failed = new MetrikaClient({
+-    fetcher: async () => Response.json({ token: oauth }, { status: 401 }),
+-  });
+-  await assert.rejects(
+-    () => failed.counters(oauth),
+-    (e) => e.status === 403 && !e.message.includes(oauth),
++  await assert.rejects(() =>
++    runNativeCycle(config, {
++      fetcher: async () => Response.json({ ok: true, siteId: "wrong" }),
++      now: nowValue,
++    }),
++  );
++  assert.ok(
++    JSON.parse(await readFile(path.join(stateDir, "last-packet.json"), "utf8"))
++      .reports.length === 4,
++  );
++  assert.throws(() =>
++    statisticsEndpoint("https://attacker@boykov-services.ru/hooks/leads/nwd"),
++  );
++  assert.throws(() =>
++    statisticsEndpoint("http://boykov-services.ru/hooks/leads/nwd"),
+   );
+ });
+ 
+-test("statistics persists a coherent snapshot across restart and refreshes at Moscow midnight", async (t) => {
+-  const f = await fixture(t);
+-  await f.connect();
+-  const initial = await f.report("30");
+-  const calls = f.remote.calls.length;
+-  const { createStatisticsModule } =
+-    await import("../server/modules/statistics/index.js");
+-  const restarted = await createStatisticsModule(f.app.locals.db, {
+-    dataDir: f.directory,
+-    now: f.now,
+-    statisticsFetch: f.remote.fetcher,
+-  });
+-  const recovered = await restarted.report("nwd", "30");
+-  assert.deepEqual(recovered, initial);
+-  assert.equal(f.remote.calls.length, calls);
+-  f.advance(Date.parse("2026-11-19T20:59:20Z") - f.now());
+-  const before = await f.report("30");
+-  const beforeCalls = f.remote.calls.length;
+-  f.advance(80000);
+-  const after = await f.report("30");
+-  assert.notEqual(after.period.from, before.period.from);
+-  assert.ok(f.remote.calls.length > beforeCalls);
+-  assert.equal(after.period.to, "2026-11-19T21:00:00.000Z");
+-});
++test(
++  "NWD adapter executes the native MySQL aggregation with exact hour boundaries and source trash rules",
++  { skip: !process.env.NATIVE_TEST_MYSQL_PORT },
++  async () => {
++    const { spawnSync } = await import("node:child_process");
++    const result = spawnSync(
++      process.env.PHP_BIN || "php",
++      ["tests/helpers/statistics-nwd-fixture.php"],
++      { encoding: "utf8" },
++    );
++    assert.equal(result.status, 0, result.stderr);
++    const value = JSON.parse(result.stdout),
++      r = value.reports[0];
++    assert.deepEqual(r.totals, { visits: 2, views: 2, articles: 2, leads: 2 });
++    assert.equal(r.daily.length, 25);
++    assert.equal(r.sources[0].name, "yandex.ru");
++    assert.equal(r.articles[0].title, "Статья редакции");
++    const { validateNativePacket } =
++      await import("../server/modules/statistics/validation.js");
++    assert.equal(
++      validateNativePacket(value, { host: "nwdelectricity.ru" }, nowValue)
++        .reports.length,
++      4,
++    );
++  },
++);
+ 
+-test("statistics refuses a report whose configuration changed during collection", async (t) => {
++test("native source list reflects delivered reports and renaming a domain does not inherit its old traffic", async (t) => {
+   const f = await fixture(t);
+-  await f.connect();
+-  f.remote.state.delay = 30;
+-  const collecting = f.app.locals.statistics.report("nwd", "24h");
+-  await new Promise((r) => setTimeout(r, 10));
+-  f.app.locals.db
+-    .prepare(
+-      "UPDATE statistics_settings SET version=version+1 WHERE site_id='nwd'",
+-    )
++  assert.equal(
++    f.app.locals.statistics.list().find((s) => s.id === "nwd").connected,
++    false,
++  );
++  const p = packet();
++  await f.post(p);
++  const listed = (await (await f.api("/sites")).json()).sites.find(
++    (s) => s.id === "nwd",
++  );
++  assert.equal(listed.connected, true);
++  assert.equal(listed.lastSyncedAt, p.generatedAt);
++  f.db
++    .prepare("UPDATE sales_sites SET host='renamed.invalid' WHERE id='nwd'")
+     .run();
+-  const report = await collecting;
+-  assert.equal(report.status, "error");
+-  assert.equal(report.totals.visits, null);
+   assert.equal(
+-    f.app.locals.db
+-      .prepare("SELECT count(*) amount FROM statistics_cache")
+-      .get().amount,
+-    0,
++    f.app.locals.statistics.list().find((s) => s.id === "nwd").connected,
++    false,
++  );
++  assert.equal(
++    f.app.locals.statistics.report("nwd", "24h").status,
++    "unconfigured",
+   );
+ });
++
++test("Security installer resolves the real dotenv file and project root with process-level precedence", async (t) => {
++  const { spawnSync } = await import("node:child_process");
++  const python = process.env.PYTHON_BIN || "python3";
++  if (spawnSync(python, ["--version"], { encoding: "utf8" }).status !== 0) {
++    t.skip("Python 3 is required to check the Linux source installer.");
++    return;
++  }
++  const code = String.raw`import sys,tempfile,pathlib
++sys.path.insert(0,str(pathlib.Path('integrations/statistics').resolve()))
++from source_config import security_paths
++with tempfile.TemporaryDirectory() as directory:
++ cwd=pathlib.Path(directory);shared=cwd/'shared';shared.mkdir()
++ env=shared/'server.env';env.write_text('PASSPORT_PROJECT_ROOT=shared\nVISITS_FILE=private/visits.jsonl\nLEADS_FILE=private/leads.jsonl\nUNRELATED_SECRET="multiline\n')
++ visits,leads=security_paths(cwd,{'SERVER_ENV_FILE':'shared/server.env','LEADS_FILE':'live/leads.jsonl'})
++ assert visits==shared/'private/visits.jsonl'
++ assert leads==shared/'live/leads.jsonl'
++ visits,leads=security_paths(cwd,{'SERVER_ENV_FILE':str(env),'PASSPORT_PROJECT_ROOT':str(shared/'live')},str(shared/'override.jsonl'))
++ assert visits==shared/'override.jsonl'
++ assert leads==shared/'live/private/leads.jsonl'
++print('NATIVE_SOURCE_LOCATION=OK')`;
++  const result = spawnSync(python, ["-c", code], { encoding: "utf8" });
++  assert.equal(result.status, 0, result.stderr);
++  assert.match(result.stdout, /NATIVE_SOURCE_LOCATION=OK/);
++});

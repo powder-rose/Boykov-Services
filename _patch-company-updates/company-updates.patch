@@ -1,0 +1,1084 @@
+diff --git a/docs/BOYKOVDOCS-CUSTOMERS.md b/docs/BOYKOVDOCS-CUSTOMERS.md
+index f80cc54..2ed3469 100644
+--- a/docs/BOYKOVDOCS-CUSTOMERS.md
++++ b/docs/BOYKOVDOCS-CUSTOMERS.md
+@@ -76,3 +76,15 @@ docker compose -f /opt/boykovdocs-customers-delivery/compose.json logs --tail 20
+ Учётная запись на BoykovDocs продолжает работать: удаление относится к карточке в Boykov Services. Доставка повторных событий и новых сохранений компании обновляет карточку в корзине и не восстанавливает её автоматически. После ручного восстановления видны актуальные данные и прежняя история общения. В корзине нельзя добавлять звонки или отменять прежние отметки.
+ 
+ Удаление и восстановление доступны авторизованным сотрудникам и через общий вход, как в разделе заявок. Если карточку успели изменить, интерфейс предложит проверить обновлённые данные; при сетевом сбое повтор того же запроса не создаёт второе действие. Новая миграция добавляет поля удаления без очистки существующей базы. Для обновления достаточно развернуть только приложение Boykov Services через `scripts/deploy-docs-customers.sh`; коннектор на сервере BoykovDocs не нужно перенастраивать.
++
++## Обновления компаний
++
++Реальное изменение реквизитов создаёт уведомление «Обновлено». Первый сохранённый профиль, повторная доставка, изменение только контактов и неизменившиеся значения компании не создают уведомлений об изменении компании. При запуске новой версии уже сохранённая история проверяется один раз: подтверждённые прежние изменения также отображаются. Неполученные промежуточные версии восстановить невозможно, поскольку коннектор собирает текущее состояние файлов.
++
++Виджет над списком показывает число компаний с непросмотренными изменениями и время последнего обновления по Москве. «Показать обновлённые» включает соответствующий фильтр. В стандартном порядке «Сначала новые» непросмотренные обновления идут первыми, включая первую страницу; внутри группы — самые свежие изменения. Выбор «Сначала ранние» сохраняет явную хронологическую сортировку.
++
++В карточке показаны дата изменения и поля последнего изменения; эти поля выделены в блоке компании. «Просмотрено» подтверждает именно текущую версию компании. У каждого личного аккаунта собственное состояние просмотра: отметка одного сотрудника не скрывает изменения у другого. Общий доступ имеет общее состояние просмотра. Простое открытие карточки не снимает уведомление. Если компания вновь изменится во время просмотра, старая кнопка не скроет новое обновление: данные будут обновлены и потребуется новое подтверждение. После следующего изменения пометка снова становится непросмотренной.
++
++Компания, обновлённая в корзине, остаётся там и не увеличивает счётчик активных изменений. При ручном восстановлении актуальные непросмотренные изменения снова видны. Звонки, их авторы и история сохраняются. Коннектор на сервере BoykovDocs перенастраивать не требуется.
++
++Главные заголовки всех разделов рабочего пространства используют общий декоративный компонент точки с цветом #c77796, как в техотделе. Точка скрыта от экранных дикторов и наследует размер заголовка.
+diff --git a/scripts/deploy-docs-customers.sh b/scripts/deploy-docs-customers.sh
+index 000372d..bf50d38 100644
+--- a/scripts/deploy-docs-customers.sh
++++ b/scripts/deploy-docs-customers.sh
+@@ -46,7 +46,7 @@ import { DatabaseSync } from 'node:sqlite';
+ const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
+ try {
+  if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
+- for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions','docs_customer_lifecycle'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
++ for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions','docs_customer_lifecycle','docs_customer_company_updates','docs_customer_company_reviews','docs_customer_module_meta'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
+  for(const name of ['deleted_at','deleted_by_id','deleted_by_name','deleted_by_kind'])if(!db.prepare('PRAGMA table_info(docs_customers)').all().some(c=>c.name===name))throw Error('DOCS_CUSTOMERS_TRASH_MIGRATION_MISSING');
+ }finally{db.close();}
+ const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
+@@ -57,7 +57,7 @@ for(const route of ['/api/docs-customers','/api/docs-customers/connection']){
+ }
+ const hook=await fetch('http://127.0.0.1:8787/hooks/docs-customers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ if(hook.status!==401)throw Error('DOCS_CUSTOMERS_HOOK_AUTH_FAILED');
+-console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_TRASH=OK\nDOCS_CUSTOMERS_AUTH=OK');
++console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_TRASH=OK\nDOCS_CUSTOMERS_UPDATES=OK\nDOCS_CUSTOMERS_AUTH=OK');
+ VERIFY_DOCS_CUSTOMERS
+ docker compose ps
+ printf 'DOCS_CUSTOMERS_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"
+diff --git a/server/modules/docs-customers/index.js b/server/modules/docs-customers/index.js
+index c331172..909b613 100644
+--- a/server/modules/docs-customers/index.js
++++ b/server/modules/docs-customers/index.js
+@@ -46,6 +46,10 @@ const searchText = (row) =>
+   ]
+     .join(" ")
+     .toLowerCase();
++const companyChanges = (before, after) =>
++  DOCS_COMPANY_FIELDS.filter(
++    (f) => (before[f.name] || "") !== (after[f.name] || ""),
++  ).map((f) => f.name);
+ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+   db.exec(`CREATE TABLE IF NOT EXISTS docs_customer_connection(id INTEGER PRIMARY KEY CHECK(id=1),import_since TEXT NOT NULL,token_hash TEXT,token_issued_at TEXT,last_received_at TEXT,last_heartbeat_at TEXT,pending INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,scan_ok INTEGER NOT NULL DEFAULT 0,error_code TEXT NOT NULL DEFAULT '');
+  CREATE TABLE IF NOT EXISTS docs_customers(id TEXT PRIMARY KEY,external_id TEXT NOT NULL UNIQUE,name TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',email TEXT NOT NULL DEFAULT '',registered_at TEXT,contact_observed_at TEXT NOT NULL,company TEXT,company_saved_at TEXT,company_observed_at TEXT,created_at TEXT NOT NULL,received_at TEXT NOT NULL,source_updated_at TEXT NOT NULL,search_text TEXT NOT NULL DEFAULT '',call_count INTEGER NOT NULL DEFAULT 0,last_call_id TEXT,version INTEGER NOT NULL DEFAULT 1);
+@@ -75,6 +79,71 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+   db.exec(`CREATE INDEX IF NOT EXISTS docs_customers_deleted ON docs_customers(deleted_at,source_updated_at DESC);
+     CREATE TABLE IF NOT EXISTS docs_customer_lifecycle(id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,action TEXT NOT NULL,created_at TEXT NOT NULL,actor_id TEXT,actor_name TEXT NOT NULL,actor_kind TEXT NOT NULL);
+     CREATE INDEX IF NOT EXISTS docs_customer_lifecycle_customer ON docs_customer_lifecycle(customer_id,created_at DESC);`);
++  db.exec(`CREATE TABLE IF NOT EXISTS docs_customer_company_updates(customer_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,changed_at TEXT NOT NULL,fields TEXT NOT NULL);
++    CREATE TABLE IF NOT EXISTS docs_customer_company_reviews(customer_id TEXT NOT NULL,actor_key TEXT NOT NULL,event_id TEXT NOT NULL,reviewed_at TEXT NOT NULL,PRIMARY KEY(customer_id,actor_key));
++    CREATE TABLE IF NOT EXISTS docs_customer_module_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
++  const saveCompanyUpdate = (id, eventId, changedAt, fields) =>
++    db
++      .prepare(
++        "INSERT INTO docs_customer_company_updates VALUES(?,?,?,?) ON CONFLICT(customer_id) DO UPDATE SET event_id=excluded.event_id,changed_at=excluded.changed_at,fields=excluded.fields",
++      )
++      .run(id, eventId, changedAt, JSON.stringify(fields));
++  // Existing captured versions can prove a real change. Initialize this once, never on each restart.
++  if (
++    !db
++      .prepare(
++        "SELECT value FROM docs_customer_module_meta WHERE key='company_updates_v1'",
++      )
++      .get()
++  )
++    transaction(db, () => {
++      for (const row of db
++        .prepare(
++          "SELECT id,company,company_saved_at FROM docs_customers WHERE company IS NOT NULL",
++        )
++        .all()) {
++        let before = null,
++          latest = null;
++        for (const version of db
++          .prepare(
++            "SELECT event_id,saved_at,company FROM docs_customer_company_versions WHERE customer_id=? AND saved_at<=? ORDER BY saved_at,rowid",
++          )
++          .all(row.id, row.company_saved_at)) {
++          const next = JSON.parse(version.company),
++            fields = before ? companyChanges(before, next) : [];
++          if (fields.length)
++            latest = {
++              eventId: version.event_id,
++              changedAt: version.saved_at,
++              fields,
++            };
++          before = next;
++        }
++        if (latest && !companyChanges(before, JSON.parse(row.company)).length)
++          saveCompanyUpdate(
++            row.id,
++            latest.eventId,
++            latest.changedAt,
++            latest.fields,
++          );
++        else {
++          const head = db
++            .prepare(
++              "SELECT event_id FROM docs_customer_company_versions WHERE customer_id=? AND saved_at=? ORDER BY rowid DESC LIMIT 1",
++            )
++            .get(row.id, row.company_saved_at);
++          saveCompanyUpdate(
++            row.id,
++            head?.event_id || "legacy:" + row.id,
++            row.company_saved_at,
++            [],
++          );
++        }
++      }
++      db.prepare(
++        "INSERT INTO docs_customer_module_meta VALUES('company_updates_v1','1')",
++      ).run();
++    });
+   db.prepare(
+     "INSERT OR IGNORE INTO docs_customer_connection(id,import_since) VALUES(1,?)",
+   ).run(DOCS_CUSTOMERS_SINCE);
+@@ -148,6 +217,27 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+             : !req.actor?.id)),
+     };
+   }
++  const reviewActor = (req) => actor(req).id || "shared";
++  function companyUpdate(id, req) {
++    const r = db
++      .prepare(
++        "SELECT u.*,v.event_id reviewed_event,v.reviewed_at FROM docs_customer_company_updates u LEFT JOIN docs_customer_company_reviews v ON v.customer_id=u.customer_id AND v.actor_key=? WHERE u.customer_id=?",
++      )
++      .get(reviewActor(req), id);
++    if (!r) return null;
++    const unread = r.event_id !== r.reviewed_event;
++    const names = JSON.parse(r.fields);
++    if (!names.length) return null;
++    return {
++      eventId: r.event_id,
++      changedAt: r.changed_at,
++      fields: DOCS_COMPANY_FIELDS.filter((f) => names.includes(f.name)).map(
++        (f) => ({ name: f.name, label: f.label }),
++      ),
++      unread,
++      reviewedAt: unread ? null : r.reviewed_at,
++    };
++  }
+   function present(r, req) {
+     const last = r.last_call_id
+       ? db
+@@ -166,6 +256,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+       company: r.company
+         ? { ...JSON.parse(r.company), savedAt: r.company_saved_at }
+         : null,
++      companyUpdate: companyUpdate(r.id, req),
+       callCount: r.call_count,
+       lastCall: last ? callView(last, req, !!r.deleted_at) : null,
+       deletedAt: r.deleted_at,
+@@ -292,6 +383,16 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+         const company = Object.fromEntries(
+           DOCS_COMPANY_FIELDS.map((f) => [f.name, input.company[f.name]]),
+         );
++        const changed = r.company
++          ? companyChanges(JSON.parse(r.company), company)
++          : [];
++        if (changed.length || !r.company)
++          saveCompanyUpdate(
++            r.id,
++            input.eventId,
++            input.company.savedAt,
++            changed,
++          );
+         db.prepare(
+           "UPDATE docs_customers SET company=?,company_saved_at=?,company_observed_at=?,version=version+1 WHERE id=?",
+         ).run(
+@@ -302,6 +403,28 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+         );
+       }
+       r = get(r.id);
++      if (input.company) {
++        const head = db
++          .prepare(
++            "SELECT * FROM docs_customer_company_updates WHERE customer_id=? AND fields='[]'",
++          )
++          .get(r.id);
++        if (head && input.company.savedAt < head.changed_at) {
++          const previous = db
++            .prepare(
++              "SELECT company FROM docs_customer_company_versions WHERE customer_id=? AND saved_at<? ORDER BY saved_at DESC,rowid DESC LIMIT 1",
++            )
++            .get(r.id, head.changed_at);
++          const proven = previous
++            ? companyChanges(
++                JSON.parse(previous.company),
++                JSON.parse(r.company),
++              )
++            : [];
++          if (proven.length)
++            saveCompanyUpdate(r.id, head.event_id, head.changed_at, proven);
++        }
++      }
+       db.prepare(
+         "UPDATE docs_customers SET received_at=?,source_updated_at=MAX(source_updated_at,?),search_text=? WHERE id=?",
+       ).run(stamp, input.occurredAt, searchText(r), r.id);
+@@ -387,10 +510,15 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+       );
+       args.push(req.actor.id);
+     }
++    const unread =
++      "(u.event_id IS NOT NULL AND u.fields<>'[]' AND (v.event_id IS NULL OR v.event_id<>u.event_id))";
++    const joined =
++      " FROM docs_customers LEFT JOIN docs_customer_company_updates u ON u.customer_id=docs_customers.id LEFT JOIN docs_customer_company_reviews v ON v.customer_id=docs_customers.id AND v.actor_key=?";
++    if (req.query.updated === "1") where.push(unread);
+     const condition = where.length ? " WHERE " + where.join(" AND ") : "",
+       total = db
+-        .prepare("SELECT count(*) amount FROM docs_customers" + condition)
+-        .get(...args).amount;
++        .prepare("SELECT count(*) amount" + joined + condition)
++        .get(reviewActor(req), ...args).amount;
+     const stats = db
+       .prepare(
+         "SELECT count(*) total,COALESCE(SUM(company IS NOT NULL),0) companies,COALESCE(SUM(call_count=0),0) uncalled,COALESCE(SUM(call_count>0),0) called FROM docs_customers WHERE deleted_at IS NULL",
+@@ -400,14 +528,28 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+       current = Math.min(page, pages);
+     const rows = db
+       .prepare(
+-        "SELECT * FROM docs_customers" +
++        "SELECT docs_customers.*" +
++          joined +
+           condition +
+-          " ORDER BY source_updated_at " +
+-          (sort === "oldest" ? "ASC" : "DESC") +
+-          ",id LIMIT 25 OFFSET ?",
++          (sort === "oldest"
++            ? " ORDER BY source_updated_at ASC,id"
++            : " ORDER BY " +
++              unread +
++              " DESC,CASE WHEN " +
++              unread +
++              " THEN u.changed_at ELSE source_updated_at END DESC,id") +
++          " LIMIT 25 OFFSET ?",
+       )
+-      .all(...args, (current - 1) * 25);
++      .all(reviewActor(req), ...args, (current - 1) * 25);
+     return {
++      companyUpdates: db
++        .prepare(
++          "SELECT count(*) pending,MAX(u.changed_at) lastChangedAt" +
++            joined +
++            " WHERE docs_customers.deleted_at IS NULL AND " +
++            unread,
++        )
++        .get(reviewActor(req)),
+       customers: rows.map((r) => present(r, req)),
+       trashCount: db
+         .prepare(
+@@ -585,6 +727,29 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+       return result;
+     });
+   }
++  function reviewCompanyUpdate(req) {
++    const eventId = customerText(req.body?.eventId, 160, true),
++      id = req.params.id;
++    return transaction(db, () => {
++      const r = get(id),
++        update = companyUpdate(id, req);
++      if (r.deleted_at)
++        throw bad(
++          "Карточка находится в корзине. Сначала восстановите её.",
++          409,
++        );
++      if (!update || update.eventId !== eventId)
++        throw bad(
++          "Компания снова обновилась. Проверьте новые данные и отметьте их просмотренными.",
++          409,
++        );
++      const stamp = new Date(now()).toISOString();
++      db.prepare(
++        "INSERT INTO docs_customer_company_reviews VALUES(?,?,?,?) ON CONFLICT(customer_id,actor_key) DO UPDATE SET event_id=excluded.event_id,reviewed_at=excluded.reviewed_at WHERE docs_customer_company_reviews.event_id<>excluded.event_id",
++      ).run(id, reviewActor(req), eventId, stamp);
++      return { ok: true, eventId };
++    });
++  }
+   const admin = (req) => {
+     if (req.actor?.role !== "admin")
+       throw bad("Настраивать подключение может администратор.", 403);
+@@ -622,6 +787,10 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+       "/api/docs-customers/:id",
+       wrap((req, res) => res.json(detail(req.params.id, req))),
+     );
++    app.post(
++      "/api/docs-customers/:id/company-update/seen",
++      wrap((req, res) => res.json(reviewCompanyUpdate(req))),
++    );
+     app.post(
+       "/api/docs-customers/:id/trash",
+       wrap((req, res) => res.json(mutateTrash(req))),
+diff --git a/src/components/Common.tsx b/src/components/Common.tsx
+index 2348566..dff0564 100644
+--- a/src/components/Common.tsx
++++ b/src/components/Common.tsx
+@@ -62,6 +62,13 @@ export function Empty({
+     </div>
+   );
+ }
++export function TitleDot() {
++  return (
++    <span className="section-title-dot" aria-hidden="true">
++      .
++    </span>
++  );
++}
+ export function PageHead({
+   eyebrow,
+   title,
+@@ -77,7 +84,10 @@ export function PageHead({
+     <header className="page-head">
+       <div>
+         <div className="eyebrow">{eyebrow}</div>
+-        <h1>{title}</h1>
++        <h1>
++          {title}
++          <TitleDot />
++        </h1>
+         <p>{description}</p>
+       </div>
+       {children}
+diff --git a/src/pages/DocsCustomers.css b/src/pages/DocsCustomers.css
+index 082e60e..51f33e8 100644
+--- a/src/pages/DocsCustomers.css
++++ b/src/pages/DocsCustomers.css
+@@ -736,3 +736,138 @@
+     margin-left: 0;
+   }
+ }
++.dc-update-widget {
++  display: flex;
++  align-items: center;
++  gap: 18px;
++  margin-bottom: 20px;
++  padding: 22px 24px;
++  background: #f8e8ee;
++  border: 1px solid #ebcbd7;
++  border-radius: var(--radius);
++}
++.dc-update-symbol {
++  width: 48px;
++  height: 48px;
++  border-radius: 14px;
++  background: #fff9;
++  color: #a65878;
++  display: grid;
++  place-items: center;
++  flex-shrink: 0;
++}
++.dc-update-widget > div {
++  flex: 1;
++  min-width: 0;
++}
++.dc-update-widget h2 {
++  font-size: 21px;
++  font-weight: 500;
++  margin: 6px 0;
++  letter-spacing: -0.6px;
++  display: flex;
++  gap: 10px;
++  align-items: center;
++  flex-wrap: wrap;
++}
++.dc-update-widget h2 strong {
++  background: #fff;
++  font-size: 17px;
++  font-weight: 600;
++  padding: 2px 10px;
++  border-radius: 7px;
++}
++.dc-update-widget p {
++  color: #745f69;
++  font-size: 14px;
++  line-height: 1.8;
++  margin: 0;
++}
++.dc-update-widget > .button {
++  background: #fff;
++  border: 1px solid #e8c5d3;
++  flex-shrink: 0;
++}
++.dc-update-badge {
++  display: inline-flex;
++  gap: 5px;
++  align-items: center;
++  font-size: 12px;
++  line-height: 1.6;
++  border-radius: 6px;
++  color: #72786b;
++  background: #f2f3ed;
++  padding: 4px 8px;
++}
++.dc-update-badge.unread {
++  color: #87485f;
++  background: #f7e3eb;
++}
++.dc-detail-update {
++  display: flex;
++  gap: 13px;
++  align-items: flex-start;
++  background: #f6f7f1;
++  border: 1px solid var(--line);
++  padding: 18px 20px;
++  border-radius: 11px;
++  margin-bottom: 20px;
++}
++.dc-detail-update.unread {
++  background: #fcf0f5;
++  border-color: #eac7d5;
++}
++.dc-detail-update > svg {
++  flex-shrink: 0;
++  color: #a15875;
++  margin-top: 3px;
++}
++.dc-detail-update > div {
++  flex: 1;
++  min-width: 0;
++}
++.dc-detail-update strong {
++  font-size: 16px;
++  font-weight: 600;
++}
++.dc-detail-update p {
++  font-size: 14px;
++  line-height: 1.7;
++  margin: 5px 0;
++  color: #70636a;
++}
++.dc-detail-update small {
++  font-size: 12px;
++  color: #68715e;
++}
++.dc-detail-update > .button {
++  background: #fff;
++  flex-shrink: 0;
++}
++.dc-field-updated {
++  border-left: 3px solid #c77796;
++  padding-left: 12px;
++}
++.dc-field-updated dt small {
++  display: inline-block;
++  color: #955570;
++  font-size: 11px;
++  font-weight: 500;
++  margin-left: 8px;
++}
++@media (max-width: 700px) {
++  .dc-update-widget {
++    flex-wrap: wrap;
++    padding: 18px;
++    gap: 14px;
++  }
++  .dc-update-widget > .button {
++    width: 100%;
++  }
++  .dc-detail-update {
++    flex-wrap: wrap;
++  }
++  .dc-detail-update > .button {
++    margin-left: 32px;
++  }
++}
+diff --git a/src/pages/DocsCustomers.tsx b/src/pages/DocsCustomers.tsx
+index 82ef756..5d916d2 100644
+--- a/src/pages/DocsCustomers.tsx
++++ b/src/pages/DocsCustomers.tsx
+@@ -36,6 +36,13 @@ type Call = {
+   voidedBy: { name: string } | null;
+   canVoid: boolean;
+ };
++type CompanyUpdate = {
++  eventId: string;
++  changedAt: string;
++  fields: { name: CompanyField; label: string }[];
++  unread: boolean;
++  reviewedAt: string | null;
++};
+ type Customer = {
+   id: string;
+   externalId: string;
+@@ -45,6 +52,7 @@ type Customer = {
+   registeredAt: string | null;
+   sourceUpdatedAt: string;
+   company: Company | null;
++  companyUpdate: CompanyUpdate | null;
+   callCount: number;
+   lastCall: Call | null;
+   deletedAt: string | null;
+@@ -52,6 +60,7 @@ type Customer = {
+   version: number;
+ };
+ type Listing = {
++  companyUpdates: { pending: number; lastChangedAt: string | null };
+   customers: Customer[];
+   total: number;
+   trashCount: number;
+@@ -97,12 +106,24 @@ function Person({ call }: { call: Call }) {
+     </span>
+   );
+ }
+-function CompanyFields({ company }: { company: Company }) {
++function CompanyFields({
++  company,
++  changed = [],
++}: {
++  company: Company;
++  changed?: CompanyField[];
++}) {
+   return (
+     <dl className="dc-fields">
+       {DOCS_COMPANY_FIELDS.map((f) => (
+-        <div key={f.name}>
+-          <dt>{f.label}</dt>
++        <div
++          key={f.name}
++          className={changed.includes(f.name) ? "dc-field-updated" : undefined}
++        >
++          <dt>
++            {f.label}
++            {changed.includes(f.name) && <small>Изменено</small>}
++          </dt>
+           <dd>{company[f.name] || "Не указано"}</dd>
+         </div>
+       ))}
+@@ -127,6 +148,7 @@ export default function DocsCustomers({
+     [sort, setSort] = useState("newest"),
+     [page, setPage] = useState(1),
+     [view, setView] = useState<"active" | "trash">("active"),
++    [updatedOnly, setUpdatedOnly] = useState(false),
+     [success, setSuccess] = useState("");
+   const [selected, setSelected] = useState<string | null>(null),
+     [settings, setSettings] = useState(false);
+@@ -144,6 +166,7 @@ export default function DocsCustomers({
+       const params = new URLSearchParams({
+         q: debounced,
+         view,
++        updated: updatedOnly ? "1" : "0",
+         status,
+         sort,
+         page: String(page),
+@@ -161,7 +184,7 @@ export default function DocsCustomers({
+     } catch (e) {
+       if (n === generation.current) setError(errorText(e));
+     }
+-  }, [debounced, status, sort, page, company, mine, view]);
++  }, [debounced, status, sort, page, company, mine, view, updatedOnly]);
+   useEffect(() => {
+     if (!active) return;
+     void refresh();
+@@ -223,6 +246,43 @@ export default function DocsCustomers({
+           })}
+         </div>
+       )}
++      {listing && listing.companyUpdates.pending > 0 && (
++        <section
++          className="dc-update-widget"
++          aria-label="Непросмотренные обновления компаний"
++        >
++          <span className="dc-update-symbol">
++            <RefreshCw size={23} />
++          </span>
++          <div>
++            <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
++            <h2>
++              Обновлены данные компаний{" "}
++              <strong>{number(listing.companyUpdates.pending)}</strong>
++            </h2>
++            <p>
++              Проверьте изменения реквизитов. Последнее обновление:{" "}
++              {when(listing.companyUpdates.lastChangedAt)} · Москва
++            </p>
++          </div>
++          <button
++            className="button"
++            onClick={() => {
++              setView("active");
++              setUpdatedOnly(true);
++              setPage(1);
++              setStatus("all");
++              setQuery("");
++              setDebounced("");
++              setCompany(false);
++              setMine(false);
++              setSort("newest");
++            }}
++          >
++            Показать обновлённые
++          </button>
++        </section>
++      )}
+       <div className="dc-connection">
+         <span className={"dc-health " + (connection?.status || "")}>
+           <i />
+@@ -329,6 +389,19 @@ export default function DocsCustomers({
+               Мои звонки
+             </label>
+           )}
++          {view === "active" && (
++            <label>
++              <input
++                type="checkbox"
++                checked={updatedOnly}
++                onChange={(e) => {
++                  setUpdatedOnly(e.target.checked);
++                  setPage(1);
++                }}
++              />
++              Только обновления
++            </label>
++          )}
+           <button
+             className={
+               "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
+@@ -340,6 +413,7 @@ export default function DocsCustomers({
+               setQuery("");
+               setDebounced("");
+               setCompany(false);
++              setUpdatedOnly(false);
+               setMine(false);
+               setPage(1);
+               setSuccess("");
+@@ -356,14 +430,14 @@ export default function DocsCustomers({
+         ) : !listing.customers.length ? (
+           <Empty
+             title={
+-              query || status !== "all" || company || mine
++              query || status !== "all" || company || mine || updatedOnly
+                 ? "Ничего не найдено"
+                 : view === "trash"
+                   ? "Корзина пуста"
+                   : "Здесь появятся клиенты BoykovDocs"
+             }
+             text={
+-              query || status !== "all" || company || mine
++              query || status !== "all" || company || mine || updatedOnly
+                 ? "Попробуйте изменить условия поиска."
+                 : view === "trash"
+                   ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
+@@ -402,6 +476,19 @@ export default function DocsCustomers({
+                     </div>
+                   </div>
+                   <div className="dc-company-cell">
++                    {c.companyUpdate && (
++                      <span
++                        className={
++                          "dc-update-badge" +
++                          (c.companyUpdate.unread ? " unread" : "")
++                        }
++                      >
++                        <RefreshCw size={13} />
++                        {c.companyUpdate.unread
++                          ? "Обновлено"
++                          : "Обновление просмотрено"}
++                      </span>
++                    )}
+                     {c.company ? (
+                       <>
+                         <strong>
+@@ -600,6 +687,40 @@ function CustomerDialog({
+       setBusy(false);
+     }
+   }
++  async function reviewUpdate() {
++    const update = data?.customer.companyUpdate;
++    if (
++      !update ||
++      !data ||
++      busy ||
++      retry ||
++      confirmDelete ||
++      trashRetry ||
++      data.customer.deletedAt
++    )
++      return;
++    setBusy(true);
++    setError("");
++    setMessage("");
++    try {
++      await post("/docs-customers/" + id + "/company-update/seen", {
++        eventId: update.eventId,
++      });
++      await refresh();
++      onChange();
++      setMessage(
++        account?.id
++          ? "Обновление отмечено просмотренным для вашего аккаунта."
++          : "Обновление отмечено просмотренным для общего доступа.",
++      );
++    } catch (e) {
++      setError(errorText(e));
++      if (e instanceof ApiError && e.status === 409)
++        await refresh().catch(() => {});
++    } finally {
++      setBusy(false);
++    }
++  }
+   async function changeTrash(action: "delete" | "restore") {
+     if (!data || busy || retry) return;
+     const body = trashDraft.current || {
+@@ -717,6 +838,37 @@ function CustomerDialog({
+           </div>
+         </div>
+       )}
++      {c?.companyUpdate && (
++        <section
++          className={
++            "dc-detail-update" + (c.companyUpdate.unread ? " unread" : "")
++          }
++          aria-label="Обновление данных компании"
++        >
++          <RefreshCw size={19} />
++          <div>
++            <strong>Компания обновлена</strong>
++            <p>{when(c.companyUpdate.changedAt)} · Москва</p>
++            <p>
++              Изменились:{" "}
++              {c.companyUpdate.fields.map((f) => f.label).join(", ")}
++            </p>
++            {!c.companyUpdate.unread && (
++              <small>Просмотрено {when(c.companyUpdate.reviewedAt)}</small>
++            )}
++          </div>
++          {c.companyUpdate.unread && !c.deletedAt && (
++            <button
++              className="button"
++              disabled={busy || retry || confirmDelete || trashRetry}
++              onClick={() => void reviewUpdate()}
++            >
++              <Check size={16} />
++              Просмотрено
++            </button>
++          )}
++        </section>
++      )}
+       {c?.deletedAt && (
+         <Notice>
+           Карточка в корзине с {when(c.deletedAt)} · Москва. Удалил:{" "}
+@@ -797,7 +949,10 @@ function CustomerDialog({
+                   <p className="dc-saved">
+                     Данные сохранены {when(c.company.savedAt)} · Москва
+                   </p>
+-                  <CompanyFields company={c.company} />
++                  <CompanyFields
++                    company={c.company}
++                    changed={c.companyUpdate?.fields.map((f) => f.name)}
++                  />
+                 </>
+               ) : (
+                 <p className="dc-muted">
+diff --git a/src/pages/Technical.tsx b/src/pages/Technical.tsx
+index b96baed..56eb286 100644
+--- a/src/pages/Technical.tsx
++++ b/src/pages/Technical.tsx
+@@ -5,7 +5,7 @@ import {
+   MessageSquareText, PencilLine, Search, Send, SlidersHorizontal, X, Palette, RotateCcw, Eye, Plus, Trash2, Undo2, Redo2,
+ } from "lucide-react";
+ import { api, post, dateTime, errorText } from "../api";
+-import { Notice } from "../components/Common";
++import { Notice, TitleDot } from "../components/Common";
+ import "./technical.css";
+ 
+ type Field = { key: string; label: string; sourceIndex: number; targetIndex: number | null };
+@@ -727,7 +727,7 @@ export default function Technical() {
+     <div className="tech-heading">
+       <div>
+         <span className="tech-eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО / ТЕХНИЧЕСКИЙ ОТДЕЛ</span>
+-        <h1>Техотдел<span>.</span></h1>
++        <h1>Техотдел<TitleDot /></h1>
+         <p>Объекты, дополнительные работы и заметки — всё в одном месте.</p>
+       </div>
+       <div className="tech-sync-overview">
+diff --git a/src/styles.css b/src/styles.css
+index 1917e95..f559be6 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -2533,4 +2533,12 @@ code {
+   }
+ }
+ 
+-@media (min-width: 1260px) { .service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
++@media (min-width: 1260px) {
++  .service-grid {
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++  }
++}
++
++.section-title-dot {
++  color: #c77796;
++}
+diff --git a/tests/docs-customers.test.js b/tests/docs-customers.test.js
+index d97d398..6d2bfc4 100644
+--- a/tests/docs-customers.test.js
++++ b/tests/docs-customers.test.js
+@@ -779,3 +779,275 @@ test("upgrading the pre-trash database keeps customer cards and adds nullable de
+   assert.equal(d.customer.deletedAt, null);
+   assert.equal((await (await s.api("/docs-customers")).json()).total, 1);
+ });
++
++const companyEvent = (company = profile(), overrides = {}) =>
++  event({
++    kind: "company",
++    occurredAt: company.savedAt,
++    observedAt: company.savedAt,
++    company,
++    ...overrides,
++  });
++const changedProfile = (name = "Обновлённая компания", hour = "11") => ({
++  ...profile(name),
++  inn: "7709876543",
++  savedAt: `2026-11-19T${hour}:00:00.000Z`,
++});
++test("company updates flag real field changes, prioritize them over newer registrations and provide an update widget count", async (t) => {
++  const s = await fixture(t),
++    first = companyEvent(),
++    ack = await s.ingest(first);
++  let d = await s.detail(ack.customerId);
++  assert.equal(d.customer.companyUpdate, null);
++  assert.equal(
++    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
++    0,
++  );
++  const newer = event({
++    user: {
++      ...event().user,
++      id: "newer-user",
++      registeredAt: "2026-11-19T12:00:00.000Z",
++    },
++    occurredAt: "2026-11-19T12:00:00.000Z",
++    observedAt: "2026-11-19T12:00:00.000Z",
++  });
++  await s.ingest(newer);
++  const change = companyEvent(changedProfile());
++  await s.ingest(change);
++  const list = await (await s.api("/docs-customers")).json();
++  assert.equal(list.customers[0].id, ack.customerId);
++  assert.equal(list.companyUpdates.pending, 1);
++  assert.equal(list.companyUpdates.lastChangedAt, change.company.savedAt);
++  d = await s.detail(ack.customerId);
++  assert.equal(d.customer.companyUpdate.unread, true);
++  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
++  assert.deepEqual(
++    d.customer.companyUpdate.fields.map((f) => f.name),
++    ["companyName", "inn"],
++  );
++  const filtered = await (await s.api("/docs-customers?updated=1")).json();
++  assert.equal(filtered.total, 1);
++  assert.equal(filtered.customers[0].externalId, first.user.id);
++  const chronological = await (
++    await s.api("/docs-customers?sort=oldest")
++  ).json();
++  assert.equal(chronological.customers[0].id, ack.customerId);
++});
++test("review belongs to the signed-in employee, is idempotent and cannot clear a newer company revision", async (t) => {
++  const s = await fixture(t),
++    a = await s.make("docs.review.a"),
++    b = await s.make("docs.review.b"),
++    ca = await s.login(a.login),
++    cb = await s.login(b.login),
++    ack = await s.ingest(companyEvent());
++  const change = companyEvent(changedProfile());
++  await s.ingest(change);
++  const path = "/docs-customers/" + ack.customerId + "/company-update/seen";
++  assert.equal(
++    (await s.request(path, "POST", { eventId: change.eventId })).status,
++    401,
++  );
++  const before = (await s.detail(ack.customerId, ca)).customer.version;
++  for (let i = 0; i < 2; i++)
++    assert.equal(
++      (
++        await s.api(
++          path,
++          "POST",
++          { eventId: change.eventId, actorId: b.id },
++          ca,
++        )
++      ).status,
++      200,
++    );
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, ca)).json())
++      .companyUpdates.pending,
++    0,
++  );
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, cb)).json())
++      .companyUpdates.pending,
++    1,
++  );
++  let d = await s.detail(ack.customerId, ca);
++  assert.equal(d.customer.companyUpdate.unread, false);
++  assert.ok(d.customer.companyUpdate.reviewedAt);
++  assert.equal(d.customer.version, before);
++  const second = companyEvent(changedProfile("Ещё одно изменение", "13"));
++  await s.ingest(second);
++  assert.equal(
++    (await s.api(path, "POST", { eventId: change.eventId }, ca)).status,
++    409,
++  );
++  d = await s.detail(ack.customerId, ca);
++  assert.equal(d.customer.companyUpdate.eventId, second.eventId);
++  assert.equal(d.customer.companyUpdate.unread, true);
++  await s.restart();
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, ca)).json())
++      .companyUpdates.pending,
++    1,
++  );
++});
++test("duplicate delivery, unchanged company values, contact changes and older company snapshots do not create new update alerts", async (t) => {
++  const s = await fixture(t),
++    ack = await s.ingest(companyEvent()),
++    change = companyEvent(changedProfile());
++  await s.ingest(change);
++  const path = "/docs-customers/" + ack.customerId + "/company-update/seen";
++  await s.api(path, "POST", { eventId: change.eventId });
++  assert.equal((await s.hook(change)).status, 200);
++  await s.ingest(
++    companyEvent(
++      { ...change.company, savedAt: "2026-11-19T12:00:00.000Z" },
++      { user: { ...change.user, name: "Новое имя контакта" } },
++    ),
++  );
++  await s.ingest(
++    companyEvent(profile("Старый снимок"), {
++      observedAt: "2026-11-19T09:01:00.000Z",
++    }),
++  );
++  const d = await s.detail(ack.customerId);
++  assert.equal(d.customer.company.companyName, change.company.companyName);
++  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
++  assert.equal(d.customer.companyUpdate.unread, false);
++  assert.equal(d.customer.name, "Новое имя контакта");
++  assert.equal(
++    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
++    0,
++  );
++});
++test("shared review stays separate from personal accounts and trash suppresses update counts without reviving removed cards", async (t) => {
++  const s = await fixture(t),
++    user = await s.make("docs.review.personal"),
++    cookie = await s.login(user.login),
++    shared = await s.login(null),
++    ack = await s.ingest(companyEvent()),
++    change = companyEvent(changedProfile());
++  await s.ingest(change);
++  await s.api(
++    "/docs-customers/" + ack.customerId + "/company-update/seen",
++    "POST",
++    { eventId: change.eventId },
++    shared,
++  );
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, shared)).json())
++      .companyUpdates.pending,
++    0,
++  );
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
++      .companyUpdates.pending,
++    1,
++  );
++  let d = await s.detail(ack.customerId);
++  await s.api("/docs-customers/" + ack.customerId + "/trash", "POST", {
++    requestId: randomUUID(),
++    version: d.customer.version,
++    action: "delete",
++  });
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
++      .companyUpdates.pending,
++    0,
++  );
++  assert.equal(
++    (
++      await s.api(
++        "/docs-customers/" + ack.customerId + "/company-update/seen",
++        "POST",
++        { eventId: change.eventId },
++        cookie,
++      )
++    ).status,
++    409,
++  );
++  await s.ingest(companyEvent(changedProfile("Изменение в корзине", "14")));
++  assert.equal((await (await s.api("/docs-customers")).json()).total, 0);
++  d = await s.detail(ack.customerId);
++  await s.api("/docs-customers/" + ack.customerId + "/trash", "POST", {
++    requestId: randomUUID(),
++    version: d.customer.version,
++    action: "restore",
++  });
++  assert.equal(
++    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
++      .companyUpdates.pending,
++    1,
++  );
++});
++test("upgrade detects captured legacy company changes once and preserves reviewed state after restart", async (t) => {
++  const s = await fixture(t),
++    ack = await s.ingest(companyEvent()),
++    change = companyEvent(changedProfile());
++  await s.ingest(change);
++  s.db.exec(
++    "DROP TABLE docs_customer_company_reviews;DROP TABLE docs_customer_company_updates;DROP TABLE docs_customer_module_meta;",
++  );
++  await s.restart();
++  let d = await s.detail(ack.customerId);
++  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
++  assert.equal(d.customer.companyUpdate.unread, true);
++  await s.api(
++    "/docs-customers/" + ack.customerId + "/company-update/seen",
++    "POST",
++    { eventId: change.eventId },
++  );
++  await s.restart();
++  d = await s.detail(ack.customerId);
++  assert.equal(d.customer.companyUpdate.unread, false);
++  assert.equal(
++    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
++    0,
++  );
++});
++test("updated customers stay on page one even with a full page of more recent new registrations", async (t) => {
++  const s = await fixture(t),
++    ack = await s.ingest(companyEvent());
++  await s.ingest(companyEvent(changedProfile()));
++  for (let i = 0; i < 26; i++)
++    await s.ingest(
++      event({
++        user: {
++          ...event().user,
++          id: "recent-" + i,
++          registeredAt: "2026-11-19T15:00:00.000Z",
++        },
++        occurredAt: "2026-11-19T15:00:00.000Z",
++        observedAt: "2026-11-19T15:00:00.000Z",
++      }),
++    );
++  const list = await (await s.api("/docs-customers")).json();
++  assert.equal(list.total, 27);
++  assert.equal(list.customers.length, 25);
++  assert.equal(list.customers[0].id, ack.customerId);
++  assert.equal(list.pages, 2);
++});
++test("newest-first outbox delivery still proves a company update when the previous snapshot arrives later", async (t) => {
++  const s = await fixture(t),
++    newest = companyEvent(changedProfile()),
++    ack = await s.ingest(newest);
++  assert.equal((await s.detail(ack.customerId)).customer.companyUpdate, null);
++  await s.ingest(companyEvent());
++  let d = await s.detail(ack.customerId);
++  assert.equal(d.customer.company.companyName, newest.company.companyName);
++  assert.equal(d.customer.companyUpdate.eventId, newest.eventId);
++  assert.equal(d.customer.companyUpdate.unread, true);
++  await s.api(
++    "/docs-customers/" + ack.customerId + "/company-update/seen",
++    "POST",
++    { eventId: newest.eventId },
++  );
++  await s.ingest(
++    companyEvent(profile("Более ранний снимок"), {
++      observedAt: "2026-11-19T09:00:00.000Z",
++    }),
++  );
++  d = await s.detail(ack.customerId);
++  assert.equal(d.customer.companyUpdate.unread, false);
++  assert.equal(d.customer.companyUpdate.eventId, newest.eventId);
++});

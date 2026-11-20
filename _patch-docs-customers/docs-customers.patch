@@ -1,0 +1,3463 @@
+diff --git a/README.md b/README.md
+index 6c18a28..2b54690 100644
+--- a/README.md
++++ b/README.md
+@@ -136,3 +136,7 @@ npm run check
+ - Стоимость ИИ в настройках — оценка исходного ядра по заложенным в нём тарифам. Проверяйте фактические расходы в Yandex Cloud.
+ 
+ Архитектура и добавление сервисов: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Источники: [THIRD_PARTY.md](THIRD_PARTY.md).
++
++## Клиенты BoykovDocs
++
++Контакты, данные компании с привязкой к ID пользователя и история звонков отдела продаж. [Установка, подключение и работа](docs/BOYKOVDOCS-CUSTOMERS.md).
+diff --git a/docs/BOYKOVDOCS-CUSTOMERS.md b/docs/BOYKOVDOCS-CUSTOMERS.md
+new file mode 100644
+index 0000000..6390112
+--- /dev/null
++++ b/docs/BOYKOVDOCS-CUSTOMERS.md
+@@ -0,0 +1,70 @@
++# Клиенты BoykovDocs
++
++Раздел «Клиенты BoykovDocs» хранит контакты пользователей, их данные компании и журнал звонков отдела продаж. Источник — файлы, которые уже сохраняет API BoykovDocs. Почтовый ящик не используется как очередь.
++
++## Какие данные поступают
++
++Карточка определяется неизменным **ID пользователя BoykovDocs**. Компания принадлежит именно этому ID. Одинаковые имена, телефоны, почта и ИНН не объединяют разных пользователей. В карточке рядом с компанией явно показано, кто её заполнил: имя, почта, ID. Сохранённые версии компании содержат снимок контактов того же пользователя.
++
++Контакты: ID, имя, телефон, email и дата регистрации. Компания: название, ИНН, должность и ФИО руководителя, должность и ФИО ответственного по охране труда, дата сохранения по Москве. Новое сохранение обновляет компанию в той же карточке. История звонков остаётся.
++
++Начало загрузки: **19 ноября 2026 года, 00:00 по Москве** (`2026-11-18T21:00:00.000Z`). Дата фиксируется в базе Boykov Services и не меняется при перезапуске или перевыпуске ключа. Старые регистрации и старые профили компаний не загружаются. Если ранее зарегистрированный пользователь сохранит компанию после этой даты, его карточка появится с новыми данными компании и его контактами; исходная дата регистрации останется видимой.
++
++Коннектор раз в 30 секунд читает актуальные `users.json` и `company-profiles.json`, сопоставляет компанию по ключу `profiles[userId]`, сохраняет события в собственную SQLite-очередь и доставляет их с повторами. Перечитывание неизменённых файлов не создаёт новых событий. Подтверждение сервера проверяется по ID события и пользователя; потеря ответа не создаёт дублей. Очередь сохраняется на диске при перезапуске. Непринятые события не выбрасываются. Проблемы чтения, доставки и устаревшая связь отображаются в разделе.
++
++Это сбор текущих сохранённых данных, а не журнал всех действий сайта: несколько изменений компании между опросами могут объединиться в последнее состояние. В истории показываются версии, которые коннектор успел получить. Компания, впервые заполненная до даты начала и с тех пор не изменявшаяся, не импортируется даже вместе с новой карточкой контакта.
++
++## Звонки
++
++Фильтры: все, не звонили, звонили; только с компанией; мои звонки. Поиск по имени, телефону, email, ID и данным компании, включая ИНН. Сортировка по времени регистрации или последнего сохранения компании. Время интерфейса — Москва.
++
++Ссылка на телефон сама не отмечает звонок. Менеджер выбирает «Связались», «Не дозвонились» или «Перезвонить», добавляет комментарий и сохраняет результат. Сервер записывает имя и ID вошедшего сотрудника, время и текущий телефон клиента. Клиент не может подставить имя автора. Повтор сохранения после сетевой ошибки не создаёт второй звонок. При одновременном изменении карточки интерфейс обновляет её и сохраняет черновик комментария для повторного подтверждения.
++
++При общем входе автор — «Общий доступ»; для персональной подписи нужен личный аккаунт. Отменить ошибочную отметку может автор или администратор. Запись, автор и сведения об отмене остаются в истории. После отмены всех действующих отметок карточка снова попадает в «Не звонили». «Звонили» означает наличие отмеченной попытки, в том числе без ответа.
++
++## Установка в локальный проект
++
++Применить архив патча через `Install-Patch.ps1`, пройти `npm run check`, сделать обычный коммит от своего имени и push. Патч не создаёт аккаунтов и не содержит ключей или реальных клиентов.
++
++## Обновление Boykov Services на VPS
++
++На сервере **Boykov Services**, где проект находится в `/opt/boykov-services`:
++
++```bash
++cd /opt/boykov-services
++git pull --ff-only
++bash scripts/deploy-docs-customers.sh
++```
++
++Скрипт требует чистых отслеживаемых файлов, сохраняет согласованный снимок SQLite через `VACUUM INTO`, проверяет его и оставляет старый образ для отката. Затем пересобирает и запускает только `app`, ждёт готовности и проверяет миграции, здоровье API и закрытый доступ. Контейнер документов не перезапускается. Путь `BACKUP` выводится в консоль. Для отката только кода выполнить `bash <BACKUP>/rollback-app.sh`; текущая база остаётся на месте.
++
++Открыть **Клиенты BoykovDocs → Подключение** под администратором и создать ключ. Он показывается один раз. Не отправлять ключ в чат, Git или скриншоты. Перевыпуск ключа отключает прежний коннектор до повторной настройки.
++
++## Подключение сервера BoykovDocs
++
++Выполнить под `root` **на сервере BoykovDocs**, а не на сервере Boykov Services. Можно использовать существующий свежий клон Boykov-Services; либо создать отдельный каталог:
++
++```bash
++git clone https://github.com/powder-rose/Boykov-Services.git /opt/boykov-services-connector
++cd /opt/boykov-services-connector
++bash scripts/install-docs-customers.sh
++```
++
++Если этот каталог уже существует, выполнить в нём `git pull --ff-only`, затем установщик. Когда появится скрытый запрос, вставить ключ из Boykov Services и нажать Enter. Ключ не отображается при вводе.
++
++Установщик проверяет доступ, находит хостовый каталог данных через mount контейнера `boykovdocs-api` в `/app/data` и запускает отдельный Compose-проект `boykovdocs-customers-delivery` на Node 24. Он не меняет файлы BoykovDocs, его репозиторий, регистрацию, API, письма, платежи или контейнеры сайта. Сторонний cron не нужен. Права пользователя берутся из контейнера API, чтобы читать закрытые файлы данных.
++
++Монтируется **каталог** данных только для чтения: отдельные bind mount файлов несовместимы с атомарной заменой JSON при сохранении. Пароли, токены, платёжные данные и содержимое почтовой очереди не копируются. Конфигурация с ключом и локальная очередь закрыты правами файлов; исходящие запросы идут по HTTPS с проверкой сертификата, без переходов на другой адрес.
++
++Успешный результат: `DOCS_CUSTOMERS_CONNECTION=OK`. Через минуту проверить зелёное «Доставка работает» и карточки. Если новых пользователей/сохранений с 19 ноября нет, пустой список нормален. Для проверки достаточно зарегистрировать тестового пользователя обычной формой, сохранить ему компанию и проверить, что её ID совпадает с ID карточки.
++
++Диагностика без показа ключей и клиентских данных:
++
++```bash
++docker compose -f /opt/boykovdocs-customers-delivery/compose.json ps
++docker compose -f /opt/boykovdocs-customers-delivery/compose.json logs --tail 20 delivery
++```
++
++Лог содержит только состояние и количество событий. Каталоги `state` и данные Boykov Services необходимо сохранять при обслуживании: в них очередь, принятые карточки и история звонков. При сетевой недоступности восстановить соединение и дать коннектору повторить отправку; не удалять очередь. При переустановке используется та же очередь и дата начала.
++
++Скрипт подключения рассчитывает на подтверждённую структуру BoykovDocs: контейнер `boykovdocs-api`, JSON-массив пользователей и `company-profiles.json` версии 1. Если структура отличается, подключение останавливается и требует проверки; установка кода не означает, что production уже подключён.
+diff --git a/integrations/docs-customers/agent.mjs b/integrations/docs-customers/agent.mjs
+new file mode 100644
+index 0000000..7e01782
+--- /dev/null
++++ b/integrations/docs-customers/agent.mjs
+@@ -0,0 +1,360 @@
++// Sidecar collector: source files are read-only. Passwords, JWTs and consent records are never queued.
++import { DatabaseSync } from "node:sqlite";
++import { createHash, randomUUID } from "node:crypto";
++import {
++  readFileSync,
++  mkdirSync,
++  chmodSync,
++  writeFileSync,
++  renameSync,
++  rmSync,
++} from "node:fs";
++import { join, resolve } from "node:path";
++import { pathToFileURL } from "node:url";
++import { setTimeout as delay } from "node:timers/promises";
++import {
++  DOCS_COMPANY_FIELDS,
++  normalizeDocsCustomerEvent,
++} from "../../shared/docs-customers.js";
++const hash = (value) => createHash("sha256").update(value).digest("hex");
++const timestamp = (value) =>
++  typeof value === "string" && Number.isFinite(Date.parse(value))
++    ? new Date(value).toISOString()
++    : null;
++export function validateDocsConnection(config) {
++  const url = new URL(config.endpoint);
++  if (
++    url.protocol !== "https:" ||
++    url.username ||
++    url.password ||
++    url.search ||
++    url.hash ||
++    url.pathname !== "/hooks/docs-customers" ||
++    !/^[a-f0-9]{64}$/.test(config.token || "") ||
++    !timestamp(config.since)
++  )
++    throw Error("INVALID_DOCS_CUSTOMER_CONNECTION");
++  return url.href;
++}
++export class DocsCustomerAgent {
++  constructor(config, { fetcher = fetch, now = Date.now } = {}) {
++    this.config = { ...config, endpoint: validateDocsConnection(config) };
++    this.fetcher = fetcher;
++    this.now = now;
++    mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
++    const file = join(config.stateDir, "delivery.sqlite");
++    this.db = new DatabaseSync(file);
++    chmodSync(file, 0o600);
++    this.db
++      .exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
++   CREATE TABLE IF NOT EXISTS identity(id INTEGER PRIMARY KEY CHECK(id=1),endpoint TEXT NOT NULL,source TEXT NOT NULL,since TEXT NOT NULL);
++   CREATE TABLE IF NOT EXISTS outbox(event_id TEXT PRIMARY KEY,payload TEXT NOT NULL,queued_at INTEGER NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '');
++   CREATE INDEX IF NOT EXISTS outbox_due ON outbox(delivered,next_at);
++   CREATE TABLE IF NOT EXISTS capture(kind TEXT NOT NULL,user_id TEXT NOT NULL,content_hash TEXT NOT NULL,PRIMARY KEY(kind,user_id));
++   CREATE TABLE IF NOT EXISTS quarantine(source_key TEXT PRIMARY KEY,error TEXT NOT NULL);
++   CREATE TABLE IF NOT EXISTS clock(id INTEGER PRIMARY KEY CHECK(id=1),last_seen INTEGER NOT NULL);
++   INSERT OR IGNORE INTO clock VALUES(1,0);`);
++    const identity = this.db.prepare("SELECT * FROM identity WHERE id=1").get();
++    if (
++      identity &&
++      (identity.endpoint !== this.config.endpoint ||
++        identity.source !== resolve(config.sourceDir) ||
++        identity.since !== config.since)
++    ) {
++      this.db.close();
++      throw Error("DOCS_QUEUE_BELONGS_TO_ANOTHER_SOURCE");
++    }
++    this.db
++      .prepare("INSERT OR IGNORE INTO identity VALUES(1,?,?,?)")
++      .run(this.config.endpoint, resolve(config.sourceDir), config.since);
++    this.scanOk = false;
++    this.errorCode = "";
++  }
++  capture(kind, user, company, occurredAt) {
++    const sourceKey = kind + ":" + user.id;
++    const content = { kind, user, company, occurredAt },
++      digest = hash(JSON.stringify(content));
++    if (
++      this.db
++        .prepare("SELECT content_hash FROM capture WHERE kind=? AND user_id=?")
++        .get(kind, user.id)?.content_hash === digest
++    ) {
++      this.db
++        .prepare("DELETE FROM quarantine WHERE source_key=?")
++        .run(sourceKey);
++      return;
++    }
++    this.db.exec("BEGIN IMMEDIATE");
++    try {
++      const last = this.db
++          .prepare("SELECT last_seen FROM clock WHERE id=1")
++          .get().last_seen,
++        observed = Math.max(this.now(), last + 1);
++      const payload = normalizeDocsCustomerEvent(
++        {
++          eventId: randomUUID(),
++          ...content,
++          observedAt: new Date(observed).toISOString(),
++        },
++        Math.max(this.now(), observed),
++      );
++      this.db
++        .prepare("INSERT INTO outbox(event_id,payload,queued_at) VALUES(?,?,?)")
++        .run(payload.eventId, JSON.stringify(payload), this.now());
++      this.db
++        .prepare(
++          "INSERT INTO capture VALUES(?,?,?) ON CONFLICT(kind,user_id) DO UPDATE SET content_hash=excluded.content_hash",
++        )
++        .run(kind, user.id, digest);
++      this.db.prepare("UPDATE clock SET last_seen=? WHERE id=1").run(observed);
++      this.db
++        .prepare("DELETE FROM quarantine WHERE source_key=?")
++        .run(sourceKey);
++      this.db.exec("COMMIT");
++    } catch (error) {
++      if (this.db.isTransaction) this.db.exec("ROLLBACK");
++      this.db
++        .prepare("INSERT OR REPLACE INTO quarantine VALUES(?,?)")
++        .run(sourceKey, "INVALID_SOURCE_DATA");
++    }
++  }
++  scan() {
++    let users;
++    try {
++      users = JSON.parse(
++        readFileSync(join(this.config.sourceDir, "users.json"), "utf8"),
++      );
++      if (!Array.isArray(users)) throw Error();
++    } catch {
++      this.scanOk = false;
++      this.errorCode = "users_read_failed";
++      return;
++    }
++    const byId = new Map();
++    for (const row of users) {
++      if (!row || typeof row.id !== "string") continue;
++      const user = {
++        id: row.id,
++        name: row.name ?? "",
++        email: row.email ?? "",
++        phone: row.phone ?? "",
++        registeredAt: timestamp(row.createdAt),
++      };
++      byId.set(user.id, user);
++      if (user.registeredAt && user.registeredAt >= this.config.since)
++        this.capture("registration", user, null, user.registeredAt);
++    }
++    let profiles;
++    try {
++      let data;
++      try {
++        data = readFileSync(
++          join(this.config.sourceDir, "company-profiles.json"),
++          "utf8",
++        );
++      } catch (error) {
++        if (error.code === "ENOENT") data = '{"version":1,"profiles":{}}';
++        else throw error;
++      }
++      const state = JSON.parse(data);
++      if (
++        state.version !== 1 ||
++        !state.profiles ||
++        typeof state.profiles !== "object" ||
++        Array.isArray(state.profiles)
++      )
++        throw Error();
++      profiles = state.profiles;
++    } catch {
++      this.scanOk = false;
++      this.errorCode = "companies_read_failed";
++      return;
++    }
++    for (const [id, user] of byId) {
++      if (!Object.hasOwn(profiles, id)) continue;
++      const row = profiles[id],
++        savedAt = timestamp(row?.updatedAt);
++      if (!savedAt || savedAt < this.config.since) continue;
++      const company = {
++        savedAt,
++        ...Object.fromEntries(
++          DOCS_COMPANY_FIELDS.map((f) => [
++            f.name,
++            row.companyProfile?.[f.name] ?? "",
++          ]),
++        ),
++      };
++      this.capture("company", user, company, savedAt);
++    }
++    this.scanOk = true;
++    this.errorCode = this.db
++      .prepare("SELECT count(*) amount FROM quarantine")
++      .get().amount
++      ? "invalid_source_data"
++      : "";
++  }
++  status() {
++    const row = this.db
++      .prepare(
++        "SELECT count(*) pending,MIN(queued_at) oldest,COALESCE(SUM(error IN ('HTTP_400','HTTP_401','HTTP_403','HTTP_409','HTTP_413','HTTP_422','INVALID_ACK')),0) rejected FROM outbox WHERE delivered=0",
++      )
++      .get();
++    const quarantined = this.db
++      .prepare("SELECT count(*) amount FROM quarantine")
++      .get().amount;
++    return {
++      scanOk: this.scanOk,
++      pending: row.pending,
++      rejected: row.rejected + quarantined,
++      errorCode:
++        this.errorCode ||
++        (row.oldest && this.now() - row.oldest > 300000
++          ? "delivery_delayed"
++          : ""),
++    };
++  }
++  async request(path, payload) {
++    return this.fetcher(this.config.endpoint + path, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + this.config.token,
++      },
++      body: JSON.stringify(payload),
++      redirect: "error",
++      signal: AbortSignal.timeout(12000),
++    });
++  }
++  async heartbeat() {
++    const response = await this.request("/heartbeat", this.status());
++    if (!response.ok) throw Error("DOCS_HEARTBEAT_HTTP_" + response.status);
++    const ack = await response.json();
++    if (ack.ok !== true || ack.source !== "boykovdocs.ru")
++      throw Error("INVALID_DOCS_HEARTBEAT_ACK");
++  }
++  async deliver() {
++    // Reserve room for fresh events even when older rejected rows keep retrying.
++    const fresh = this.db
++      .prepare(
++        "SELECT * FROM outbox WHERE delivered=0 AND next_at<=? ORDER BY queued_at DESC,event_id DESC LIMIT 10",
++      )
++      .all(this.now());
++    const older = this.db
++      .prepare(
++        "SELECT * FROM outbox WHERE delivered=0 AND next_at<=? ORDER BY queued_at,event_id LIMIT 50",
++      )
++      .all(this.now());
++    const rows = [
++      ...new Map(
++        [...fresh, ...older].map((row) => [row.event_id, row]),
++      ).values(),
++    ].slice(0, 50);
++    for (const row of rows) {
++      let error = "",
++        networkFailure = false;
++      try {
++        const response = await this.request("", JSON.parse(row.payload));
++        if (!response.ok) error = "HTTP_" + response.status;
++        else {
++          const ack = await response.json(),
++            payload = JSON.parse(row.payload);
++          if (
++            ack.ok === true &&
++            ack.eventId === row.event_id &&
++            ack.externalId === payload.user.id &&
++            (typeof ack.customerId === "string" || ack.ignored === true)
++          ) {
++            this.db
++              .prepare(
++                "UPDATE outbox SET delivered=1,error='' WHERE event_id=?",
++              )
++              .run(row.event_id);
++            continue;
++          }
++          error = "INVALID_ACK";
++        }
++      } catch {
++        error = "NETWORK_ERROR";
++        networkFailure = true;
++      }
++      const wait = Math.min(900000, 5000 * 2 ** Math.min(row.attempts, 8));
++      this.db
++        .prepare(
++          "UPDATE outbox SET attempts=attempts+1,next_at=?,error=? WHERE event_id=?",
++        )
++        .run(this.now() + wait, error, row.event_id);
++      if (networkFailure) break;
++    }
++  }
++  async cycle() {
++    this.scan();
++    await this.deliver();
++    await this.heartbeat();
++    const status = this.status();
++    const file = join(this.config.stateDir, "status.json"),
++      temporary = file + "." + randomUUID();
++    try {
++      writeFileSync(
++        temporary,
++        JSON.stringify({
++          ...status,
++          checkedAt: new Date(this.now()).toISOString(),
++        }),
++        { mode: 0o600, flag: "wx" },
++      );
++      renameSync(temporary, file);
++    } finally {
++      rmSync(temporary, { force: true });
++    }
++    return status;
++  }
++  close() {
++    this.db.close();
++  }
++}
++if (
++  process.argv[1] &&
++  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
++) {
++  process.umask(0o077);
++  let config;
++  try {
++    config = JSON.parse(readFileSync(process.argv[2], "utf8"));
++  } catch {
++    throw Error("DOCS_CUSTOMERS_CONFIGURATION_UNREADABLE");
++  }
++  const agent = new DocsCustomerAgent(config),
++    stop = new AbortController();
++  for (const s of ["SIGTERM", "SIGINT"]) process.once(s, () => stop.abort());
++  const cycle = async () => {
++    try {
++      const s = await agent.cycle();
++      console.log(
++        "DOCS_CUSTOMERS_SYNC=" +
++          (s.scanOk && !s.rejected ? "OK" : "CHECK_REQUIRED") +
++          " PENDING=" +
++          s.pending +
++          " REJECTED=" +
++          s.rejected,
++      );
++      return s.scanOk && !s.rejected;
++    } catch {
++      console.error("DOCS_CUSTOMERS_SYNC=CONNECTION_CHECK_REQUIRED");
++      return false;
++    }
++  };
++  try {
++    if (process.argv.includes("--once"))
++      process.exitCode = (await cycle()) ? 0 : 1;
++    else
++      while (!stop.signal.aborted) {
++        await cycle();
++        if (!stop.signal.aborted)
++          await delay(30000, undefined, { signal: stop.signal }).catch((e) => {
++            if (e.name !== "AbortError") throw e;
++          });
++      }
++  } finally {
++    agent.close();
++  }
++}
+diff --git a/scripts/deploy-docs-customers.sh b/scripts/deploy-docs-customers.sh
+new file mode 100755
+index 0000000..673939c
+--- /dev/null
++++ b/scripts/deploy-docs-customers.sh
+@@ -0,0 +1,62 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo 'DOCS_CUSTOMERS_DEPLOY_REQUIRES_ROOT'; exit 1; }
++[[ -f server/modules/docs-customers/index.js && -f .env ]] || { echo 'DOCS_CUSTOMERS_SOURCE_OR_ENV_MISSING'; exit 1; }
++[[ -z "$(git status --porcelain --untracked-files=no)" ]] || { echo 'DOCS_CUSTOMERS_DEPLOY_STOPPED_TRACKED_LOCAL_CHANGES'; exit 1; }
++mkdir -p /root/boykov-services-backups
++backup=$(mktemp -d /root/boykov-services-backups/pre-docs-customers-XXXXXXXX)
++chmod 700 "$backup"
++previous=$(docker inspect boykov-services-app-1 --format '{{.Image}}')
++previous_tag="boykov-services-app:pre-docs-customers-$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
++docker image tag "$previous" "$previous_tag"
++printf '%s\n' "$previous_tag" > "$backup/previous-image.txt"
++git rev-parse HEAD > "$backup/source-commit.txt"
++printf 'BACKUP=%s\n' "$backup"
++trap 'code=$?; if [[ "$code" != 0 ]]; then printf "DOCS_CUSTOMERS_DEPLOY_FAILED BACKUP=%s\n" "$backup"; fi' EXIT
++docker compose exec -T app node --input-type=module - <<'DOCS_BACKUP' > "$backup/database-backup.json"
++import { DatabaseSync } from 'node:sqlite';
++import { mkdirSync, chmodSync, existsSync, copyFileSync } from 'node:fs';
++import { randomUUID } from 'node:crypto';
++const directory='/app/data/backups/pre-docs-customers-'+randomUUID();
++mkdirSync(directory,{recursive:true,mode:0o700});
++const db=new DatabaseSync('/app/data/platform.sqlite');
++try {
++ db.exec('PRAGMA busy_timeout=10000');
++ const destination=directory+'/platform.sqlite';
++ db.prepare('VACUUM INTO ?').run(destination);chmodSync(destination,0o600);
++ const snapshot=new DatabaseSync(destination,{readOnly:true});
++ try {if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('BACKUP_INTEGRITY_FAILED');}finally{snapshot.close();}
++ console.log(JSON.stringify({database:destination}));
++}finally{db.close();}
++DOCS_BACKUP
++cat > "$backup/rollback-app.sh" <<ROLLBACK
++#!/usr/bin/env bash
++set -Eeuo pipefail
++cd /opt/boykov-services
++docker image tag '$previous_tag' boykov-services-app:latest
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++ROLLBACK
++chmod 700 "$backup/rollback-app.sh"
++docker compose build app
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++docker compose exec -T app node --input-type=module - <<'VERIFY_DOCS_CUSTOMERS'
++import { DatabaseSync } from 'node:sqlite';
++const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
++try {
++ if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
++ for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
++}finally{db.close();}
++const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
++if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
++for(const route of ['/api/docs-customers','/api/docs-customers/connection']){
++ const response=await fetch('http://127.0.0.1:8787'+route,{signal:AbortSignal.timeout(10000)});
++ if(response.status!==401)throw Error('DOCS_CUSTOMERS_AUTH_CHECK_FAILED');
++}
++const hook=await fetch('http://127.0.0.1:8787/hooks/docs-customers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
++if(hook.status!==401)throw Error('DOCS_CUSTOMERS_HOOK_AUTH_FAILED');
++console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_AUTH=OK');
++VERIFY_DOCS_CUSTOMERS
++docker compose ps
++printf 'DOCS_CUSTOMERS_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"
+diff --git a/scripts/install-docs-customers.sh b/scripts/install-docs-customers.sh
+new file mode 100755
+index 0000000..2b6881d
+--- /dev/null
++++ b/scripts/install-docs-customers.sh
+@@ -0,0 +1,89 @@
++#!/usr/bin/env bash
++# Run as root on the BoykovDocs server from an up-to-date Boykov-Services checkout.
++set -Eeuo pipefail
++umask 077
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo DOCS_CONNECT_REQUIRES_ROOT; exit 1; }
++for command in docker python3; do command -v "$command" >/dev/null || { echo "DOCS_CONNECT_MISSING=$command"; exit 1; }; done
++docker compose version >/dev/null
++[[ -f integrations/docs-customers/agent.mjs && -f shared/docs-customers.js ]] || { echo DOCS_CONNECT_SOURCE_MISSING; exit 1; }
++source_dir=$(docker inspect boykovdocs-api --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}')
++[[ "$source_dir" == /* && -f "$source_dir/users.json" ]] || { echo DOCS_SOURCE_DATA_NOT_FOUND; exit 1; }
++source_uid=$(docker exec boykovdocs-api id -u)
++source_gid=$(docker exec boykovdocs-api id -g)
++[[ "$source_uid" =~ ^[0-9]+$ && "$source_gid" =~ ^[0-9]+$ ]] || exit 1
++root=/opt/boykovdocs-customers-delivery
++install -d -m 700 "$root"
++backup=$(mktemp -d "$root/pre-connect-XXXXXXXX")
++for file in config.json compose.json; do if [[ -f "$root/$file" ]]; then cp -p "$root/$file" "$backup/$file"; fi; done
++# Prompt uses /dev/tty; key never appears in shell history, arguments or console output.
++python3 - "$backup/new-config.json" <<'PY'
++import sys,json,getpass,urllib.request,urllib.error,re,os
++class NoRedirect(urllib.request.HTTPRedirectHandler):
++ def redirect_request(self,*args): return None
++try:
++ tty=open('/dev/tty','r+')
++except OSError: raise SystemExit('DOCS_CONNECT_REQUIRES_INTERACTIVE_SSH_TERMINAL')
++with tty: key=getpass.getpass('Вставьте ключ подключения BoykovDocs и нажмите Enter: ',stream=tty)
++if not re.fullmatch('[a-f0-9]{64}',key): raise SystemExit('DOCS_CONNECTION_KEY_INVALID')
++endpoint='https://boykov-services.ru/hooks/docs-customers'
++request=urllib.request.Request(endpoint+'/handshake',data=b'{}',headers={'Content-Type':'application/json','Authorization':'Bearer '+key},method='POST')
++try:
++ with urllib.request.build_opener(NoRedirect).open(request,timeout=20) as response:
++  result=json.load(response)
++ if result.get('ok') is not True or result.get('source')!='boykovdocs.ru' or not result.get('since'): raise ValueError()
++except Exception: raise SystemExit('DOCS_HUB_CONNECTION_FAILED: проверьте ключ и доступность Boykov Services')
++with open(sys.argv[1],'x',encoding='utf-8') as file: json.dump({'endpoint':endpoint,'token':key,'since':result['since'],'sourceDir':'/source','stateDir':'/state'},file)
++os.chmod(sys.argv[1],0o600)
++print('DOCS_HUB_CONNECTION=OK')
++PY
++code=$(mktemp -d "$root/code-XXXXXXXX")
++install -d -m 755 "$code/integrations/docs-customers" "$code/shared"
++chmod 755 "$code"
++install -m 644 integrations/docs-customers/agent.mjs "$code/integrations/docs-customers/agent.mjs"
++install -m 644 shared/docs-customers.js "$code/shared/docs-customers.js"
++# Explicit module type is required when this code runs outside the repository.
++printf '{"type":"module"}\n' > "$code/package.json"
++chmod 644 "$code/package.json"
++install -d -m 700 -o "$source_uid" -g "$source_gid" "$root/state"
++install -m 600 -o "$source_uid" -g "$source_gid" "$backup/new-config.json" "$root/config.json"
++python3 - "$root" "$code" "$source_dir" "$source_uid" "$source_gid" <<'PY'
++import json,sys
++root,code,source,uid,gid=sys.argv[1:]
++service={
++ 'image':'node:24-bookworm-slim','user':uid+':'+gid,'restart':'unless-stopped',
++ 'command':['node','/connector/integrations/docs-customers/agent.mjs','/config/config.json'],
++ 'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],
++ 'mem_limit':'256m','pids_limit':64,'stop_grace_period':'180s',
++ 'tmpfs':['/tmp:rw,noexec,nosuid,size=16m'],
++ 'volumes':[
++  {'type':'bind','source':source,'target':'/source','read_only':True},
++  {'type':'bind','source':code,'target':'/connector','read_only':True},
++  {'type':'bind','source':root+'/config.json','target':'/config/config.json','read_only':True},
++  {'type':'bind','source':root+'/state','target':'/state'}],
++ 'logging':{'driver':'json-file','options':{'max-size':'5m','max-file':'2'}},
++ 'healthcheck':{'test':['CMD','node','-e',"const s=JSON.parse(require('fs').readFileSync('/state/status.json'));process.exit(Date.now()-Date.parse(s.checkedAt)<180000&&s.scanOk&&s.rejected===0?0:1)"],'interval':'30s','timeout':'5s','start_period':'120s','retries':3}}
++with open(root+'/compose.json','w') as file: json.dump({'name':'boykovdocs-customers-delivery','services':{'delivery':service}},file,indent=2)
++PY
++# An existing delivery agent is stopped only after credentials and source are validated.
++# Keep one writer to this queue. Source BoykovDocs containers are never restarted.
++compose=(docker compose -f "$root/compose.json")
++recover() {
++  result=$?
++  if [[ "$result" != 0 ]]; then
++    if [[ -f "$backup/compose.json" && -f "$backup/config.json" ]]; then
++      cp -p "$backup/config.json" "$root/config.json"
++      cp -p "$backup/compose.json" "$root/compose.json"
++      docker compose -f "$root/compose.json" up -d --no-deps delivery || true
++    fi
++    printf 'DOCS_CONNECT_CHECK_REQUIRED BACKUP=%s\n' "$backup"
++  fi
++}
++trap recover EXIT
++"${compose[@]}" pull delivery
++"${compose[@]}" stop delivery
++
++"${compose[@]}" run --rm --no-deps delivery node /connector/integrations/docs-customers/agent.mjs /config/config.json --once
++"${compose[@]}" up -d --no-deps --wait --wait-timeout 180 delivery
++"${compose[@]}" ps
++printf 'DOCS_CUSTOMERS_CONNECTION=OK\nDOCS_AGENT_DIRECTORY=%s\nBACKUP=%s\n' "$root" "$backup"
+diff --git a/server/app.js b/server/app.js
+index 5dacc7e..af440d9 100644
+--- a/server/app.js
++++ b/server/app.js
+@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
+ import { installAuth } from "./auth.js";
+ import { createTechnicalModule } from "./modules/technical/index.js";
+ import { createLeadsModule } from "./modules/leads/index.js";
++import { createDocsCustomersModule } from "./modules/docs-customers/index.js";
+ import { createStatisticsModule } from "./modules/statistics/index.js";
+ import { createPersonalModule } from "./personal.js";
+ import { workerClient } from "./worker-client.js";
+@@ -68,7 +69,13 @@ export async function createApp(options) {
+   const statistics = await createStatisticsModule(db, options);
+   app.locals.statistics = statistics;
+   app.post("/hooks/statistics/:siteId", statistics.receive);
++  const docsCustomers = createDocsCustomersModule(db, options);
++  app.locals.docsCustomers = docsCustomers;
++  app.post("/hooks/docs-customers", docsCustomers.receive);
++  app.post("/hooks/docs-customers/heartbeat", docsCustomers.heartbeat);
++  app.post("/hooks/docs-customers/handshake", docsCustomers.handshake);
+   installAuth(app, { ...options, db });
++  docsCustomers.register(app);
+   statistics.register(app);
+   leads.register(app);
+   technical.registerRoutes(app);
+diff --git a/server/modules/docs-customers/index.js b/server/modules/docs-customers/index.js
+new file mode 100644
+index 0000000..4b74b05
+--- /dev/null
++++ b/server/modules/docs-customers/index.js
+@@ -0,0 +1,529 @@
++import {
++  createHash,
++  randomBytes,
++  randomUUID,
++  timingSafeEqual,
++} from "node:crypto";
++import {
++  DOCS_CUSTOMERS_SINCE,
++  DOCS_COMPANY_FIELDS,
++  DOCS_CALL_OUTCOMES,
++  normalizeDocsCustomerEvent,
++  customerText,
++  customerCallNote,
++} from "../../../shared/docs-customers.js";
++const bad = (message, status = 400) =>
++  Object.assign(new Error(message), { status });
++const hash = (value) => createHash("sha256").update(value).digest("hex");
++const wrap = (fn) => (req, res, next) =>
++  Promise.resolve()
++    .then(() => fn(req, res))
++    .catch(next);
++function transaction(db, work) {
++  db.exec("BEGIN IMMEDIATE");
++  try {
++    const r = work();
++    db.exec("COMMIT");
++    return r;
++  } catch (e) {
++    if (db.isTransaction) db.exec("ROLLBACK");
++    throw e;
++  }
++}
++const actor = (req) => ({
++  id: req.actor?.id || null,
++  name: req.actor?.name || "Общий доступ",
++  kind: req.actor?.id ? "account" : "shared",
++});
++const searchText = (row) =>
++  [
++    row.external_id,
++    row.name,
++    row.email,
++    row.phone,
++    row.phone.replace(/\D/g, ""),
++    ...Object.values(JSON.parse(row.company || "{}")),
++  ]
++    .join(" ")
++    .toLowerCase();
++export function createDocsCustomersModule(db, { now = Date.now } = {}) {
++  db.exec(`CREATE TABLE IF NOT EXISTS docs_customer_connection(id INTEGER PRIMARY KEY CHECK(id=1),import_since TEXT NOT NULL,token_hash TEXT,token_issued_at TEXT,last_received_at TEXT,last_heartbeat_at TEXT,pending INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,scan_ok INTEGER NOT NULL DEFAULT 0,error_code TEXT NOT NULL DEFAULT '');
++ CREATE TABLE IF NOT EXISTS docs_customers(id TEXT PRIMARY KEY,external_id TEXT NOT NULL UNIQUE,name TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',email TEXT NOT NULL DEFAULT '',registered_at TEXT,contact_observed_at TEXT NOT NULL,company TEXT,company_saved_at TEXT,company_observed_at TEXT,created_at TEXT NOT NULL,received_at TEXT NOT NULL,source_updated_at TEXT NOT NULL,search_text TEXT NOT NULL DEFAULT '',call_count INTEGER NOT NULL DEFAULT 0,last_call_id TEXT,version INTEGER NOT NULL DEFAULT 1);
++ CREATE INDEX IF NOT EXISTS docs_customers_order ON docs_customers(source_updated_at DESC,id);
++ CREATE TABLE IF NOT EXISTS docs_customer_receipts(event_id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,customer_id TEXT NOT NULL,received_at TEXT NOT NULL);
++ CREATE TABLE IF NOT EXISTS docs_customer_calls(id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,created_at TEXT NOT NULL,outcome TEXT NOT NULL,note TEXT NOT NULL,phone TEXT NOT NULL,actor_id TEXT,actor_name TEXT NOT NULL,actor_kind TEXT NOT NULL,voided_at TEXT,voided_by_id TEXT,voided_by_name TEXT,voided_by_kind TEXT);
++ CREATE INDEX IF NOT EXISTS docs_customer_calls_customer ON docs_customer_calls(customer_id,created_at DESC);
++ CREATE INDEX IF NOT EXISTS docs_customer_calls_actor ON docs_customer_calls(actor_id,customer_id);
++ CREATE TABLE IF NOT EXISTS docs_customer_company_versions(event_id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,saved_at TEXT NOT NULL,company TEXT NOT NULL,user_snapshot TEXT NOT NULL);
++ CREATE INDEX IF NOT EXISTS docs_customer_company_versions_customer ON docs_customer_company_versions(customer_id,saved_at DESC);
++ CREATE TABLE IF NOT EXISTS docs_customer_actions(request_id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,actor_key TEXT NOT NULL,payload_hash TEXT NOT NULL,result TEXT NOT NULL);`);
++  db.prepare(
++    "INSERT OR IGNORE INTO docs_customer_connection(id,import_since) VALUES(1,?)",
++  ).run(DOCS_CUSTOMERS_SINCE);
++  const connectionRow = () =>
++    db.prepare("SELECT * FROM docs_customer_connection WHERE id=1").get();
++  function connection() {
++    const r = connectionRow(),
++      age = r.last_heartbeat_at
++        ? now() - Date.parse(r.last_heartbeat_at)
++        : Infinity;
++    return {
++      configured: !!r.token_hash,
++      since: r.import_since,
++      lastReceivedAt: r.last_received_at,
++      lastHeartbeatAt: r.last_heartbeat_at,
++      pending: r.pending,
++      rejected: r.rejected,
++      scanOk: !!r.scan_ok,
++      errorCode: r.error_code,
++      status: !r.token_hash
++        ? "unconfigured"
++        : !r.last_heartbeat_at
++          ? "waiting"
++          : age > 180000
++            ? "offline"
++            : !r.scan_ok || r.rejected || r.error_code
++              ? "attention"
++              : r.pending
++                ? "syncing"
++                : "online",
++    };
++  }
++  function authorize(req) {
++    const token = /^Bearer ([a-f0-9]{64})$/.exec(
++        req.get("authorization") || "",
++      )?.[1],
++      expected = connectionRow().token_hash;
++    if (
++      !token ||
++      !expected ||
++      !timingSafeEqual(
++        Buffer.from(hash(token), "hex"),
++        Buffer.from(expected, "hex"),
++      )
++    )
++      throw bad("Нет доступа к синхронизации BoykovDocs.", 401);
++  }
++  function get(id) {
++    const r = db.prepare("SELECT * FROM docs_customers WHERE id=?").get(id);
++    if (!r) throw bad("Клиент не найден.", 404);
++    return r;
++  }
++  function callView(r, req) {
++    return {
++      id: r.id,
++      createdAt: r.created_at,
++      outcome: r.outcome,
++      note: r.note,
++      phone: r.phone,
++      actor: { id: r.actor_id, name: r.actor_name, kind: r.actor_kind },
++      voidedAt: r.voided_at,
++      voidedBy: r.voided_at
++        ? { id: r.voided_by_id, name: r.voided_by_name, kind: r.voided_by_kind }
++        : null,
++      canVoid:
++        !r.voided_at &&
++        (req.actor?.role === "admin" ||
++          (r.actor_kind === "account"
++            ? r.actor_id === req.actor?.id
++            : !req.actor?.id)),
++    };
++  }
++  function present(r, req) {
++    const last = r.last_call_id
++      ? db
++          .prepare("SELECT * FROM docs_customer_calls WHERE id=?")
++          .get(r.last_call_id)
++      : null;
++    return {
++      id: r.id,
++      externalId: r.external_id,
++      name: r.name,
++      phone: r.phone,
++      email: r.email,
++      registeredAt: r.registered_at,
++      createdAt: r.created_at,
++      sourceUpdatedAt: r.source_updated_at,
++      company: r.company
++        ? { ...JSON.parse(r.company), savedAt: r.company_saved_at }
++        : null,
++      callCount: r.call_count,
++      lastCall: last ? callView(last, req) : null,
++      version: r.version,
++    };
++  }
++  function detail(id, req) {
++    const r = get(id);
++    return {
++      customer: present(r, req),
++      companyHistory: db
++        .prepare(
++          "SELECT * FROM docs_customer_company_versions WHERE customer_id=? ORDER BY saved_at DESC,rowid DESC LIMIT 50",
++        )
++        .all(id)
++        .map((v) => ({
++          eventId: v.event_id,
++          savedAt: v.saved_at,
++          company: JSON.parse(v.company),
++          user: JSON.parse(v.user_snapshot),
++        })),
++      calls: db
++        .prepare(
++          "SELECT * FROM docs_customer_calls WHERE customer_id=? ORDER BY rowid DESC",
++        )
++        .all(id)
++        .map((c) => callView(c, req)),
++    };
++  }
++  function receive(req, res) {
++    authorize(req);
++    const input = normalizeDocsCustomerEvent(req.body, now()),
++      digest = hash(JSON.stringify(input));
++    if (input.occurredAt < connectionRow().import_since)
++      return res.json({
++        ok: true,
++        eventId: input.eventId,
++        externalId: input.user.id,
++        customerId: null,
++        ignored: true,
++      });
++    const result = transaction(db, () => {
++      const oldReceipt = db
++        .prepare("SELECT * FROM docs_customer_receipts WHERE event_id=?")
++        .get(input.eventId);
++      if (oldReceipt) {
++        if (oldReceipt.payload_hash !== digest)
++          throw bad("Идентификатор события уже использован.", 409);
++        return { customerId: oldReceipt.customer_id, duplicate: true };
++      }
++      const stamp = new Date(now()).toISOString();
++      let r = db
++        .prepare("SELECT * FROM docs_customers WHERE external_id=?")
++        .get(input.user.id);
++      if (!r) {
++        const id = randomUUID();
++        db.prepare(
++          "INSERT INTO docs_customers(id,external_id,name,phone,email,registered_at,contact_observed_at,created_at,received_at,source_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
++        ).run(
++          id,
++          input.user.id,
++          input.user.name,
++          input.user.phone,
++          input.user.email,
++          input.user.registeredAt,
++          input.observedAt,
++          stamp,
++          stamp,
++          input.occurredAt,
++        );
++        r = get(id);
++      } else if (input.observedAt > r.contact_observed_at) {
++        db.prepare(
++          "UPDATE docs_customers SET name=?,phone=?,email=?,registered_at=COALESCE(registered_at,?),contact_observed_at=?,version=version+1 WHERE id=?",
++        ).run(
++          input.user.name,
++          input.user.phone,
++          input.user.email,
++          input.user.registeredAt,
++          input.observedAt,
++          r.id,
++        );
++      }
++      r = get(r.id);
++      if (input.company)
++        db.prepare(
++          "INSERT INTO docs_customer_company_versions VALUES(?,?,?,?,?)",
++        ).run(
++          input.eventId,
++          r.id,
++          input.company.savedAt,
++          JSON.stringify(
++            Object.fromEntries(
++              DOCS_COMPANY_FIELDS.map((f) => [f.name, input.company[f.name]]),
++            ),
++          ),
++          JSON.stringify(input.user),
++        );
++      if (
++        input.company &&
++        (!r.company_saved_at ||
++          input.company.savedAt > r.company_saved_at ||
++          (input.company.savedAt === r.company_saved_at &&
++            input.observedAt > (r.company_observed_at || "")))
++      ) {
++        const company = Object.fromEntries(
++          DOCS_COMPANY_FIELDS.map((f) => [f.name, input.company[f.name]]),
++        );
++        db.prepare(
++          "UPDATE docs_customers SET company=?,company_saved_at=?,company_observed_at=?,version=version+1 WHERE id=?",
++        ).run(
++          JSON.stringify(company),
++          input.company.savedAt,
++          input.observedAt,
++          r.id,
++        );
++      }
++      r = get(r.id);
++      db.prepare(
++        "UPDATE docs_customers SET received_at=?,source_updated_at=MAX(source_updated_at,?),search_text=? WHERE id=?",
++      ).run(stamp, input.occurredAt, searchText(r), r.id);
++      db.prepare("INSERT INTO docs_customer_receipts VALUES(?,?,?,?)").run(
++        input.eventId,
++        digest,
++        r.id,
++        stamp,
++      );
++      db.prepare(
++        "UPDATE docs_customer_connection SET last_received_at=? WHERE id=1",
++      ).run(stamp);
++      return { customerId: r.id };
++    });
++    res.status(result.duplicate ? 200 : 201).json({
++      ok: true,
++      eventId: input.eventId,
++      externalId: input.user.id,
++      ...result,
++    });
++  }
++  function heartbeat(req, res) {
++    authorize(req);
++    const b = req.body;
++    if (
++      !b ||
++      typeof b.scanOk !== "boolean" ||
++      !Number.isSafeInteger(b.pending) ||
++      b.pending < 0 ||
++      !Number.isSafeInteger(b.rejected) ||
++      b.rejected < 0 ||
++      ![
++        "",
++        "users_read_failed",
++        "companies_read_failed",
++        "invalid_source_data",
++        "delivery_delayed",
++      ].includes(b.errorCode || "")
++    )
++      throw bad("Некорректный статус синхронизации.");
++    db.prepare(
++      "UPDATE docs_customer_connection SET last_heartbeat_at=?,pending=?,rejected=?,scan_ok=?,error_code=? WHERE id=1",
++    ).run(
++      new Date(now()).toISOString(),
++      b.pending,
++      b.rejected,
++      Number(b.scanOk),
++      b.errorCode || "",
++    );
++    res.json({ ok: true, source: "boykovdocs.ru" });
++  }
++  function list(req) {
++    const q = customerText(req.query.q, 300).toLowerCase(),
++      status = String(req.query.status || "all"),
++      sort = String(req.query.sort || "newest"),
++      page = Number(req.query.page || 1);
++    if (
++      !["all", "uncalled", "called"].includes(status) ||
++      !["newest", "oldest"].includes(sort) ||
++      !Number.isSafeInteger(page) ||
++      page < 1 ||
++      page > 100000
++    )
++      throw bad("Проверьте фильтры клиентов.");
++    const where = [],
++      args = [];
++    if (q) {
++      where.push("search_text LIKE ? ESCAPE '\\'");
++      args.push("%" + q.replace(/[\\%_]/g, "\\$&") + "%");
++    }
++    if (status === "uncalled") where.push("call_count=0");
++    if (status === "called") where.push("call_count>0");
++    if (req.query.company === "1") where.push("company IS NOT NULL");
++    if (req.query.mine === "1") {
++      if (!req.actor?.id)
++        throw bad("Для личного фильтра войдите под своим аккаунтом.");
++      where.push(
++        "EXISTS(SELECT 1 FROM docs_customer_calls c WHERE c.customer_id=docs_customers.id AND c.actor_id=? AND c.voided_at IS NULL)",
++      );
++      args.push(req.actor.id);
++    }
++    const condition = where.length ? " WHERE " + where.join(" AND ") : "",
++      total = db
++        .prepare("SELECT count(*) amount FROM docs_customers" + condition)
++        .get(...args).amount;
++    const stats = db
++      .prepare(
++        "SELECT count(*) total,COALESCE(SUM(company IS NOT NULL),0) companies,COALESCE(SUM(call_count=0),0) uncalled,COALESCE(SUM(call_count>0),0) called FROM docs_customers",
++      )
++      .get();
++    const pages = Math.max(1, Math.ceil(total / 25)),
++      current = Math.min(page, pages);
++    const rows = db
++      .prepare(
++        "SELECT * FROM docs_customers" +
++          condition +
++          " ORDER BY source_updated_at " +
++          (sort === "oldest" ? "ASC" : "DESC") +
++          ",id LIMIT 25 OFFSET ?",
++      )
++      .all(...args, (current - 1) * 25);
++    return {
++      customers: rows.map((r) => present(r, req)),
++      total,
++      page: current,
++      pages,
++      stats,
++    };
++  }
++  function updateCallSummary(id) {
++    const last = db
++        .prepare(
++          "SELECT id FROM docs_customer_calls WHERE customer_id=? AND voided_at IS NULL ORDER BY rowid DESC LIMIT 1",
++        )
++        .get(id),
++      n = db
++        .prepare(
++          "SELECT count(*) amount FROM docs_customer_calls WHERE customer_id=? AND voided_at IS NULL",
++        )
++        .get(id).amount;
++    db.prepare(
++      "UPDATE docs_customers SET call_count=?,last_call_id=?,version=version+1 WHERE id=?",
++    ).run(n, last?.id || null, id);
++  }
++  function mutateCall(req, action) {
++    const id = req.params.id,
++      b = req.body,
++      a = actor(req);
++    if (
++      !b ||
++      !/^[a-f0-9-]{36}$/.test(b.requestId || "") ||
++      !Number.isSafeInteger(b.version) ||
++      b.version < 1
++    )
++      throw bad("Обновите карточку клиента и повторите действие.");
++    const note = action === "call" ? customerCallNote(b.note) : "",
++      outcome = action === "call" ? b.outcome : null;
++    if (action === "call" && !Object.hasOwn(DOCS_CALL_OUTCOMES, outcome || ""))
++      throw bad("Выберите результат звонка.");
++    const content = hash(
++        JSON.stringify({
++          action,
++          id,
++          callId: req.params.callId || null,
++          version: b.version,
++          note,
++          outcome,
++        }),
++      ),
++      actorKey = a.id || "shared";
++    return transaction(db, () => {
++      const repeated = db
++        .prepare("SELECT * FROM docs_customer_actions WHERE request_id=?")
++        .get(b.requestId);
++      if (repeated) {
++        if (
++          repeated.customer_id !== id ||
++          repeated.actor_key !== actorKey ||
++          repeated.payload_hash !== content
++        )
++          throw bad("Идентификатор действия уже использован.", 409);
++        return JSON.parse(repeated.result);
++      }
++      const r = get(id);
++      if (r.version !== b.version)
++        throw bad(
++          "Карточка обновилась. Данные обновлены; проверьте их и сохраните звонок ещё раз.",
++          409,
++        );
++      const stamp = new Date(now()).toISOString();
++      let callId = req.params.callId;
++      if (action === "call") {
++        callId = randomUUID();
++        db.prepare(
++          "INSERT INTO docs_customer_calls(id,customer_id,created_at,outcome,note,phone,actor_id,actor_name,actor_kind) VALUES(?,?,?,?,?,?,?,?,?)",
++        ).run(callId, id, stamp, outcome, note, r.phone, a.id, a.name, a.kind);
++      } else {
++        const c = db
++          .prepare(
++            "SELECT * FROM docs_customer_calls WHERE id=? AND customer_id=?",
++          )
++          .get(callId, id);
++        if (!c) throw bad("Звонок не найден.", 404);
++        if (!callView(c, req).canVoid)
++          throw bad("Отменить отметку может её автор или администратор.", 403);
++        db.prepare(
++          "UPDATE docs_customer_calls SET voided_at=?,voided_by_id=?,voided_by_name=?,voided_by_kind=? WHERE id=?",
++        ).run(stamp, a.id, a.name, a.kind, callId);
++      }
++      updateCallSummary(id);
++      const result = { ok: true, customerId: id, callId };
++      db.prepare("INSERT INTO docs_customer_actions VALUES(?,?,?,?,?)").run(
++        b.requestId,
++        id,
++        actorKey,
++        content,
++        JSON.stringify(result),
++      );
++      return result;
++    });
++  }
++  const admin = (req) => {
++    if (req.actor?.role !== "admin")
++      throw bad("Настраивать подключение может администратор.", 403);
++  };
++  function register(app) {
++    app.get(
++      "/api/docs-customers",
++      wrap((req, res) => res.json(list(req))),
++    );
++    app.get(
++      "/api/docs-customers/connection",
++      wrap((req, res) =>
++        res.json({
++          ...connection(),
++          canConfigure: req.actor?.role === "admin",
++        }),
++      ),
++    );
++    app.post(
++      "/api/docs-customers/connection/key",
++      wrap((req, res) => {
++        admin(req);
++        const token = randomBytes(32).toString("hex");
++        db.prepare(
++          "UPDATE docs_customer_connection SET token_hash=?,token_issued_at=?,last_heartbeat_at=NULL WHERE id=1",
++        ).run(hash(token), new Date(now()).toISOString());
++        res.json({
++          token,
++          endpoint: "https://boykov-services.ru/hooks/docs-customers",
++          since: connectionRow().import_since,
++        });
++      }),
++    );
++    app.get(
++      "/api/docs-customers/:id",
++      wrap((req, res) => res.json(detail(req.params.id, req))),
++    );
++    app.post(
++      "/api/docs-customers/:id/calls",
++      wrap((req, res) => res.json(mutateCall(req, "call"))),
++    );
++    app.post(
++      "/api/docs-customers/:id/calls/:callId/void",
++      wrap((req, res) => res.json(mutateCall(req, "void"))),
++    );
++  }
++  return {
++    register,
++    receive: wrap(receive),
++    heartbeat: wrap(heartbeat),
++    handshake: wrap((req, res) => {
++      authorize(req);
++      res.json({
++        ok: true,
++        source: "boykovdocs.ru",
++        since: connectionRow().import_since,
++        version: 1,
++      });
++    }),
++    connection,
++  };
++}
+diff --git a/shared/docs-customers.d.ts b/shared/docs-customers.d.ts
+new file mode 100644
+index 0000000..a551673
+--- /dev/null
++++ b/shared/docs-customers.d.ts
+@@ -0,0 +1,17 @@
++export const DOCS_CUSTOMERS_SINCE: string;
++export type CompanyField =
++  | "companyName"
++  | "inn"
++  | "headPosition"
++  | "headFullName"
++  | "occupationalSafetyPosition"
++  | "occupationalSafetyFullName";
++export const DOCS_COMPANY_FIELDS: {
++  name: CompanyField;
++  label: string;
++  max: number;
++}[];
++export const DOCS_CALL_OUTCOMES: Record<
++  "reached" | "no_answer" | "callback",
++  string
++>;
+diff --git a/shared/docs-customers.js b/shared/docs-customers.js
+new file mode 100644
+index 0000000..9fb144c
+--- /dev/null
++++ b/shared/docs-customers.js
+@@ -0,0 +1,128 @@
++// Business cutoff requested on 19 November 2026, midnight Moscow. Never slides on restart.
++export const DOCS_CUSTOMERS_SINCE = "2026-11-18T21:00:00.000Z";
++export const DOCS_COMPANY_FIELDS = [
++  { name: "companyName", label: "Название компании", max: 300 },
++  { name: "inn", label: "ИНН", max: 12 },
++  {
++    name: "headPosition",
++    label: "Должность руководителя организации",
++    max: 200,
++  },
++  { name: "headFullName", label: "ФИО руководителя организации", max: 200 },
++  {
++    name: "occupationalSafetyPosition",
++    label: "Должность ответственного по охране труда",
++    max: 200,
++  },
++  {
++    name: "occupationalSafetyFullName",
++    label: "ФИО ответственного по охране труда",
++    max: 200,
++  },
++];
++export const DOCS_CALL_OUTCOMES = {
++  reached: "Связались",
++  no_answer: "Не дозвонились",
++  callback: "Перезвонить",
++};
++const bad = () =>
++  Object.assign(new Error("Проверьте данные клиента BoykovDocs."), {
++    status: 400,
++  });
++export function customerText(value, max, required = false) {
++  if (value === undefined || value === null) {
++    if (required) throw bad();
++    return "";
++  }
++  if (
++    typeof value !== "string" ||
++    value.length > max ||
++    /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value)
++  )
++    throw bad();
++  const result = value.trim();
++  if (required && !result) throw bad();
++  return result;
++}
++export function customerDate(
++  value,
++  { nullable = false, now = Date.now() } = {},
++) {
++  if (nullable && (value === null || value === undefined || value === ""))
++    return null;
++  if (
++    typeof value !== "string" ||
++    value.length > 40 ||
++    !/T.*(?:Z|[+-]\d\d:\d\d)$/.test(value) ||
++    !Number.isFinite(Date.parse(value))
++  )
++    throw bad();
++  const ms = Date.parse(value);
++  if (ms > now + 300000) throw bad();
++  return new Date(ms).toISOString();
++}
++export function normalizeDocsCustomerEvent(input, now = Date.now()) {
++  if (
++    !input ||
++    typeof input !== "object" ||
++    Array.isArray(input) ||
++    !["registration", "company"].includes(input.kind)
++  )
++    throw bad();
++  const eventId = customerText(input.eventId, 160, true);
++  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(eventId)) throw bad();
++  const occurredAt = customerDate(input.occurredAt, { now }),
++    observedAt = customerDate(input.observedAt, { now });
++  const u = input.user;
++  if (!u || typeof u !== "object" || Array.isArray(u)) throw bad();
++  const id = customerText(u.id, 160, true);
++  if (!/^[A-Za-z0-9_-]+$/.test(id)) throw bad();
++  const user = {
++    id,
++    name: customerText(u.name, 200),
++    email: customerText(u.email, 254),
++    phone: customerText(u.phone, 80),
++    registeredAt: customerDate(u.registeredAt, {
++      nullable: input.kind === "company",
++      now,
++    }),
++  };
++  if (user.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user.email)) throw bad();
++  if (input.kind === "registration" && user.registeredAt !== occurredAt)
++    throw bad();
++  let company = null;
++  if (input.kind === "company") {
++    if (
++      !input.company ||
++      typeof input.company !== "object" ||
++      Array.isArray(input.company)
++    )
++      throw bad();
++    company = {
++      savedAt: customerDate(input.company.savedAt, { now }),
++      ...Object.fromEntries(
++        DOCS_COMPANY_FIELDS.map((f) => [
++          f.name,
++          customerText(input.company[f.name], f.max),
++        ]),
++      ),
++    };
++    if (
++      company.savedAt !== occurredAt ||
++      (company.inn && !/^(\d{10}|\d{12})$/.test(company.inn))
++    )
++      throw bad();
++  }
++  return { eventId, kind: input.kind, occurredAt, observedAt, user, company };
++}
++
++export function customerCallNote(value) {
++  if (value === undefined) return "";
++  if (
++    typeof value !== "string" ||
++    value.length > 4000 ||
++    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
++  )
++    throw bad();
++  return value.replace(/\r\n?/g, "\n").trim();
++}
+diff --git a/src/App.tsx b/src/App.tsx
+index ecb8836..3ed6b08 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -19,6 +19,7 @@ import {
+   UserRound,
+   X,
+   BarChart3,
++  ContactRound,
+ } from "lucide-react";
+ import { api, post, errorText, dateTime } from "./api";
+ import { Loading, Notice, Status } from "./components/Common";
+@@ -33,6 +34,7 @@ import Settings from "./pages/Settings";
+ import Accounts from "./pages/Accounts";
+ import Cabinet from "./pages/Cabinet";
+ import Statistics from "./pages/Statistics";
++import DocsCustomers from "./pages/DocsCustomers";
+ import type { Dashboard, Job, Page, System, Session } from "./types";
+ const navigation = [
+   { id: "cabinet", label: "Мой кабинет", icon: UserRound },
+@@ -45,6 +47,7 @@ const navigation = [
+   },
+   { id: "technical", label: "Техотдел", icon: ClipboardList },
+   { id: "leads", label: "Заявки", icon: Inbox },
++  { id: "docs-customers", label: "Клиенты BoykovDocs", icon: ContactRound },
+   { id: "statistics", label: "Статистика", icon: BarChart3 },
+   { id: "wordstat", label: "Wordstat", icon: Search },
+   {
+@@ -384,6 +387,12 @@ export default function App() {
+           <div hidden={page !== "technical"} className="page">
+             <Technical />
+           </div>
++          <div hidden={page !== "docs-customers"} className="page">
++            <DocsCustomers
++              active={page === "docs-customers"}
++              account={session.account}
++            />
++          </div>
+           <div hidden={page !== "statistics"} className="page">
+             <Statistics active={page === "statistics"} />
+           </div>
+diff --git a/src/pages/DocsCustomers.css b/src/pages/DocsCustomers.css
+new file mode 100644
+index 0000000..3b319f6
+--- /dev/null
++++ b/src/pages/DocsCustomers.css
+@@ -0,0 +1,664 @@
++.dc-page {
++  --dc-soft: #fbf2f5;
++}
++.dc-metrics {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 16px;
++  margin: 0 0 20px;
++}
++.dc-metric {
++  position: relative;
++  overflow: hidden;
++  border: 1px solid var(--line);
++  background: #fff;
++  border-radius: var(--radius);
++  padding: 23px;
++  min-height: 148px;
++}
++.dc-metric.lime {
++  background: var(--lime);
++  border-color: var(--lime);
++}
++.dc-metric.pink {
++  background: var(--pink);
++  border-color: var(--pink);
++}
++.dc-metric > span {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 10px;
++  font-size: 14px;
++  position: relative;
++  z-index: 1;
++}
++.dc-metric strong {
++  font-size: 42px;
++  line-height: 1.5;
++  font-weight: 500;
++  position: relative;
++  z-index: 1;
++}
++.dc-metric-decoration {
++  width: 112px;
++  height: 112px;
++  border: 1px solid #24272515;
++  border-radius: 50%;
++  position: absolute;
++  bottom: -65px;
++  right: 24px;
++  box-shadow:
++    0 0 0 17px #24272506,
++    0 0 0 34px #24272504;
++}
++.dc-connection {
++  display: flex;
++  align-items: center;
++  flex-wrap: wrap;
++  gap: 12px 22px;
++  margin: 18px 0 24px;
++  color: #656b60;
++  font-size: 14px;
++}
++.dc-connection button {
++  margin-left: auto;
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  color: var(--ink);
++}
++.dc-health {
++  color: #4c5348;
++  display: inline-flex;
++  align-items: center;
++  gap: 8px;
++}
++.dc-health i {
++  width: 7px;
++  height: 7px;
++  border-radius: 50%;
++  background: #90968a;
++}
++.dc-health.online i {
++  background: #628239;
++}
++.dc-health.attention i,
++.dc-health.offline i {
++  background: #b14d57;
++}
++.dc-directory {
++  background: #fff;
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  overflow: hidden;
++}
++.dc-toolbar {
++  padding: 22px 24px 15px;
++  display: flex;
++  gap: 20px;
++  align-items: center;
++}
++.dc-search {
++  flex: 1;
++  position: relative;
++}
++.dc-search svg {
++  position: absolute;
++  left: 14px;
++  top: 15px;
++  color: #767d70;
++}
++.dc-search input {
++  padding-left: 44px;
++  font-size: 16px;
++}
++.dc-sort {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  font-size: 14px;
++  color: #656b60;
++}
++.dc-sort select {
++  width: 190px;
++  font-size: 14px;
++}
++.dc-filters {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 14px 22px;
++  padding: 0 24px 22px;
++}
++.dc-tabs {
++  display: flex;
++  gap: 3px;
++  padding: 4px;
++  background: #f4f5f0;
++  border-radius: 10px;
++}
++.dc-tabs button {
++  font-size: 14px;
++  border-radius: 7px;
++  padding: 9px 15px;
++}
++.dc-tabs .selected {
++  background: var(--ink);
++  color: #fff;
++}
++.dc-filters > label {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  font-size: 14px;
++}
++.dc-filters input {
++  margin: 0;
++  accent-color: var(--ink);
++}
++.dc-list-head,
++.dc-row {
++  display: grid;
++  grid-template-columns:
++    minmax(220px, 1.3fr) minmax(180px, 1fr) minmax(180px, 0.9fr)
++    auto;
++  gap: 22px;
++  align-items: center;
++  padding: 20px 24px;
++}
++.dc-list-head {
++  background: #f8f8f5;
++  border-top: 1px solid var(--line);
++  color: #656b60;
++  padding-top: 13px;
++  padding-bottom: 13px;
++  font-size: 14px;
++}
++.dc-row {
++  border-top: 1px solid var(--line);
++  font-size: 16px;
++}
++.dc-row:hover {
++  background: #fdfdfb;
++}
++.dc-user-cell {
++  display: flex;
++  align-items: flex-start;
++  gap: 12px;
++  min-width: 0;
++}
++.dc-user-cell > div {
++  min-width: 0;
++}
++.dc-avatar {
++  flex-shrink: 0;
++  display: grid;
++  place-items: center;
++  width: 40px;
++  height: 40px;
++  border-radius: 12px;
++  background: #f5e5eb;
++  font-size: 14px;
++}
++.dc-name {
++  text-align: left;
++  font-size: 16px;
++  padding: 0;
++  font-weight: 600;
++}
++.dc-name:hover {
++  text-decoration: underline;
++  text-underline-offset: 4px;
++}
++.dc-contact-links {
++  display: grid;
++  gap: 3px;
++  margin: 7px 0;
++  font-size: 14px;
++  overflow-wrap: anywhere;
++}
++.dc-contact-links a:hover,
++.dc-fields a:hover {
++  text-decoration: underline;
++  text-underline-offset: 3px;
++}
++.dc-row small {
++  color: #74796e;
++  font-size: 12px;
++  line-height: 1.6;
++  overflow-wrap: anywhere;
++}
++.dc-company-cell,
++.dc-call-cell {
++  display: flex;
++  flex-direction: column;
++  align-items: flex-start;
++  gap: 7px;
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++.dc-company-cell strong {
++  font-weight: 500;
++  font-size: 15px;
++}
++.dc-company-cell > span {
++  font-size: 14px;
++}
++.dc-call-state {
++  font-size: 13px;
++  padding: 5px 10px;
++  border-radius: 6px;
++  background: #f0f1ed;
++  white-space: nowrap;
++}
++.dc-call-state.reached {
++  background: #edf3d9;
++  color: #425c27;
++}
++.dc-call-state.callback {
++  background: #f6e4eb;
++  color: #7b455a;
++}
++.dc-call-state.no_answer {
++  background: #f0ede6;
++  color: #746046;
++}
++.dc-person {
++  display: inline-flex;
++  align-items: center;
++  gap: 7px;
++  font-size: 13px;
++}
++.dc-person i {
++  display: grid;
++  place-items: center;
++  width: 23px;
++  height: 23px;
++  border-radius: 50%;
++  background: #eceee6;
++  font-size: 10px;
++  font-style: normal;
++  flex-shrink: 0;
++}
++.dc-open {
++  font-size: 14px;
++  min-height: 40px;
++  padding: 9px 13px;
++}
++.dc-pagination {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  padding: 18px 24px;
++  border-top: 1px solid var(--line);
++  font-size: 14px;
++}
++.dc-pagination > div {
++  display: flex;
++  align-items: center;
++  gap: 14px;
++}
++.dc-muted {
++  color: #6b7266;
++  font-size: 14px;
++  line-height: 1.7;
++}
++.dc-dialog {
++  border: 1px solid var(--line);
++  border-radius: 20px;
++  padding: 28px;
++  width: min(1080px, calc(100vw - 36px));
++  max-height: calc(100dvh - 40px);
++  color: var(--ink);
++  box-shadow: 0 24px 100px #1b1e1c25;
++}
++.dc-dialog::backdrop {
++  background: #1b1e1c73;
++  backdrop-filter: blur(3px);
++}
++.dc-dialog-header {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 20px;
++  margin-bottom: 24px;
++}
++.dc-dialog h2 {
++  font-size: 28px;
++  margin: 8px 0;
++  font-weight: 500;
++  letter-spacing: -1px;
++}
++.dc-dialog h3 {
++  font-size: 20px;
++  margin: 12px 0 20px;
++  font-weight: 500;
++  letter-spacing: -0.5px;
++}
++.dc-detail-grid {
++  display: grid;
++  grid-template-columns: 0.8fr 1.2fr;
++  gap: 18px;
++}
++.dc-contact-panel,
++.dc-company-panel {
++  border-radius: 13px;
++  padding: 24px;
++  border: 1px solid var(--line);
++  overflow-wrap: anywhere;
++}
++.dc-contact-panel {
++  background: #f8f9f4;
++}
++.dc-company-panel {
++  background: var(--dc-soft, #fbf2f5);
++  border-color: #eedde3;
++}
++.dc-fields {
++  display: grid;
++  gap: 18px;
++  margin: 0;
++}
++.dc-fields dt {
++  color: #686f63;
++  font-size: 13px;
++  line-height: 1.7;
++  margin-bottom: 4px;
++}
++.dc-fields dd {
++  margin: 0;
++  font-size: 16px;
++  line-height: 1.6;
++  white-space: pre-wrap;
++}
++.dc-id {
++  font-family: monospace;
++  font-size: 14px !important;
++}
++.dc-owner {
++  padding: 14px;
++  background: #fff9;
++  border: 1px solid #e4c7d2;
++  border-radius: 8px;
++  display: grid;
++  gap: 6px;
++}
++.dc-owner strong {
++  font-size: 14px;
++  font-weight: 600;
++}
++.dc-owner span {
++  font-size: 13px;
++  line-height: 1.6;
++}
++.dc-saved {
++  color: #75606a;
++  font-size: 13px;
++  line-height: 1.7;
++  margin: 16px 0 22px;
++}
++.dc-versions {
++  padding: 20px 0;
++  border-bottom: 1px solid var(--line);
++  font-size: 14px;
++}
++.dc-versions summary {
++  cursor: pointer;
++}
++.dc-versions section {
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  padding: 20px;
++  margin-top: 14px;
++}
++.dc-versions .dc-fields {
++  grid-template-columns: 1fr 1fr;
++}
++.dc-versions p {
++  font-size: 13px;
++  color: #686f63;
++  overflow-wrap: anywhere;
++}
++.dc-calls-grid {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 30px;
++  margin: 28px 0 0;
++}
++.dc-call-form > p {
++  color: #686f63;
++  font-size: 14px;
++  line-height: 1.8;
++  margin: 0 0 20px;
++}
++.dc-call-form fieldset {
++  border: 0;
++  padding: 0;
++  margin: 0 0 18px;
++  min-width: 0;
++}
++.dc-call-form legend {
++  font-size: 14px;
++  margin: 0 0 10px;
++}
++.dc-outcomes {
++  display: flex;
++  gap: 10px 15px;
++  flex-wrap: wrap;
++  margin: 0 0 20px;
++}
++.dc-outcomes label {
++  display: flex;
++  gap: 6px;
++  align-items: center;
++  font-size: 14px;
++}
++.dc-outcomes input {
++  width: 16px;
++  min-height: 16px;
++  margin: 0;
++  accent-color: var(--ink);
++}
++.dc-note {
++  display: grid;
++  gap: 9px;
++  font-size: 14px;
++}
++.dc-note textarea {
++  font-size: 16px;
++  line-height: 1.7;
++}
++.dc-call-history h3 {
++  display: flex;
++  gap: 12px;
++  align-items: center;
++}
++.dc-call-history h3 > span {
++  background: var(--lime);
++  font-size: 14px;
++  border-radius: 7px;
++  padding: 3px 8px;
++}
++.dc-call {
++  padding: 18px 0;
++  border-top: 1px solid var(--line);
++}
++.dc-call > div {
++  display: flex;
++  justify-content: space-between;
++  gap: 15px;
++  margin-bottom: 10px;
++}
++.dc-call strong {
++  font-size: 15px;
++  font-weight: 500;
++}
++.dc-call time,
++.dc-call small {
++  font-size: 12px;
++  color: #74796e;
++}
++.dc-call p {
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++  font-size: 14px;
++  line-height: 1.8;
++}
++.dc-call button {
++  display: block;
++  color: #845869;
++  font-size: 13px;
++  padding: 0;
++  margin-top: 12px;
++  text-decoration: underline;
++  text-underline-offset: 3px;
++}
++.dc-call.voided {
++  opacity: 0.65;
++}
++.dc-call.voided strong {
++  text-decoration: line-through;
++}
++.dc-settings-dialog {
++  max-width: 600px;
++}
++.dc-settings-dialog p {
++  font-size: 16px;
++  line-height: 1.8;
++}
++.dc-settings-dialog label {
++  display: grid;
++  gap: 10px;
++  margin: 20px 0;
++  font-size: 14px;
++}
++.dc-settings-dialog code {
++  overflow-wrap: anywhere;
++  font-size: 14px;
++}
++@media (max-width: 1250px) {
++  .dc-list-head,
++  .dc-row {
++    grid-template-columns: minmax(190px, 1.3fr) minmax(150px, 1fr) minmax(
++        155px,
++        1fr
++      );
++    gap: 15px;
++  }
++  .dc-open {
++    grid-column: 3;
++    justify-self: start;
++  }
++  .dc-list-head span:last-child {
++    display: none;
++  }
++}
++@media (max-width: 800px) {
++  .dc-metrics {
++    grid-template-columns: 1fr 1fr;
++    gap: 12px;
++  }
++  .dc-toolbar {
++    flex-direction: column;
++    align-items: stretch;
++    padding: 18px;
++    gap: 12px;
++  }
++  .dc-sort select {
++    flex: 1;
++  }
++  .dc-sort {
++    justify-content: space-between;
++  }
++  .dc-filters {
++    padding: 0 18px 18px;
++    gap: 15px;
++  }
++  .dc-list-head {
++    display: none;
++  }
++  .dc-row {
++    grid-template-columns: 1fr 1fr;
++    padding: 20px 18px;
++  }
++  .dc-user-cell {
++    grid-column: 1/-1;
++  }
++  .dc-open {
++    grid-column: 2;
++    grid-row: 3;
++    justify-self: end;
++  }
++  .dc-call-cell {
++    grid-column: 1;
++    grid-row: 3;
++  }
++  .dc-company-cell {
++    grid-column: 1/-1;
++    padding-left: 52px;
++  }
++  .dc-detail-grid,
++  .dc-calls-grid {
++    grid-template-columns: 1fr;
++  }
++  .dc-dialog {
++    padding: 20px;
++  }
++  .dc-dialog h2 {
++    font-size: 24px;
++  }
++  .dc-contact-panel,
++  .dc-company-panel {
++    padding: 20px;
++  }
++  .dc-versions .dc-fields {
++    grid-template-columns: 1fr;
++  }
++  .dc-connection button {
++    margin-left: 0;
++  }
++}
++@media (max-width: 430px) {
++  .dc-metric {
++    padding: 16px;
++    min-height: 130px;
++  }
++  .dc-metric strong {
++    font-size: 36px;
++  }
++  .dc-metric > span {
++    align-items: flex-start;
++  }
++  .dc-pagination {
++    padding: 16px;
++    gap: 12px;
++    flex-wrap: wrap;
++  }
++  .dc-tabs button {
++    padding: 9px 12px;
++  }
++  .dc-dialog {
++    width: calc(100vw - 18px);
++    max-height: calc(100dvh - 18px);
++    padding: 16px;
++  }
++}
++/* Shared labels are columns; inline filters and radio choices keep a row layout. */
++.dc-filters > label,
++.dc-outcomes label,
++.dc-sort {
++  flex-direction: row;
++}
++.dc-sort select {
++  appearance: none;
++  padding-right: 32px;
++  background-image:
++    linear-gradient(45deg, transparent 50%, #656b60 50%),
++    linear-gradient(135deg, #656b60 50%, transparent 50%);
++  background-position:
++    calc(100% - 17px) 20px,
++    calc(100% - 12px) 20px;
++  background-size: 5px 5px;
++  background-repeat: no-repeat;
++}
+diff --git a/src/pages/DocsCustomers.tsx b/src/pages/DocsCustomers.tsx
+new file mode 100644
+index 0000000..446a78c
+--- /dev/null
++++ b/src/pages/DocsCustomers.tsx
+@@ -0,0 +1,868 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import {
++  Building2,
++  Check,
++  ContactRound,
++  Copy,
++  Phone,
++  PhoneCall,
++  RefreshCw,
++  Search,
++  Settings2,
++  X,
++} from "lucide-react";
++import { api, post, ApiError, dateTime, errorText, number } from "../api";
++import { Empty, Loading, Notice, PageHead } from "../components/Common";
++import { initials } from "../identity";
++import type { AccountIdentity } from "../types";
++import {
++  DOCS_COMPANY_FIELDS,
++  DOCS_CALL_OUTCOMES,
++} from "../../shared/docs-customers.js";
++import type { CompanyField } from "../../shared/docs-customers.js";
++import "./DocsCustomers.css";
++type Outcome = keyof typeof DOCS_CALL_OUTCOMES;
++type Company = Record<CompanyField, string> & { savedAt: string };
++type Call = {
++  id: string;
++  createdAt: string;
++  outcome: Outcome;
++  note: string;
++  phone: string;
++  actor: { id: string | null; name: string; kind: string };
++  voidedAt: string | null;
++  voidedBy: { name: string } | null;
++  canVoid: boolean;
++};
++type Customer = {
++  id: string;
++  externalId: string;
++  name: string;
++  phone: string;
++  email: string;
++  registeredAt: string | null;
++  sourceUpdatedAt: string;
++  company: Company | null;
++  callCount: number;
++  lastCall: Call | null;
++  version: number;
++};
++type Listing = {
++  customers: Customer[];
++  total: number;
++  page: number;
++  pages: number;
++  stats: { total: number; companies: number; uncalled: number; called: number };
++};
++type Detail = {
++  customer: Customer;
++  calls: Call[];
++  companyHistory: {
++    eventId: string;
++    savedAt: string;
++    company: Company;
++    user: { id: string; name: string; email: string };
++  }[];
++};
++type Connection = {
++  configured: boolean;
++  since: string;
++  status: string;
++  lastHeartbeatAt: string | null;
++  lastReceivedAt: string | null;
++  pending: number;
++  rejected: number;
++  canConfigure: boolean;
++};
++const connectionLabels: Record<string, string> = {
++  unconfigured: "Ожидает подключения",
++  waiting: "Ожидает первого запуска",
++  online: "Доставка работает",
++  syncing: "Загружаем новые данные",
++  offline: "Нет связи с сайтом",
++  attention: "Нужна проверка доставки",
++};
++const when = (value: string | null) => (value ? dateTime(value, true) : "—");
++const phoneUrl = (value: string) => "tel:" + value.replace(/[^+\d]/g, "");
++function Person({ call }: { call: Call }) {
++  return (
++    <span className="dc-person">
++      <i>{initials(call.actor.name)}</i>
++      {call.actor.name}
++    </span>
++  );
++}
++function CompanyFields({ company }: { company: Company }) {
++  return (
++    <dl className="dc-fields">
++      {DOCS_COMPANY_FIELDS.map((f) => (
++        <div key={f.name}>
++          <dt>{f.label}</dt>
++          <dd>{company[f.name] || "Не указано"}</dd>
++        </div>
++      ))}
++    </dl>
++  );
++}
++export default function DocsCustomers({
++  active,
++  account,
++}: {
++  active: boolean;
++  account?: AccountIdentity;
++}) {
++  const [listing, setListing] = useState<Listing | null>(null),
++    [connection, setConnection] = useState<Connection | null>(null),
++    [error, setError] = useState("");
++  const [query, setQuery] = useState(""),
++    [debounced, setDebounced] = useState(""),
++    [status, setStatus] = useState("all"),
++    [company, setCompany] = useState(false),
++    [mine, setMine] = useState(false),
++    [sort, setSort] = useState("newest"),
++    [page, setPage] = useState(1);
++  const [selected, setSelected] = useState<string | null>(null),
++    [settings, setSettings] = useState(false);
++  const generation = useRef(0);
++  useEffect(() => {
++    const id = setTimeout(() => {
++      setDebounced(query.trim());
++      setPage(1);
++    }, 250);
++    return () => clearTimeout(id);
++  }, [query]);
++  const refresh = useCallback(async () => {
++    const n = ++generation.current;
++    try {
++      const params = new URLSearchParams({
++        q: debounced,
++        status,
++        sort,
++        page: String(page),
++        company: company ? "1" : "0",
++        mine: mine ? "1" : "0",
++      });
++      const [rows, link] = await Promise.all([
++        api<Listing>("/docs-customers?" + params),
++        api<Connection>("/docs-customers/connection"),
++      ]);
++      if (n !== generation.current) return;
++      setListing(rows);
++      setConnection(link);
++      setError("");
++    } catch (e) {
++      if (n === generation.current) setError(errorText(e));
++    }
++  }, [debounced, status, sort, page, company, mine]);
++  useEffect(() => {
++    if (!active) return;
++    void refresh();
++    const timer = setInterval(() => {
++      if (!document.hidden) void refresh();
++    }, 30000);
++    return () => {
++      clearInterval(timer);
++      generation.current++;
++    };
++  }, [active, refresh]);
++  useEffect(() => {
++    if (!active) {
++      setSelected(null);
++      setSettings(false);
++    }
++  }, [active]);
++  const filter = (value: string) => {
++    setStatus(value);
++    setPage(1);
++  };
++  return (
++    <div className="dc-page">
++      <PageHead
++        eyebrow="КЛИЕНТСКАЯ БАЗА"
++        title="Клиенты BoykovDocs"
++        description="Пользователи, их компании и история общения — в одном месте."
++      >
++        <button
++          className="button"
++          onClick={() => void refresh()}
++          aria-label="Обновить клиентов"
++        >
++          <RefreshCw size={17} />
++          Обновить
++        </button>
++      </PageHead>
++      {error && <Notice tone="error">{error}</Notice>}
++      {listing && (
++        <div className="dc-metrics">
++          {[
++            ["Пользователи", listing.stats.total, ContactRound, "lime"],
++            ["С данными компании", listing.stats.companies, Building2, "pink"],
++            ["Ещё не звонили", listing.stats.uncalled, Phone, ""],
++            ["Звонок отмечен", listing.stats.called, PhoneCall, ""],
++          ].map(([label, value, Icon, tone]) => {
++            const Glyph = Icon as typeof Phone;
++            return (
++              <div className={"dc-metric " + tone} key={String(label)}>
++                <span>
++                  {String(label)}
++                  <Glyph size={19} />
++                </span>
++                <strong>{number(value as number)}</strong>
++                <div className="dc-metric-decoration" aria-hidden="true" />
++              </div>
++            );
++          })}
++        </div>
++      )}
++      <div className="dc-connection">
++        <span className={"dc-health " + (connection?.status || "")}>
++          <i />
++          {connectionLabels[connection?.status || "unconfigured"]}
++        </span>
++        <span>
++          Новые данные с{" "}
++          {connection ? when(connection.since) : "19 ноября 2026, 00:00"} · МСК
++        </span>
++        {connection && connection.pending > 0 && (
++          <span>В очереди: {number(connection.pending)}</span>
++        )}
++        {connection?.canConfigure && (
++          <button onClick={() => setSettings(true)}>
++            <Settings2 size={16} />
++            Подключение
++          </button>
++        )}
++      </div>
++      {connection && ["offline", "attention"].includes(connection.status) && (
++        <Notice tone="error">
++          Нет подтверждения исправной доставки BoykovDocs. Проверьте коннектор
++          на сервере сайта. Последняя связь: {when(connection.lastHeartbeatAt)}{" "}
++          МСК.
++        </Notice>
++      )}
++      <section className="dc-directory" aria-label="Пользователи BoykovDocs">
++        <div className="dc-toolbar">
++          <label className="dc-search">
++            <Search size={19} />
++            <input
++              aria-label="Поиск клиентов"
++              placeholder="Имя, телефон, почта или ИНН"
++              value={query}
++              onChange={(e) => setQuery(e.target.value)}
++              maxLength={300}
++            />
++          </label>
++          <label className="dc-sort">
++            Порядок
++            <select
++              aria-label="Порядок клиентов"
++              value={sort}
++              onChange={(e) => {
++                setSort(e.target.value);
++                setPage(1);
++              }}
++            >
++              <option value="newest">Сначала новые</option>
++              <option value="oldest">Сначала ранние</option>
++            </select>
++          </label>
++        </div>
++        <div className="dc-filters">
++          <div className="dc-tabs" aria-label="Фильтр по звонкам">
++            {[
++              ["all", "Все"],
++              ["uncalled", "Не звонили"],
++              ["called", "Звонили"],
++            ].map(([value, label]) => (
++              <button
++                key={value}
++                aria-pressed={status === value}
++                className={status === value ? "selected" : ""}
++                onClick={() => filter(value)}
++              >
++                {label}
++              </button>
++            ))}
++          </div>
++          <label>
++            <input
++              type="checkbox"
++              checked={company}
++              onChange={(e) => {
++                setCompany(e.target.checked);
++                setPage(1);
++              }}
++            />
++            С данными компании
++          </label>
++          {account?.id && (
++            <label>
++              <input
++                type="checkbox"
++                checked={mine}
++                onChange={(e) => {
++                  setMine(e.target.checked);
++                  setPage(1);
++                }}
++              />
++              Мои звонки
++            </label>
++          )}
++        </div>
++        {!listing ? (
++          <Loading />
++        ) : !listing.customers.length ? (
++          <Empty
++            title={
++              query || status !== "all" || company || mine
++                ? "Ничего не найдено"
++                : "Здесь появятся клиенты BoykovDocs"
++            }
++            text={
++              query || status !== "all" || company || mine
++                ? "Попробуйте изменить условия поиска."
++                : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
++            }
++          />
++        ) : (
++          <>
++            <div className="dc-list-head">
++              <span>Пользователь</span>
++              <span>Его компания</span>
++              <span>Общение</span>
++              <span />
++            </div>
++            <div className="dc-list">
++              {listing.customers.map((c) => (
++                <article className="dc-row" key={c.id}>
++                  <div className="dc-user-cell">
++                    <span className="dc-avatar">{initials(c.name)}</span>
++                    <div>
++                      <button
++                        className="dc-name"
++                        onClick={() => setSelected(c.id)}
++                      >
++                        {c.name || "Без имени"}
++                      </button>
++                      <div className="dc-contact-links">
++                        {c.phone && <a href={phoneUrl(c.phone)}>{c.phone}</a>}
++                        {c.email && (
++                          <a href={"mailto:" + encodeURIComponent(c.email)}>
++                            {c.email}
++                          </a>
++                        )}
++                      </div>
++                      <small>ID {c.externalId}</small>
++                    </div>
++                  </div>
++                  <div className="dc-company-cell">
++                    {c.company ? (
++                      <>
++                        <strong>
++                          {c.company.companyName || "Данные компании"}
++                        </strong>
++                        <span>
++                          {c.company.inn
++                            ? "ИНН " + c.company.inn
++                            : "ИНН не указан"}
++                        </span>
++                        <small>Сохранено {when(c.company.savedAt)}</small>
++                      </>
++                    ) : (
++                      <span className="dc-muted">Пока не заполнена</span>
++                    )}
++                  </div>
++                  <div className="dc-call-cell">
++                    {c.lastCall ? (
++                      <>
++                        <span className={"dc-call-state " + c.lastCall.outcome}>
++                          {DOCS_CALL_OUTCOMES[c.lastCall.outcome]}
++                        </span>
++                        <Person call={c.lastCall} />
++                        <small>{when(c.lastCall.createdAt)}</small>
++                      </>
++                    ) : (
++                      <span className="dc-call-state uncalled">Не звонили</span>
++                    )}
++                  </div>
++                  <button
++                    className="button dc-open"
++                    onClick={() => setSelected(c.id)}
++                  >
++                    Карточка
++                  </button>
++                </article>
++              ))}
++            </div>
++            <footer className="dc-pagination">
++              <span>Найдено: {number(listing.total)}</span>
++              <div>
++                <button
++                  className="button"
++                  disabled={listing.page <= 1}
++                  onClick={() => setPage(listing.page - 1)}
++                >
++                  Назад
++                </button>
++                <span>
++                  {listing.page} / {listing.pages}
++                </span>
++                <button
++                  className="button"
++                  disabled={listing.page >= listing.pages}
++                  onClick={() => setPage(listing.page + 1)}
++                >
++                  Далее
++                </button>
++              </div>
++            </footer>
++          </>
++        )}
++      </section>
++      {selected && (
++        <CustomerDialog
++          key={selected}
++          id={selected}
++          account={account}
++          onClose={() => setSelected(null)}
++          onChange={() => void refresh()}
++        />
++      )}
++      {settings && connection && (
++        <ConnectionDialog
++          connection={connection}
++          onClose={() => setSettings(false)}
++          onChange={() => void refresh()}
++        />
++      )}
++    </div>
++  );
++}
++function CustomerDialog({
++  id,
++  account,
++  onClose,
++  onChange,
++}: {
++  id: string;
++  account?: AccountIdentity;
++  onClose: () => void;
++  onChange: () => void;
++}) {
++  const dialog = useRef<HTMLDialogElement>(null),
++    alive = useRef(true),
++    draft = useRef<{
++      requestId: string;
++      version: number;
++      outcome: Outcome;
++      note: string;
++    } | null>(null);
++  const [data, setData] = useState<Detail | null>(null),
++    [error, setError] = useState(""),
++    [outcome, setOutcome] = useState<Outcome>("reached"),
++    [note, setNote] = useState(""),
++    [busy, setBusy] = useState(false),
++    [retry, setRetry] = useState(false),
++    [message, setMessage] = useState("");
++  const refresh = useCallback(async () => {
++    const d = await api<Detail>("/docs-customers/" + id);
++    if (alive.current) setData(d);
++    return d;
++  }, [id]);
++  useEffect(() => {
++    alive.current = true;
++    dialog.current?.showModal();
++    void refresh().catch((e) => setError(errorText(e)));
++    return () => {
++      alive.current = false;
++    };
++  }, [refresh]);
++  async function save() {
++    if (!data || busy) return;
++    setBusy(true);
++    setError("");
++    setMessage("");
++    const body = draft.current || {
++      requestId: crypto.randomUUID(),
++      version: data.customer.version,
++      outcome,
++      note,
++    };
++    draft.current = body;
++    try {
++      await post("/docs-customers/" + id + "/calls", body);
++      draft.current = null;
++      setRetry(false);
++      setNote("");
++      await refresh();
++      onChange();
++      setMessage("Звонок сохранён. Автор и время добавлены в историю.");
++    } catch (e) {
++      if (e instanceof ApiError && e.status < 500) {
++        draft.current = null;
++        setRetry(false);
++        if (e.status === 409) await refresh().catch(() => {});
++      } else setRetry(true);
++      setError(errorText(e));
++    } finally {
++      setBusy(false);
++    }
++  }
++  async function voidCall(call: Call) {
++    if (!data || busy || retry) return;
++    setBusy(true);
++    setError("");
++    try {
++      await post("/docs-customers/" + id + "/calls/" + call.id + "/void", {
++        requestId: crypto.randomUUID(),
++        version: data.customer.version,
++      });
++      await refresh();
++      onChange();
++      setMessage("Отметка отменена. Запись осталась в истории.");
++    } catch (e) {
++      setError(errorText(e));
++      await refresh().catch(() => {});
++    } finally {
++      setBusy(false);
++    }
++  }
++  const c = data?.customer;
++  return (
++    <dialog
++      className="dc-dialog"
++      aria-labelledby="dc-customer-title"
++      ref={dialog}
++      onCancel={(e) => {
++        e.preventDefault();
++        if (!busy) onClose();
++      }}
++    >
++      <div className="dc-dialog-header">
++        <div>
++          <span className="eyebrow">BOYKOVDOCS · КАРТОЧКА КЛИЕНТА</span>
++          <h2 id="dc-customer-title">{c?.name || "Пользователь"}</h2>
++          <span className="dc-muted">
++            ID пользователя: {c?.externalId || "…"}
++          </span>
++        </div>
++        <button
++          className="icon-button"
++          aria-label="Закрыть карточку"
++          disabled={busy}
++          onClick={onClose}
++        >
++          <X size={22} />
++        </button>
++      </div>
++      {error && <Notice tone="error">{error}</Notice>}
++      {message && <Notice tone="success">{message}</Notice>}
++      {!c ? (
++        <Loading />
++      ) : (
++        <>
++          <div className="dc-detail-grid">
++            <section className="dc-contact-panel">
++              <ContactRound size={25} />
++              <h3>Пользователь BoykovDocs</h3>
++              <dl className="dc-fields">
++                <div>
++                  <dt>Имя</dt>
++                  <dd>{c.name || "Не указано"}</dd>
++                </div>
++                <div>
++                  <dt>Телефон</dt>
++                  <dd>
++                    {c.phone ? (
++                      <a href={phoneUrl(c.phone)}>{c.phone}</a>
++                    ) : (
++                      "Не указан"
++                    )}
++                  </dd>
++                </div>
++                <div>
++                  <dt>Электронная почта</dt>
++                  <dd>
++                    {c.email ? (
++                      <a href={"mailto:" + encodeURIComponent(c.email)}>
++                        {c.email}
++                      </a>
++                    ) : (
++                      "Не указана"
++                    )}
++                  </dd>
++                </div>
++                <div>
++                  <dt>Зарегистрирован · Москва</dt>
++                  <dd>{when(c.registeredAt)}</dd>
++                </div>
++                <div>
++                  <dt>ID на сайте</dt>
++                  <dd className="dc-id">{c.externalId}</dd>
++                </div>
++              </dl>
++            </section>
++            <section className="dc-company-panel">
++              <Building2 size={25} />
++              <h3>Компания этого пользователя</h3>
++              <div className="dc-owner">
++                <strong>Заполнил: {c.name || "Пользователь без имени"}</strong>
++                <span>
++                  {c.email || "Почта не указана"} · ID {c.externalId}
++                </span>
++              </div>
++              {c.company ? (
++                <>
++                  <p className="dc-saved">
++                    Данные сохранены {when(c.company.savedAt)} · Москва
++                  </p>
++                  <CompanyFields company={c.company} />
++                </>
++              ) : (
++                <p className="dc-muted">
++                  Пользователь ещё не сохранил данные компании с начала
++                  подключения.
++                </p>
++              )}
++            </section>
++          </div>
++          {data!.companyHistory.length > 1 && (
++            <details className="dc-versions">
++              <summary>
++                Предыдущие сохранения компании · {data!.companyHistory.length}
++              </summary>
++              {data!.companyHistory.slice(1).map((v) => (
++                <section key={v.eventId}>
++                  <h4>{when(v.savedAt)} · Москва</h4>
++                  <p>
++                    Заполнил: {v.user.name || "Без имени"} · {v.user.email} · ID{" "}
++                    {v.user.id}
++                  </p>
++                  <CompanyFields company={v.company} />
++                </section>
++              ))}
++            </details>
++          )}
++          <div className="dc-calls-grid">
++            <section className="dc-call-form">
++              <span className="eyebrow">ОБЩЕНИЕ С КЛИЕНТОМ</span>
++              <h3>Отметить звонок</h3>
++              <p>
++                Ссылка на телефон открывает набор номера. Результат звонка
++                сохраняется здесь.
++              </p>
++              {!account?.id && (
++                <Notice>
++                  Вы вошли через общий доступ. В истории будет указано «Общий
++                  доступ». Для своего имени войдите в личный аккаунт.
++                </Notice>
++              )}
++              <form
++                onSubmit={(e) => {
++                  e.preventDefault();
++                  void save();
++                }}
++              >
++                <fieldset disabled={busy || retry}>
++                  <legend>Результат звонка</legend>
++                  <div className="dc-outcomes">
++                    {Object.entries(DOCS_CALL_OUTCOMES).map(([key, label]) => (
++                      <label key={key}>
++                        <input
++                          type="radio"
++                          name="call-outcome"
++                          value={key}
++                          checked={outcome === key}
++                          onChange={() => setOutcome(key as Outcome)}
++                        />
++                        {label}
++                      </label>
++                    ))}
++                  </div>
++                  <label className="dc-note">
++                    Комментарий
++                    <textarea
++                      rows={3}
++                      maxLength={4000}
++                      placeholder="О чём договорились, когда перезвонить…"
++                      value={note}
++                      onChange={(e) => setNote(e.target.value)}
++                    />
++                  </label>
++                </fieldset>
++                <button
++                  className="button primary"
++                  disabled={busy}
++                  type="submit"
++                >
++                  <Check size={17} />
++                  {busy
++                    ? "Сохраняем…"
++                    : retry
++                      ? "Повторить сохранение"
++                      : "Сохранить звонок"}
++                </button>
++                {retry && (
++                  <p className="dc-muted">
++                    Ответ сервера не получен. Повторите сохранение: второй
++                    звонок не создастся.
++                  </p>
++                )}
++              </form>
++            </section>
++            <section className="dc-call-history">
++              <h3>
++                История звонков <span>{c.callCount}</span>
++              </h3>
++              {!data!.calls.length ? (
++                <p className="dc-muted">
++                  Пока никто не отмечал звонки этому пользователю.
++                </p>
++              ) : (
++                data!.calls.map((call) => (
++                  <article
++                    key={call.id}
++                    className={call.voidedAt ? "dc-call voided" : "dc-call"}
++                  >
++                    <div>
++                      <strong>{DOCS_CALL_OUTCOMES[call.outcome]}</strong>
++                      <time>{when(call.createdAt)}</time>
++                    </div>
++                    <Person call={call} />
++                    {call.note && <p>{call.note}</p>}
++                    {call.voidedAt ? (
++                      <small>
++                        Отменено: {call.voidedBy?.name} · {when(call.voidedAt)}
++                      </small>
++                    ) : (
++                      call.canVoid && (
++                        <button
++                          disabled={busy || retry}
++                          onClick={() => void voidCall(call)}
++                        >
++                          Отменить отметку
++                        </button>
++                      )
++                    )}
++                  </article>
++                ))
++              )}
++            </section>
++          </div>
++        </>
++      )}
++    </dialog>
++  );
++}
++function ConnectionDialog({
++  connection,
++  onClose,
++  onChange,
++}: {
++  connection: Connection;
++  onClose: () => void;
++  onChange: () => void;
++}) {
++  const ref = useRef<HTMLDialogElement>(null),
++    [token, setToken] = useState(""),
++    [busy, setBusy] = useState(false),
++    [error, setError] = useState(""),
++    [copied, setCopied] = useState(false);
++  useEffect(() => {
++    ref.current?.showModal();
++  }, []);
++  async function generate() {
++    setBusy(true);
++    setError("");
++    try {
++      const r = await post<{ token: string }>(
++        "/docs-customers/connection/key",
++        {},
++      );
++      setToken(r.token);
++      onChange();
++    } catch (e) {
++      setError(errorText(e));
++    } finally {
++      setBusy(false);
++    }
++  }
++  return (
++    <dialog
++      className="dc-dialog dc-settings-dialog"
++      aria-labelledby="dc-connection-title"
++      ref={ref}
++      onCancel={(e) => {
++        e.preventDefault();
++        if (!busy) onClose();
++      }}
++    >
++      <div className="dc-dialog-header">
++        <h2 id="dc-connection-title">Подключение BoykovDocs</h2>
++        <button
++          className="icon-button"
++          aria-label="Закрыть подключение"
++          disabled={busy}
++          onClick={onClose}
++        >
++          <X size={22} />
++        </button>
++      </div>
++      <p>
++        Коннектор читает регистрации и данные компаний на сервере BoykovDocs.
++        Новые данные поступают с {when(connection.since)} по Москве.
++      </p>
++      <p>
++        Создайте ключ, затем запустите{" "}
++        <code>scripts/install-docs-customers.sh</code> на сервере BoykovDocs и
++        вставьте ключ в скрытый запрос установщика.
++      </p>
++      {connection.configured && !token && (
++        <Notice>
++          Новый ключ отключит прежний коннектор до повторной настройки.
++        </Notice>
++      )}
++      {error && <Notice tone="error">{error}</Notice>}
++      {token ? (
++        <>
++          <Notice>
++            Ключ показывается один раз. После закрытия окна он больше не
++            отображается.
++          </Notice>
++          <label>
++            Ключ подключения
++            <input type="password" readOnly value={token} autoComplete="off" />
++          </label>
++          <button
++            className="button primary"
++            onClick={() => {
++              void navigator.clipboard
++                .writeText(token)
++                .then(() => setCopied(true))
++                .catch(() =>
++                  setError(
++                    "Не удалось скопировать ключ. Выделите его в поле и скопируйте вручную.",
++                  ),
++                );
++            }}
++          >
++            <Copy size={17} />
++            {copied ? "Скопировано" : "Скопировать ключ"}
++          </button>
++        </>
++      ) : (
++        <button
++          className="button primary"
++          disabled={busy}
++          onClick={() => void generate()}
++        >
++          {busy
++            ? "Создаём…"
++            : connection.configured
++              ? "Выпустить новый ключ"
++              : "Создать ключ подключения"}
++        </button>
++      )}
++    </dialog>
++  );
++}
+diff --git a/src/types.ts b/src/types.ts
+index d55f6eb..4923ba6 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -1,4 +1,5 @@
+ export type Page =
++  | "docs-customers"
+   | "cabinet"
+   | "overview"
+   | "contracts"
+diff --git a/tests/docs-customers.test.js b/tests/docs-customers.test.js
+new file mode 100644
+index 0000000..9dd4f9e
+--- /dev/null
++++ b/tests/docs-customers.test.js
+@@ -0,0 +1,527 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { randomUUID } from "node:crypto";
++import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { accountFixture } from "./helpers/accounts-fixture.js";
++import {
++  DocsCustomerAgent,
++  validateDocsConnection,
++} from "../integrations/docs-customers/agent.mjs";
++import { DOCS_CUSTOMERS_SINCE } from "../shared/docs-customers.js";
++const stamp = "2026-11-19T08:00:00.000Z";
++const event = (overrides = {}) => ({
++  eventId: randomUUID(),
++  kind: "registration",
++  occurredAt: stamp,
++  observedAt: stamp,
++  user: {
++    id: "docs-user-01",
++    name: "Пользователь А",
++    email: "a@example.ru",
++    phone: "+7 999 111-22-33",
++    registeredAt: stamp,
++  },
++  ...overrides,
++});
++const profile = (name = "ООО Тест") => ({
++  savedAt: "2026-11-19T09:00:00.000Z",
++  companyName: name,
++  inn: "7701234567",
++  headPosition: "Директор",
++  headFullName: "Руководитель А",
++  occupationalSafetyPosition: "Инженер",
++  occupationalSafetyFullName: "Ответственный А",
++});
++async function fixture(t) {
++  const s = await accountFixture(t);
++  const key = await (
++    await s.api("/docs-customers/connection/key", "POST", {})
++  ).json();
++  const hook = (body, path = "", token = key.token) =>
++    fetch(s.base + "/hooks/docs-customers" + path, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + token,
++      },
++      body: JSON.stringify(body),
++    });
++  const ingest = async (e) => {
++    const r = await hook(e);
++    assert.equal(r.status, 201, await r.clone().text());
++    return r.json();
++  };
++  const detail = async (id, cookie) => {
++    const r = await s.api("/docs-customers/" + id, "GET", undefined, cookie);
++    assert.equal(r.status, 200);
++    return r.json();
++  };
++  return { ...s, key, hook, ingest, detail };
++}
++test("BoykovDocs intake and customer details require the correct key and workspace session; only admin issues keys", async (t) => {
++  const s = await fixture(t);
++  const shared = await s.login(null);
++  const user = await s.make("docs.sales");
++  const cookie = await s.login(user.login);
++  assert.equal((await s.request("/docs-customers")).status, 401);
++  assert.equal((await s.request("/docs-customers/connection")).status, 401);
++  assert.equal((await s.hook(event(), "", "0".repeat(64))).status, 401);
++  for (const c of [shared, cookie])
++    assert.equal(
++      (await s.api("/docs-customers/connection/key", "POST", {}, c)).status,
++      403,
++    );
++  const ack = await s.ingest(event());
++  assert.equal(
++    (await s.request("/docs-customers/" + ack.customerId)).status,
++    401,
++  );
++  const r = await s.api("/docs-customers");
++  assert.match(r.headers.get("cache-control"), /no-store/);
++  const text = JSON.stringify(await r.json());
++  assert.ok(!text.includes(s.key.token));
++  assert.ok(!text.includes("token_hash"));
++  assert.equal((await s.api("/docs-customers/connection")).status, 200);
++  assert.equal(
++    (await (await s.hook({}, "/handshake")).json()).since,
++    DOCS_CUSTOMERS_SINCE,
++  );
++  const next = await (
++    await s.api("/docs-customers/connection/key", "POST", {})
++  ).json();
++  assert.equal(next.since, DOCS_CUSTOMERS_SINCE);
++  assert.equal((await s.hook({}, "/handshake")).status, 401);
++});
++test("fixed Moscow cutoff excludes old data; a fresh company save by an old account is linked to that account", async (t) => {
++  const s = await fixture(t);
++  const e = event({
++    occurredAt: "2026-11-18T20:59:59.000Z",
++    user: { ...event().user, registeredAt: "2026-11-18T20:59:59.000Z" },
++  });
++  const ignored = await (await s.hook(e)).json();
++  assert.equal(ignored.ignored, true);
++  assert.equal((await (await s.api("/docs-customers")).json()).total, 0);
++  const fresh = event({
++    occurredAt: DOCS_CUSTOMERS_SINCE,
++    user: { ...event().user, registeredAt: DOCS_CUSTOMERS_SINCE },
++  });
++  await s.ingest(fresh);
++  const oldUser = {
++    ...event().user,
++    id: "old-account",
++    registeredAt: "2026-01-01T09:00:00.000Z",
++  };
++  const ack = await s.ingest(
++    event({
++      kind: "company",
++      occurredAt: profile().savedAt,
++      user: oldUser,
++      company: profile(),
++    }),
++  );
++  const d = await s.detail(ack.customerId);
++  assert.equal(d.customer.externalId, "old-account");
++  assert.equal(d.customer.registeredAt, oldUser.registeredAt);
++  assert.equal(d.companyHistory[0].user.id, "old-account");
++  await s.restart();
++  assert.equal(
++    (await (await s.api("/docs-customers/connection")).json()).since,
++    DOCS_CUSTOMERS_SINCE,
++  );
++});
++test("companies belong to immutable source user IDs, including identical names, email and INN; replay is idempotent", async (t) => {
++  const s = await fixture(t),
++    e = event({
++      kind: "company",
++      occurredAt: profile().savedAt,
++      company: profile(),
++    }),
++    a = await s.ingest(e);
++  const b = await s.ingest({
++    ...e,
++    eventId: randomUUID(),
++    user: { ...e.user, id: "docs-user-02" },
++    company: profile("Компания второго пользователя"),
++  });
++  assert.notEqual(a.customerId, b.customerId);
++  assert.equal(
++    (await s.detail(a.customerId)).customer.company.companyName,
++    "ООО Тест",
++  );
++  assert.equal(
++    (await s.detail(b.customerId)).companyHistory[0].user.id,
++    "docs-user-02",
++  );
++  assert.equal((await s.hook(e)).status, 200);
++  assert.equal(
++    (await s.hook({ ...e, company: profile("Подмена") })).status,
++    409,
++  );
++  assert.equal((await s.detail(a.customerId)).companyHistory.length, 1);
++  const newer = {
++    ...e,
++    eventId: randomUUID(),
++    occurredAt: "2026-11-19T11:00:00.000Z",
++    observedAt: "2026-11-19T11:01:00.000Z",
++    company: {
++      ...profile("Новая компания"),
++      savedAt: "2026-11-19T11:00:00.000Z",
++    },
++  };
++  await s.ingest(newer);
++  await s.ingest({
++    ...e,
++    eventId: randomUUID(),
++    observedAt: "2026-11-19T10:00:00.000Z",
++    user: { ...e.user, name: "Старое имя" },
++  });
++  const d = await s.detail(a.customerId);
++  assert.equal(d.customer.company.companyName, "Новая компания");
++  assert.equal(d.customer.name, e.user.name);
++  assert.equal(d.companyHistory.length, 3);
++  assert.ok(d.companyHistory.every((v) => v.user.id === e.user.id));
++});
++test("call author is server identity; retries do not duplicate calls, stale writes conflict, profile updates preserve calls", async (t) => {
++  const s = await fixture(t),
++    user = await s.make("docs.manager", "Менеджер А"),
++    cookie = await s.login(user.login),
++    ack = await s.ingest(event());
++  const d = await s.detail(ack.customerId),
++    body = {
++      requestId: randomUUID(),
++      version: d.customer.version,
++      outcome: "callback",
++      note: "Первая строка\nВторая строка",
++      actor: { name: "Поддельный автор" },
++    };
++  for (let i = 0; i < 2; i++)
++    assert.equal(
++      (
++        await s.api(
++          "/docs-customers/" + ack.customerId + "/calls",
++          "POST",
++          body,
++          cookie,
++        )
++      ).status,
++      200,
++    );
++  let value = await s.detail(ack.customerId);
++  assert.equal(value.customer.callCount, 1);
++  assert.equal(value.calls[0].actor.name, "Менеджер А");
++  assert.equal(value.calls[0].actor.id, user.id);
++  assert.equal(value.calls[0].note, body.note);
++  assert.equal(
++    (
++      await s.api(
++        "/docs-customers/" + ack.customerId + "/calls",
++        "POST",
++        { ...body, requestId: randomUUID() },
++        cookie,
++      )
++    ).status,
++    409,
++  );
++  await s.ingest(
++    event({
++      kind: "company",
++      occurredAt: profile().savedAt,
++      observedAt: "2026-11-19T09:00:00.000Z",
++      company: profile(),
++    }),
++  );
++  value = await s.detail(ack.customerId);
++  assert.equal(value.customer.callCount, 1);
++  assert.equal(value.customer.lastCall.actor.name, "Менеджер А");
++  const mine = await (
++    await s.api("/docs-customers?mine=1", "GET", undefined, cookie)
++  ).json();
++  assert.equal(mine.total, 1);
++});
++test("sales can void only their own call; audit retains author, shared access remains identifiable", async (t) => {
++  const s = await fixture(t),
++    a = await s.make("docs.a", "Менеджер А"),
++    b = await s.make("docs.b", "Менеджер Б"),
++    ca = await s.login(a.login),
++    cb = await s.login(b.login),
++    shared = await s.login(null),
++    ack = await s.ingest(event());
++  const call = await (
++    await s.api(
++      "/docs-customers/" + ack.customerId + "/calls",
++      "POST",
++      { requestId: randomUUID(), version: 1, outcome: "no_answer", note: "" },
++      ca,
++    )
++  ).json();
++  let d = await s.detail(ack.customerId);
++  const path =
++    "/docs-customers/" + ack.customerId + "/calls/" + call.callId + "/void";
++  assert.equal(
++    (
++      await s.api(
++        path,
++        "POST",
++        { requestId: randomUUID(), version: d.customer.version },
++        cb,
++      )
++    ).status,
++    403,
++  );
++  const body = { requestId: randomUUID(), version: d.customer.version };
++  assert.equal((await s.api(path, "POST", body, ca)).status, 200);
++  assert.equal((await s.api(path, "POST", body, ca)).status, 200);
++  d = await s.detail(ack.customerId);
++  assert.equal(d.customer.callCount, 0);
++  assert.equal(d.calls[0].voidedBy.name, a.name);
++  assert.equal(d.calls[0].actor.name, a.name);
++  assert.equal(
++    (
++      await s.api(
++        "/docs-customers/" + ack.customerId + "/calls",
++        "POST",
++        {
++          requestId: randomUUID(),
++          version: d.customer.version,
++          outcome: "reached",
++        },
++        shared,
++      )
++    ).status,
++    200,
++  );
++  d = await s.detail(ack.customerId);
++  assert.equal(d.customer.lastCall.actor.name, "Общий доступ");
++  assert.equal(d.customer.lastCall.actor.id, null);
++  assert.equal(
++    (await s.api("/docs-customers?mine=1", "GET", undefined, shared)).status,
++    400,
++  );
++  assert.equal(
++    (await (await s.api("/docs-customers?status=uncalled")).json()).total,
++    0,
++  );
++  assert.equal(
++    (await (await s.api("/docs-customers?status=called")).json()).total,
++    1,
++  );
++});
++test("search covers Cyrillic, contacts and company INN; invalid incoming data is rejected without partial writes", async (t) => {
++  const s = await fixture(t);
++  await s.ingest(
++    event({
++      kind: "company",
++      occurredAt: profile().savedAt,
++      company: profile(),
++    }),
++  );
++  for (const q of ["ПОЛЬЗОВАТЕЛЬ", "7701234567", "a@example.ru", "79991112233"])
++    assert.equal(
++      (await (await s.api("/docs-customers?q=" + encodeURIComponent(q))).json())
++        .total,
++      1,
++    );
++  assert.equal((await (await s.api("/docs-customers?q=%25")).json()).total, 0);
++  for (const e of [
++    event({ user: { ...event().user, id: "../bad" } }),
++    event({
++      kind: "company",
++      occurredAt: profile().savedAt,
++      company: { ...profile(), inn: "123" },
++    }),
++    event({ observedAt: "bad" }),
++  ])
++    assert.equal((await s.hook(e)).status, 400);
++  assert.equal((await (await s.api("/docs-customers")).json()).total, 1);
++});
++async function agentFixture(t, overrides = {}) {
++  const dir = await mkdtemp(join(tmpdir(), "docs-customer-agent-"));
++  await mkdir(join(dir, "source"));
++  const sourceDir = join(dir, "source"),
++    stateDir = join(dir, "state");
++  let clock = Date.parse("2026-11-19T12:00:00.000Z");
++  const agents = [];
++  t.after(async () => {
++    for (const a of agents) {
++      try {
++        a.close();
++      } catch {}
++    }
++    await rm(dir, { recursive: true, force: true });
++  });
++  const users = [
++    {
++      id: "new-user",
++      name: "Пользователь А",
++      email: "a@example.ru",
++      phone: "79991234567",
++      createdAt: stamp,
++      passwordHash: "NEVER_COPY_PASSWORD",
++      verificationTokenHash: "NEVER_COPY_TOKEN",
++    },
++    {
++      id: "old-user",
++      name: "Старый пользователь",
++      email: "old@example.ru",
++      phone: "",
++      createdAt: "2026-11-01T10:00:00.000Z",
++    },
++  ];
++  const profiles = {
++    version: 1,
++    profiles: {
++      "new-user": { companyProfile: profile(), updatedAt: profile().savedAt },
++      "old-user": {
++        companyProfile: profile("Историческая компания"),
++        updatedAt: "2026-11-01T10:00:00.000Z",
++      },
++    },
++    outbox: [{ secret: "NEVER_COPY_MAIL" }],
++  };
++  const save = async () => {
++    await writeFile(join(sourceDir, "users.json"), JSON.stringify(users));
++    await writeFile(
++      join(sourceDir, "company-profiles.json"),
++      JSON.stringify(profiles),
++    );
++  };
++  await save();
++  const config = {
++    endpoint: "https://boykov-services.ru/hooks/docs-customers",
++    token: "a".repeat(64),
++    since: DOCS_CUSTOMERS_SINCE,
++    sourceDir,
++    stateDir,
++  };
++  const fetcher = async (url, options) => {
++    const p = JSON.parse(options.body);
++    return Response.json(
++      url.endsWith("/heartbeat")
++        ? { ok: true, source: "boykovdocs.ru" }
++        : {
++            ok: true,
++            eventId: p.eventId,
++            externalId: p.user.id,
++            customerId: "customer-" + p.user.id,
++          },
++    );
++  };
++  const start = (options = {}) => {
++    const a = new DocsCustomerAgent(config, {
++      now: () => clock,
++      fetcher,
++      ...overrides,
++      ...options,
++    });
++    agents.push(a);
++    return a;
++  };
++  return {
++    dir,
++    users,
++    profiles,
++    save,
++    config,
++    start,
++    tick: () => {
++      clock += 1000000;
++    },
++    payloads: (a) =>
++      a.db
++        .prepare("SELECT payload FROM outbox")
++        .all()
++        .map((r) => JSON.parse(r.payload)),
++  };
++}
++test("read-only source collector whitelists fields, excludes old history and links each company by profile map user ID", async (t) => {
++  const s = await agentFixture(t),
++    a = s.start();
++  const before = await readFile(join(s.config.sourceDir, "users.json"), "utf8");
++  a.scan();
++  const rows = s.payloads(a);
++  assert.equal(rows.length, 2);
++  assert.ok(rows.every((e) => e.user.id === "new-user"));
++  assert.ok(!JSON.stringify(rows).includes("NEVER_COPY"));
++  assert.equal(
++    await readFile(join(s.config.sourceDir, "users.json"), "utf8"),
++    before,
++  );
++  a.scan();
++  assert.equal(s.payloads(a).length, 2);
++  s.profiles.profiles["old-user"].updatedAt = "2026-11-19T10:00:00.000Z";
++  await s.save();
++  a.scan();
++  assert.equal(s.payloads(a).at(-1).user.id, "old-user");
++  assert.equal(
++    s.payloads(a).at(-1).company.companyName,
++    "Историческая компания",
++  );
++  await a.cycle();
++  assert.equal(a.status().pending, 0);
++  a.close();
++  const b = s.start();
++  b.scan();
++  assert.equal(s.payloads(b).length, 3);
++  assert.equal(b.status().pending, 0);
++});
++test("durable delivery retries after lost ACK with same event ID and survives process restart", async (t) => {
++  let mode = "lost",
++    first = [];
++  const s = await agentFixture(t, {
++      fetcher: async (url, options) => {
++        const p = JSON.parse(options.body);
++        if (url.endsWith("/heartbeat"))
++          return Response.json({ ok: true, source: "boykovdocs.ru" });
++        first.push(p.eventId);
++        if (mode === "lost") throw Error("simulated");
++        return Response.json({
++          ok: true,
++          eventId: p.eventId,
++          externalId: p.user.id,
++          customerId: "saved",
++        });
++      },
++    }),
++    a = s.start();
++  a.scan();
++  await a.deliver();
++  assert.equal(a.status().pending, 2);
++  a.close();
++  mode = "ok";
++  s.tick();
++  const b = s.start();
++  await b.cycle();
++  assert.equal(b.status().pending, 0);
++  assert.ok(first.slice(1).includes(first[0]));
++});
++test("invalid acknowledgement and malformed company snapshot retain events and expose delivery problems", async (t) => {
++  const s = await agentFixture(t),
++    a = s.start({ fetcher: async () => Response.json({ ok: true }) });
++  a.scan();
++  await a.deliver();
++  assert.equal(a.status().pending, 2);
++  assert.equal(a.status().rejected, 2);
++  await writeFile(join(s.config.sourceDir, "company-profiles.json"), "{broken");
++  a.scan();
++  assert.equal(a.status().scanOk, false);
++  assert.equal(a.status().errorCode, "companies_read_failed");
++  assert.equal(a.status().pending, 2);
++});
++test("collector validates HTTPS endpoints and pins durable queue to source and cutoff", async (t) => {
++  const s = await agentFixture(t);
++  for (const endpoint of [
++    "http://boykov-services.ru/hooks/docs-customers",
++    "https://boykov-services.ru/hooks/docs-customers?token=x",
++    "https://other/x",
++  ])
++    assert.throws(() => validateDocsConnection({ ...s.config, endpoint }));
++  const a = s.start();
++  a.close();
++  assert.throws(
++    () =>
++      new DocsCustomerAgent({ ...s.config, since: "2026-11-19T00:00:00.000Z" }),
++    /ANOTHER_SOURCE/,
++  );
++});

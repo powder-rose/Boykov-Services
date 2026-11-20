@@ -806,6 +806,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
   }
   return {
     register,
+    authorize,
     receive: wrap(receive),
     heartbeat: wrap(heartbeat),
     handshake: wrap((req, res) => {

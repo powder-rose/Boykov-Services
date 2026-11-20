@@ -1,3 +1,4 @@
+import { createDocsSalesModule } from "./modules/docs-sales/index.js";
 import express from "express";
 import multer from "multer";
 import path from "node:path";
@@ -74,7 +75,17 @@ export async function createApp(options) {
   app.post("/hooks/docs-customers", docsCustomers.receive);
   app.post("/hooks/docs-customers/heartbeat", docsCustomers.heartbeat);
   app.post("/hooks/docs-customers/handshake", docsCustomers.handshake);
+  const docsSales = createDocsSalesModule(db, {
+    ...options,
+    authorize: docsCustomers.authorize,
+    configured: () => docsCustomers.connection().configured,
+  });
+  app.locals.docsSales = docsSales;
+  app.post("/hooks/docs-customers/sales", docsSales.receive);
+  app.post("/hooks/docs-customers/sales/heartbeat", docsSales.heartbeat);
+  app.post("/hooks/docs-customers/sales/handshake", docsSales.handshake);
   installAuth(app, { ...options, db });
+  docsSales.register(app);
   docsCustomers.register(app);
   statistics.register(app);
   leads.register(app);

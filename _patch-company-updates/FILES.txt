@@ -1,0 +1,9 @@
+docs/BOYKOVDOCS-CUSTOMERS.md
+scripts/deploy-docs-customers.sh
+server/modules/docs-customers/index.js
+src/components/Common.tsx
+src/pages/DocsCustomers.css
+src/pages/DocsCustomers.tsx
+src/pages/Technical.tsx
+src/styles.css
+tests/docs-customers.test.js

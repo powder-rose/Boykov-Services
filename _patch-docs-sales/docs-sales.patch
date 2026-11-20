@@ -1,0 +1,3622 @@
+diff --git a/README.md b/README.md
+index 2b54690..7ed6c5e 100644
+--- a/README.md
++++ b/README.md
+@@ -140,3 +140,5 @@ npm run check
+ ## Клиенты BoykovDocs
+ 
+ Контакты, данные компании с привязкой к ID пользователя и история звонков отдела продаж. [Установка, подключение и работа](docs/BOYKOVDOCS-CUSTOMERS.md).
++
++В подразделе «Продажи инструкций» — покупки PDF/Word, суммы, динамика и история каждого покупателя. [Источник данных и подключение продаж](docs/BOYKOVDOCS-SALES.md).
+diff --git a/scripts/deploy-docs-customers.sh b/scripts/deploy-docs-customers.sh
+index bf50d38..82a8218 100644
+--- a/scripts/deploy-docs-customers.sh
++++ b/scripts/deploy-docs-customers.sh
+@@ -46,18 +46,22 @@ import { DatabaseSync } from 'node:sqlite';
+ const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
+ try {
+  if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
+- for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions','docs_customer_lifecycle','docs_customer_company_updates','docs_customer_company_reviews','docs_customer_module_meta'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
++ for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions','docs_customer_lifecycle','docs_customer_company_updates','docs_customer_company_reviews','docs_customer_module_meta','docs_sales_purchases','docs_sales_buyers','docs_sales_receipts','docs_sales_connection'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
+  for(const name of ['deleted_at','deleted_by_id','deleted_by_name','deleted_by_kind'])if(!db.prepare('PRAGMA table_info(docs_customers)').all().some(c=>c.name===name))throw Error('DOCS_CUSTOMERS_TRASH_MIGRATION_MISSING');
+ }finally{db.close();}
+ const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
+ if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
+-for(const route of ['/api/docs-customers','/api/docs-customers/connection']){
++for(const route of ['/api/docs-customers','/api/docs-customers/connection','/api/docs-sales/report','/api/docs-sales/buyers/test']){
+  const response=await fetch('http://127.0.0.1:8787'+route,{signal:AbortSignal.timeout(10000)});
+  if(response.status!==401)throw Error('DOCS_CUSTOMERS_AUTH_CHECK_FAILED');
+ }
+ const hook=await fetch('http://127.0.0.1:8787/hooks/docs-customers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ if(hook.status!==401)throw Error('DOCS_CUSTOMERS_HOOK_AUTH_FAILED');
+-console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_TRASH=OK\nDOCS_CUSTOMERS_UPDATES=OK\nDOCS_CUSTOMERS_AUTH=OK');
++for(const suffix of ['', '/heartbeat', '/handshake']){
++ const response=await fetch('http://127.0.0.1:8787/hooks/docs-customers/sales'+suffix,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
++ if(response.status!==401)throw Error('DOCS_SALES_HOOK_AUTH_FAILED');
++}
++console.log('DOCS_SALES_MODULE=OK\nDOCS_SALES_AUTH=OK\nDOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_TRASH=OK\nDOCS_CUSTOMERS_UPDATES=OK\nDOCS_CUSTOMERS_AUTH=OK');
+ VERIFY_DOCS_CUSTOMERS
+ docker compose ps
+ printf 'DOCS_CUSTOMERS_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"
+diff --git a/server/app.js b/server/app.js
+index af440d9..cf5de20 100644
+--- a/server/app.js
++++ b/server/app.js
+@@ -1,3 +1,4 @@
++import { createDocsSalesModule } from "./modules/docs-sales/index.js";
+ import express from "express";
+ import multer from "multer";
+ import path from "node:path";
+@@ -74,7 +75,17 @@ export async function createApp(options) {
+   app.post("/hooks/docs-customers", docsCustomers.receive);
+   app.post("/hooks/docs-customers/heartbeat", docsCustomers.heartbeat);
+   app.post("/hooks/docs-customers/handshake", docsCustomers.handshake);
++  const docsSales = createDocsSalesModule(db, {
++    ...options,
++    authorize: docsCustomers.authorize,
++    configured: () => docsCustomers.connection().configured,
++  });
++  app.locals.docsSales = docsSales;
++  app.post("/hooks/docs-customers/sales", docsSales.receive);
++  app.post("/hooks/docs-customers/sales/heartbeat", docsSales.heartbeat);
++  app.post("/hooks/docs-customers/sales/handshake", docsSales.handshake);
+   installAuth(app, { ...options, db });
++  docsSales.register(app);
+   docsCustomers.register(app);
+   statistics.register(app);
+   leads.register(app);
+diff --git a/server/modules/docs-customers/index.js b/server/modules/docs-customers/index.js
+index 909b613..cf85de1 100644
+--- a/server/modules/docs-customers/index.js
++++ b/server/modules/docs-customers/index.js
+@@ -806,6 +806,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
+   }
+   return {
+     register,
++    authorize,
+     receive: wrap(receive),
+     heartbeat: wrap(heartbeat),
+     handshake: wrap((req, res) => {
+diff --git a/src/pages/DocsCustomers.tsx b/src/pages/DocsCustomers.tsx
+index 5d916d2..18e64d6 100644
+--- a/src/pages/DocsCustomers.tsx
++++ b/src/pages/DocsCustomers.tsx
+@@ -23,6 +23,7 @@ import {
+ } from "../../shared/docs-customers.js";
+ import type { CompanyField } from "../../shared/docs-customers.js";
+ import "./DocsCustomers.css";
++import DocsSales from "./DocsSales";
+ type Outcome = keyof typeof DOCS_CALL_OUTCOMES;
+ type Company = Record<CompanyField, string> & { savedAt: string };
+ type Call = {
+@@ -137,6 +138,8 @@ export default function DocsCustomers({
+   active: boolean;
+   account?: AccountIdentity;
+ }) {
++  const [section, setSection] = useState<"customers" | "sales">("customers"),
++    [salesRefresh, setSalesRefresh] = useState(0);
+   const [listing, setListing] = useState<Listing | null>(null),
+     [connection, setConnection] = useState<Connection | null>(null),
+     [error, setError] = useState("");
+@@ -186,7 +189,7 @@ export default function DocsCustomers({
+     }
+   }, [debounced, status, sort, page, company, mine, view, updatedOnly]);
+   useEffect(() => {
+-    if (!active) return;
++    if (!active || section !== "customers") return;
+     void refresh();
+     const timer = setInterval(() => {
+       if (!document.hidden) void refresh();
+@@ -195,7 +198,7 @@ export default function DocsCustomers({
+       clearInterval(timer);
+       generation.current++;
+     };
+-  }, [active, refresh]);
++  }, [active, refresh, section]);
+   useEffect(() => {
+     if (!active) {
+       setSelected(null);
+@@ -211,347 +214,405 @@ export default function DocsCustomers({
+       <PageHead
+         eyebrow="КЛИЕНТСКАЯ БАЗА"
+         title="Клиенты BoykovDocs"
+-        description="Пользователи, их компании и история общения — в одном месте."
++        description="Пользователи, компании, продажи инструкций и история общения."
+       >
+         <button
+           className="button"
+-          onClick={() => void refresh()}
+-          aria-label="Обновить клиентов"
++          onClick={() => {
++            if (section === "customers") void refresh();
++            else setSalesRefresh((v) => v + 1);
++          }}
++          aria-label={
++            section === "customers" ? "Обновить клиентов" : "Обновить продажи"
++          }
+         >
+           <RefreshCw size={17} />
+           Обновить
+         </button>
+       </PageHead>
+-      {error && <Notice tone="error">{error}</Notice>}
+-      {success && <Notice tone="success">{success}</Notice>}
+-      {listing && (
+-        <div className="dc-metrics">
+-          {[
+-            ["Пользователи", listing.stats.total, ContactRound, "lime"],
+-            ["С данными компании", listing.stats.companies, Building2, "pink"],
+-            ["Ещё не звонили", listing.stats.uncalled, Phone, ""],
+-            ["Звонок отмечен", listing.stats.called, PhoneCall, ""],
+-          ].map(([label, value, Icon, tone]) => {
+-            const Glyph = Icon as typeof Phone;
+-            return (
+-              <div className={"dc-metric " + tone} key={String(label)}>
+-                <span>
+-                  {String(label)}
+-                  <Glyph size={19} />
+-                </span>
+-                <strong>{number(value as number)}</strong>
+-                <div className="dc-metric-decoration" aria-hidden="true" />
+-              </div>
+-            );
+-          })}
+-        </div>
+-      )}
+-      {listing && listing.companyUpdates.pending > 0 && (
+-        <section
+-          className="dc-update-widget"
+-          aria-label="Непросмотренные обновления компаний"
++      <div
++        className="docs-subtabs"
++        role="tablist"
++        aria-label="Подразделы BoykovDocs"
++      >
++        <button
++          role="tab"
++          id="docs-customers-tab"
++          aria-controls="docs-customers-panel"
++          aria-selected={section === "customers"}
++          onClick={() => setSection("customers")}
+         >
+-          <span className="dc-update-symbol">
+-            <RefreshCw size={23} />
+-          </span>
+-          <div>
+-            <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
+-            <h2>
+-              Обновлены данные компаний{" "}
+-              <strong>{number(listing.companyUpdates.pending)}</strong>
+-            </h2>
+-            <p>
+-              Проверьте изменения реквизитов. Последнее обновление:{" "}
+-              {when(listing.companyUpdates.lastChangedAt)} · Москва
+-            </p>
++          Клиенты
++        </button>
++        <button
++          role="tab"
++          id="docs-sales-tab"
++          aria-controls="docs-sales-panel"
++          aria-selected={section === "sales"}
++          onClick={() => setSection("sales")}
++        >
++          Продажи инструкций
++        </button>
++      </div>
++      <div
++        role="tabpanel"
++        id="docs-customers-panel"
++        aria-labelledby="docs-customers-tab"
++        hidden={section !== "customers"}
++      >
++        {error && <Notice tone="error">{error}</Notice>}
++        {success && <Notice tone="success">{success}</Notice>}
++        {listing && (
++          <div className="dc-metrics">
++            {[
++              ["Пользователи", listing.stats.total, ContactRound, "lime"],
++              [
++                "С данными компании",
++                listing.stats.companies,
++                Building2,
++                "pink",
++              ],
++              ["Ещё не звонили", listing.stats.uncalled, Phone, ""],
++              ["Звонок отмечен", listing.stats.called, PhoneCall, ""],
++            ].map(([label, value, Icon, tone]) => {
++              const Glyph = Icon as typeof Phone;
++              return (
++                <div className={"dc-metric " + tone} key={String(label)}>
++                  <span>
++                    {String(label)}
++                    <Glyph size={19} />
++                  </span>
++                  <strong>{number(value as number)}</strong>
++                  <div className="dc-metric-decoration" aria-hidden="true" />
++                </div>
++              );
++            })}
+           </div>
+-          <button
+-            className="button"
+-            onClick={() => {
+-              setView("active");
+-              setUpdatedOnly(true);
+-              setPage(1);
+-              setStatus("all");
+-              setQuery("");
+-              setDebounced("");
+-              setCompany(false);
+-              setMine(false);
+-              setSort("newest");
+-            }}
+-          >
+-            Показать обновлённые
+-          </button>
+-        </section>
+-      )}
+-      <div className="dc-connection">
+-        <span className={"dc-health " + (connection?.status || "")}>
+-          <i />
+-          {connectionLabels[connection?.status || "unconfigured"]}
+-        </span>
+-        <span>
+-          Новые данные с{" "}
+-          {connection ? when(connection.since) : "19 ноября 2026, 00:00"} · МСК
+-        </span>
+-        {connection && connection.pending > 0 && (
+-          <span>В очереди: {number(connection.pending)}</span>
+         )}
+-        {connection?.canConfigure && (
+-          <button onClick={() => setSettings(true)}>
+-            <Settings2 size={16} />
+-            Подключение
+-          </button>
+-        )}
+-      </div>
+-      {connection && ["offline", "attention"].includes(connection.status) && (
+-        <Notice tone="error">
+-          Нет подтверждения исправной доставки BoykovDocs. Проверьте коннектор
+-          на сервере сайта. Последняя связь: {when(connection.lastHeartbeatAt)}{" "}
+-          МСК.
+-        </Notice>
+-      )}
+-      <section className="dc-directory" aria-label="Пользователи BoykovDocs">
+-        {view === "trash" && (
+-          <div className="dc-trash-caption">
+-            <Trash2 size={18} />
++        {listing && listing.companyUpdates.pending > 0 && (
++          <section
++            className="dc-update-widget"
++            aria-label="Непросмотренные обновления компаний"
++          >
++            <span className="dc-update-symbol">
++              <RefreshCw size={23} />
++            </span>
+             <div>
+-              <strong>Корзина клиентов</strong>
++              <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
++              <h2>
++                Обновлены данные компаний{" "}
++                <strong>{number(listing.companyUpdates.pending)}</strong>
++              </h2>
+               <p>
+-                Удалённые карточки не возвращаются в рабочий список при
+-                синхронизации. При необходимости их можно восстановить.
++                Проверьте изменения реквизитов. Последнее обновление:{" "}
++                {when(listing.companyUpdates.lastChangedAt)} · Москва
+               </p>
+             </div>
+-          </div>
+-        )}
+-        <div className="dc-toolbar">
+-          <label className="dc-search">
+-            <Search size={19} />
+-            <input
+-              aria-label="Поиск клиентов"
+-              placeholder="Имя, телефон, почта или ИНН"
+-              value={query}
+-              onChange={(e) => setQuery(e.target.value)}
+-              maxLength={300}
+-            />
+-          </label>
+-          <label className="dc-sort">
+-            Порядок
+-            <select
+-              aria-label="Порядок клиентов"
+-              value={sort}
+-              onChange={(e) => {
+-                setSort(e.target.value);
++            <button
++              className="button"
++              onClick={() => {
++                setView("active");
++                setUpdatedOnly(true);
+                 setPage(1);
++                setStatus("all");
++                setQuery("");
++                setDebounced("");
++                setCompany(false);
++                setMine(false);
++                setSort("newest");
+               }}
+             >
+-              <option value="newest">Сначала новые</option>
+-              <option value="oldest">Сначала ранние</option>
+-            </select>
+-          </label>
++              Показать обновлённые
++            </button>
++          </section>
++        )}
++        <div className="dc-connection">
++          <span className={"dc-health " + (connection?.status || "")}>
++            <i />
++            {connectionLabels[connection?.status || "unconfigured"]}
++          </span>
++          <span>
++            Новые данные с{" "}
++            {connection ? when(connection.since) : "19 ноября 2026, 00:00"} ·
++            МСК
++          </span>
++          {connection && connection.pending > 0 && (
++            <span>В очереди: {number(connection.pending)}</span>
++          )}
++          {connection?.canConfigure && (
++            <button onClick={() => setSettings(true)}>
++              <Settings2 size={16} />
++              Подключение
++            </button>
++          )}
+         </div>
+-        <div className="dc-filters">
+-          <div className="dc-tabs" aria-label="Фильтр по звонкам">
+-            {[
+-              ["all", "Все"],
+-              ["uncalled", "Не звонили"],
+-              ["called", "Звонили"],
+-            ].map(([value, label]) => (
+-              <button
+-                key={value}
+-                aria-pressed={status === value}
+-                className={status === value ? "selected" : ""}
+-                onClick={() => filter(value)}
+-              >
+-                {label}
+-              </button>
+-            ))}
+-          </div>
+-          <label>
+-            <input
+-              type="checkbox"
+-              checked={company}
+-              onChange={(e) => {
+-                setCompany(e.target.checked);
+-                setPage(1);
+-              }}
+-            />
+-            С данными компании
+-          </label>
+-          {account?.id && (
+-            <label>
++        {connection && ["offline", "attention"].includes(connection.status) && (
++          <Notice tone="error">
++            Нет подтверждения исправной доставки BoykovDocs. Проверьте коннектор
++            на сервере сайта. Последняя связь:{" "}
++            {when(connection.lastHeartbeatAt)} МСК.
++          </Notice>
++        )}
++        <section className="dc-directory" aria-label="Пользователи BoykovDocs">
++          {view === "trash" && (
++            <div className="dc-trash-caption">
++              <Trash2 size={18} />
++              <div>
++                <strong>Корзина клиентов</strong>
++                <p>
++                  Удалённые карточки не возвращаются в рабочий список при
++                  синхронизации. При необходимости их можно восстановить.
++                </p>
++              </div>
++            </div>
++          )}
++          <div className="dc-toolbar">
++            <label className="dc-search">
++              <Search size={19} />
+               <input
+-                type="checkbox"
+-                checked={mine}
++                aria-label="Поиск клиентов"
++                placeholder="Имя, телефон, почта или ИНН"
++                value={query}
++                onChange={(e) => setQuery(e.target.value)}
++                maxLength={300}
++              />
++            </label>
++            <label className="dc-sort">
++              Порядок
++              <select
++                aria-label="Порядок клиентов"
++                value={sort}
+                 onChange={(e) => {
+-                  setMine(e.target.checked);
++                  setSort(e.target.value);
+                   setPage(1);
+                 }}
+-              />
+-              Мои звонки
++              >
++                <option value="newest">Сначала новые</option>
++                <option value="oldest">Сначала ранние</option>
++              </select>
+             </label>
+-          )}
+-          {view === "active" && (
++          </div>
++          <div className="dc-filters">
++            <div className="dc-tabs" aria-label="Фильтр по звонкам">
++              {[
++                ["all", "Все"],
++                ["uncalled", "Не звонили"],
++                ["called", "Звонили"],
++              ].map(([value, label]) => (
++                <button
++                  key={value}
++                  aria-pressed={status === value}
++                  className={status === value ? "selected" : ""}
++                  onClick={() => filter(value)}
++                >
++                  {label}
++                </button>
++              ))}
++            </div>
+             <label>
+               <input
+                 type="checkbox"
+-                checked={updatedOnly}
++                checked={company}
+                 onChange={(e) => {
+-                  setUpdatedOnly(e.target.checked);
++                  setCompany(e.target.checked);
+                   setPage(1);
+                 }}
+               />
+-              Только обновления
++              С данными компании
+             </label>
+-          )}
+-          <button
+-            className={
+-              "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
+-            }
+-            aria-pressed={view === "trash"}
+-            onClick={() => {
+-              setView(view === "active" ? "trash" : "active");
+-              setStatus("all");
+-              setQuery("");
+-              setDebounced("");
+-              setCompany(false);
+-              setUpdatedOnly(false);
+-              setMine(false);
+-              setPage(1);
+-              setSuccess("");
+-            }}
+-          >
+-            <Trash2 size={16} />
+-            {view === "trash"
+-              ? "К рабочему списку"
+-              : `Корзина · ${listing?.trashCount || 0}`}
+-          </button>
+-        </div>
+-        {!listing ? (
+-          <Loading />
+-        ) : !listing.customers.length ? (
+-          <Empty
+-            title={
+-              query || status !== "all" || company || mine || updatedOnly
+-                ? "Ничего не найдено"
+-                : view === "trash"
+-                  ? "Корзина пуста"
+-                  : "Здесь появятся клиенты BoykovDocs"
+-            }
+-            text={
+-              query || status !== "all" || company || mine || updatedOnly
+-                ? "Попробуйте изменить условия поиска."
+-                : view === "trash"
+-                  ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
+-                  : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
+-            }
+-          />
+-        ) : (
+-          <>
+-            <div className="dc-list-head">
+-              <span>Пользователь</span>
+-              <span>Его компания</span>
+-              <span>Общение</span>
+-              <span />
+-            </div>
+-            <div className="dc-list">
+-              {listing.customers.map((c) => (
+-                <article className="dc-row" key={c.id}>
+-                  <div className="dc-user-cell">
+-                    <span className="dc-avatar">{initials(c.name)}</span>
+-                    <div>
+-                      <button
+-                        className="dc-name"
+-                        onClick={() => setSelected(c.id)}
+-                      >
+-                        {c.name || "Без имени"}
+-                      </button>
+-                      <div className="dc-contact-links">
+-                        {c.phone && <a href={phoneUrl(c.phone)}>{c.phone}</a>}
+-                        {c.email && (
+-                          <a href={"mailto:" + encodeURIComponent(c.email)}>
+-                            {c.email}
+-                          </a>
+-                        )}
++            {account?.id && (
++              <label>
++                <input
++                  type="checkbox"
++                  checked={mine}
++                  onChange={(e) => {
++                    setMine(e.target.checked);
++                    setPage(1);
++                  }}
++                />
++                Мои звонки
++              </label>
++            )}
++            {view === "active" && (
++              <label>
++                <input
++                  type="checkbox"
++                  checked={updatedOnly}
++                  onChange={(e) => {
++                    setUpdatedOnly(e.target.checked);
++                    setPage(1);
++                  }}
++                />
++                Только обновления
++              </label>
++            )}
++            <button
++              className={
++                "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
++              }
++              aria-pressed={view === "trash"}
++              onClick={() => {
++                setView(view === "active" ? "trash" : "active");
++                setStatus("all");
++                setQuery("");
++                setDebounced("");
++                setCompany(false);
++                setUpdatedOnly(false);
++                setMine(false);
++                setPage(1);
++                setSuccess("");
++              }}
++            >
++              <Trash2 size={16} />
++              {view === "trash"
++                ? "К рабочему списку"
++                : `Корзина · ${listing?.trashCount || 0}`}
++            </button>
++          </div>
++          {!listing ? (
++            <Loading />
++          ) : !listing.customers.length ? (
++            <Empty
++              title={
++                query || status !== "all" || company || mine || updatedOnly
++                  ? "Ничего не найдено"
++                  : view === "trash"
++                    ? "Корзина пуста"
++                    : "Здесь появятся клиенты BoykovDocs"
++              }
++              text={
++                query || status !== "all" || company || mine || updatedOnly
++                  ? "Попробуйте изменить условия поиска."
++                  : view === "trash"
++                    ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
++                    : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
++              }
++            />
++          ) : (
++            <>
++              <div className="dc-list-head">
++                <span>Пользователь</span>
++                <span>Его компания</span>
++                <span>Общение</span>
++                <span />
++              </div>
++              <div className="dc-list">
++                {listing.customers.map((c) => (
++                  <article className="dc-row" key={c.id}>
++                    <div className="dc-user-cell">
++                      <span className="dc-avatar">{initials(c.name)}</span>
++                      <div>
++                        <button
++                          className="dc-name"
++                          onClick={() => setSelected(c.id)}
++                        >
++                          {c.name || "Без имени"}
++                        </button>
++                        <div className="dc-contact-links">
++                          {c.phone && <a href={phoneUrl(c.phone)}>{c.phone}</a>}
++                          {c.email && (
++                            <a href={"mailto:" + encodeURIComponent(c.email)}>
++                              {c.email}
++                            </a>
++                          )}
++                        </div>
++                        <small>ID {c.externalId}</small>
+                       </div>
+-                      <small>ID {c.externalId}</small>
+                     </div>
+-                  </div>
+-                  <div className="dc-company-cell">
+-                    {c.companyUpdate && (
+-                      <span
+-                        className={
+-                          "dc-update-badge" +
+-                          (c.companyUpdate.unread ? " unread" : "")
+-                        }
+-                      >
+-                        <RefreshCw size={13} />
+-                        {c.companyUpdate.unread
+-                          ? "Обновлено"
+-                          : "Обновление просмотрено"}
+-                      </span>
+-                    )}
+-                    {c.company ? (
+-                      <>
+-                        <strong>
+-                          {c.company.companyName || "Данные компании"}
+-                        </strong>
+-                        <span>
+-                          {c.company.inn
+-                            ? "ИНН " + c.company.inn
+-                            : "ИНН не указан"}
++                    <div className="dc-company-cell">
++                      {c.companyUpdate && (
++                        <span
++                          className={
++                            "dc-update-badge" +
++                            (c.companyUpdate.unread ? " unread" : "")
++                          }
++                        >
++                          <RefreshCw size={13} />
++                          {c.companyUpdate.unread
++                            ? "Обновлено"
++                            : "Обновление просмотрено"}
+                         </span>
+-                        <small>Сохранено {when(c.company.savedAt)}</small>
+-                      </>
+-                    ) : (
+-                      <span className="dc-muted">Пока не заполнена</span>
+-                    )}
+-                  </div>
+-                  <div className="dc-call-cell">
+-                    {c.lastCall ? (
+-                      <>
+-                        <span className={"dc-call-state " + c.lastCall.outcome}>
+-                          {DOCS_CALL_OUTCOMES[c.lastCall.outcome]}
++                      )}
++                      {c.company ? (
++                        <>
++                          <strong>
++                            {c.company.companyName || "Данные компании"}
++                          </strong>
++                          <span>
++                            {c.company.inn
++                              ? "ИНН " + c.company.inn
++                              : "ИНН не указан"}
++                          </span>
++                          <small>Сохранено {when(c.company.savedAt)}</small>
++                        </>
++                      ) : (
++                        <span className="dc-muted">Пока не заполнена</span>
++                      )}
++                    </div>
++                    <div className="dc-call-cell">
++                      {c.lastCall ? (
++                        <>
++                          <span
++                            className={"dc-call-state " + c.lastCall.outcome}
++                          >
++                            {DOCS_CALL_OUTCOMES[c.lastCall.outcome]}
++                          </span>
++                          <Person call={c.lastCall} />
++                          <small>{when(c.lastCall.createdAt)}</small>
++                        </>
++                      ) : (
++                        <span className="dc-call-state uncalled">
++                          Не звонили
+                         </span>
+-                        <Person call={c.lastCall} />
+-                        <small>{when(c.lastCall.createdAt)}</small>
+-                      </>
+-                    ) : (
+-                      <span className="dc-call-state uncalled">Не звонили</span>
+-                    )}
+-                  </div>
++                      )}
++                    </div>
++                    <button
++                      className="button dc-open"
++                      onClick={() => setSelected(c.id)}
++                    >
++                      {c.deletedAt ? "Посмотреть" : "Карточка"}
++                    </button>
++                  </article>
++                ))}
++              </div>
++              <footer className="dc-pagination">
++                <span>Найдено: {number(listing.total)}</span>
++                <div>
+                   <button
+-                    className="button dc-open"
+-                    onClick={() => setSelected(c.id)}
++                    className="button"
++                    disabled={listing.page <= 1}
++                    onClick={() => setPage(listing.page - 1)}
+                   >
+-                    {c.deletedAt ? "Посмотреть" : "Карточка"}
++                    Назад
+                   </button>
+-                </article>
+-              ))}
+-            </div>
+-            <footer className="dc-pagination">
+-              <span>Найдено: {number(listing.total)}</span>
+-              <div>
+-                <button
+-                  className="button"
+-                  disabled={listing.page <= 1}
+-                  onClick={() => setPage(listing.page - 1)}
+-                >
+-                  Назад
+-                </button>
+-                <span>
+-                  {listing.page} / {listing.pages}
+-                </span>
+-                <button
+-                  className="button"
+-                  disabled={listing.page >= listing.pages}
+-                  onClick={() => setPage(listing.page + 1)}
+-                >
+-                  Далее
+-                </button>
+-              </div>
+-            </footer>
+-          </>
+-        )}
+-      </section>
++                  <span>
++                    {listing.page} / {listing.pages}
++                  </span>
++                  <button
++                    className="button"
++                    disabled={listing.page >= listing.pages}
++                    onClick={() => setPage(listing.page + 1)}
++                  >
++                    Далее
++                  </button>
++                </div>
++              </footer>
++            </>
++          )}
++        </section>
++      </div>
++      <div
++        role="tabpanel"
++        id="docs-sales-panel"
++        aria-labelledby="docs-sales-tab"
++        hidden={section !== "sales"}
++      >
++        <DocsSales
++          active={active && section === "sales"}
++          refreshKey={salesRefresh}
++          onOpenCustomer={setSelected}
++        />
++      </div>
+       {selected && (
+         <CustomerDialog
+           key={selected}
+diff --git a/docs/BOYKOVDOCS-SALES.md b/docs/BOYKOVDOCS-SALES.md
+new file mode 100644
+index 0000000..cf9260d
+--- /dev/null
++++ b/docs/BOYKOVDOCS-SALES.md
+@@ -0,0 +1,54 @@
++# Продажи инструкций BoykovDocs
++
++В «Клиенты BoykovDocs → Продажи инструкций» показываются покупки PDF и Word: количество, сумма, покупатели, уникальные инструкции, динамика, популярные инструкции и история конкретного покупателя. Периоды: сегодня, 7/30/90 дней, всё время. Дни считаются по Москве; сегодняшний день включён. Есть поиск по имени, почте, телефону и ID, фильтр формата, сортировка и постраничные списки. Экран обновляется каждые 30 секунд, когда открыт.
++
++## Что считается продажей
++
++Источник соответствует существующей админке BoykovDocs: `purchases` из `/app/data/wallets.json`, версия 1. Одна запись — одна покупка доступа к формату инструкции; PDF и Word одной инструкции считаются двумя покупками, а уникальная инструкция — одной. Повторное скачивание ничего не добавляет. Сумма берётся из сохранённого `amountMinor` в копейках, а не из текущей цены. Это сумма покупок доступа, не бухгалтерский отчёт об оплатах, возвратах или чеках. Пополнения баланса, платежи, фискальные события и события скачивания сюда не попадают. Отдельные заказы публичной платной генерации, не входящие в этот источник админки, также не включены.
++
++Загружается **вся доступная история покупок**, чтобы «Всё время» соответствовало источнику. Покупатели хранятся отдельно: старые регистрации и компании в клиентский список не импортируются. Пользователь определяется по неизменному ID BoykovDocs, а не по совпадению почты или имени. При наличии действующей CRM-карточки можно открыть её из истории покупок. Покупка не восстанавливает карточку из корзины. Покупки без записи пользователя в источнике остаются связаны с исходным ID и учитываются в статистике.
++
++## Установка
++
++1. Применить архивный патч в локальном корне проекта PowerShell-командой из архива. Установщик делает резервную копию изменяемых файлов внутри `.git/boykov-patch-backups`, проверяет применимость, запускает `npm run check`. Повторный запуск проверяет уже установленный патч и снова запускает проверки. Коммитов и push не делает. База патча: `93fbf73` или совместимая версия.
++2. Закоммитить и отправить изменения обычным способом.
++3. **На VPS Boykov Services**:
++
++```bash
++cd /opt/boykov-services
++git pull --ff-only
++bash scripts/deploy-docs-customers.sh
++```
++
++Скрипт сохраняет согласованную резервную копию SQLite через `VACUUM INTO`, проверяет её, сохраняет предыдущий образ и команду отката; пересобирает только `app`, проверяет миграции и закрытость API/вебхуков. Ожидаемые результаты: `DOCS_SALES_MODULE=OK`, `DOCS_SALES_AUTH=OK`, `DOCS_CUSTOMERS_DEPLOY=OK`.
++
++4. **На VPS BoykovDocs (`cv8367491`)**, где уже установлен коннектор клиентов:
++
++```bash
++cd /opt/boykov-services-connector
++git pull --ff-only
++bash scripts/install-docs-sales.sh
++```
++
++Существующий приватный ключ из `/opt/boykovdocs-customers-delivery/config.json` используется автоматически. Копировать ключ в чат или вводить его заново не нужно. Сначала проверяется новый вебхук. Затем устанавливается отдельный контейнер `boykovdocs-sales-delivery-delivery-1` с собственной SQLite-очередью; ожидается `DOCS_SALES_CONNECTION=OK`. Первичная загрузка идёт порциями по 50 событий, поэтому для большой истории некоторое время будет статус «Загружаем историю продаж». Новые события получают приоритет, старая очередь также продвигается.
++
++Новый процесс только читает каталог `/app/data` через read-only mount. Код и корневая файловая система контейнера также read-only. Он не загружает код приложения BoykovDocs, не меняет кошельки, баланс, пользователей, документы, оплаты, чеки и письма; сайт и работающий коннектор клиентов не перезапускаются. Передаваемые поля ограничены ID покупки/пользователя/инструкции, названием, форматом, суммой, датой и контактами покупателя. Пароли, токены пользователей, содержимое инструкций и фискальные данные исключены.
++
++## Проверка и восстановление
++
++```bash
++docker compose -f /opt/boykovdocs-sales-delivery/compose.json ps
++docker compose -f /opt/boykovdocs-sales-delivery/compose.json logs --tail 20 delivery
++```
++
++Логи содержат только счётчики и коды состояния. `SOURCE_PURCHASES` — число покупок в источнике; `PENDING` — очередь, которая должна уменьшаться до нуля; `REJECTED=0` — нет отвергнутых событий. Ключи и контакты не выводятся. Отдельный cron не требуется.
++
++При первом подключении до получения данных сервис показывает «Ожидает первого запуска», а не подтверждённый ноль продаж. Полнота сверяется по числу покупок в источнике и сервисе. Отсутствие heartbeat более трёх минут, повреждённый источник, удаление записей из источника, невалидное подтверждение и конфликты выводят предупреждение. Сохранённая история при сбое остаётся доступна. При сбое сети события остаются в очереди с повторными попытками; положительное подтверждение проверяется по ID события, покупки и пользователя. Повторная доставка не удваивает продажи. Изменение владельца, цены или реквизитов уже записанной покупки отвергается, а не перезаписывает историю.
++
++Резервная копия конфигурации коннектора выводится как `BACKUP=...`; при ошибке установки восстанавливается предыдущая конфигурация, если она существовала. Очередь не удаляется. Центральный деплой выводит каталог с `rollback-app.sh`, предыдущим образом и JSON-путём резервной базы. Откат приложения выполняется через этот скрипт; базу не следует заменять без отдельного решения, поскольку в неё уже могли поступить новые данные.
++
++При ротации общего ключа BoykovDocs нужно обновить оба коннектора: клиентов и продаж. После обновления конфигурации клиентов повторно запустить `install-docs-sales.sh`. Очередь сохраняется.
++
++## Проверки разработки
++
++`npm run check`: сборка TypeScript/Vite и полный набор Node-тестов. `tests/docs-sales.test.js` проверяет авторизацию, историю без импорта старых CRM-карточек, связь по ID при одинаковой почте, суммы/форматы/границы дня Москвы, пагинацию, дедупликацию, неизменность покупки, корзину, read-only сбор, фильтрацию полей, очередь, неверный ACK, повреждение/уменьшение источника. Скрипты проверяются `bash -n`; фактические Docker-монтажи и доступ к производственному источнику проверяет установка на VPS.
+diff --git a/integrations/docs-customers/sales-agent.mjs b/integrations/docs-customers/sales-agent.mjs
+new file mode 100644
+index 0000000..fa451eb
+--- /dev/null
++++ b/integrations/docs-customers/sales-agent.mjs
+@@ -0,0 +1,395 @@
++// Independent read-only sales collector. It never loads the BoykovDocs application or writes its data.
++import { DatabaseSync } from "node:sqlite";
++import { createHash, randomUUID } from "node:crypto";
++import {
++  readFileSync,
++  mkdirSync,
++  chmodSync,
++  writeFileSync,
++  renameSync,
++  rmSync,
++} from "node:fs";
++import { join, resolve } from "node:path";
++import { pathToFileURL } from "node:url";
++import { setTimeout as delay } from "node:timers/promises";
++import { normalizeDocsSale } from "../../shared/docs-sales.js";
++const hash = (s) => createHash("sha256").update(s).digest("hex");
++const text = (s, max) =>
++  typeof s === "string"
++    ? s
++        .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "")
++        .trim()
++        .slice(0, max)
++    : "";
++const date = (s) =>
++  typeof s === "string" && Number.isFinite(Date.parse(s))
++    ? new Date(s).toISOString()
++    : null;
++export function validateSalesConnection(config) {
++  const url = new URL(config.endpoint);
++  if (
++    url.protocol !== "https:" ||
++    url.username ||
++    url.password ||
++    url.search ||
++    url.hash ||
++    url.pathname !== "/hooks/docs-customers/sales" ||
++    !/^[a-f0-9]{64}$/.test(config.token || "")
++  )
++    throw Error("INVALID_DOCS_SALES_CONNECTION");
++  return url.href;
++}
++export class DocsSalesAgent {
++  constructor(config, { fetcher = fetch, now = Date.now } = {}) {
++    this.config = { ...config, endpoint: validateSalesConnection(config) };
++    this.fetcher = fetcher;
++    this.now = now;
++    mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
++    const file = join(config.stateDir, "delivery.sqlite");
++    this.db = new DatabaseSync(file);
++    chmodSync(file, 0o600);
++    this.db
++      .exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
++  CREATE TABLE IF NOT EXISTS identity(id INTEGER PRIMARY KEY CHECK(id=1),endpoint TEXT NOT NULL,source TEXT NOT NULL);
++  CREATE TABLE IF NOT EXISTS outbox(event_id TEXT PRIMARY KEY,purchase_id TEXT NOT NULL,payload TEXT NOT NULL,queued_at INTEGER NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '');
++  CREATE INDEX IF NOT EXISTS outbox_due ON outbox(delivered,next_at);
++  CREATE TABLE IF NOT EXISTS capture(purchase_id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL);
++  CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
++    const identity = this.db.prepare("SELECT * FROM identity WHERE id=1").get();
++    if (
++      identity &&
++      (identity.endpoint !== this.config.endpoint ||
++        identity.source !== resolve(config.sourceDir))
++    ) {
++      this.db.close();
++      throw Error("DOCS_SALES_QUEUE_BELONGS_TO_ANOTHER_SOURCE");
++    }
++    this.db
++      .prepare("INSERT OR IGNORE INTO identity VALUES(1,?,?)")
++      .run(this.config.endpoint, resolve(config.sourceDir));
++    this.scanOk = false;
++    this.errorCode = "";
++    this.sourceCount = Number(this.get("source_count") || 0);
++    this.invalid = 0;
++  }
++  get(key) {
++    return this.db.prepare("SELECT value FROM meta WHERE key=?").get(key)
++      ?.value;
++  }
++  set(key, value) {
++    this.db
++      .prepare(
++        "INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
++      )
++      .run(key, String(value));
++  }
++  capture(event) {
++    const content = { user: event.user, purchase: event.purchase },
++      fingerprint = hash(JSON.stringify(content));
++    if (
++      this.db
++        .prepare("SELECT fingerprint FROM capture WHERE purchase_id=?")
++        .get(event.purchase.id)?.fingerprint === fingerprint
++    )
++      return;
++    this.db.exec("BEGIN IMMEDIATE");
++    try {
++      const observed = Math.max(this.now(), Number(this.get("clock") || 0) + 1),
++        payload = {
++          ...event,
++          eventId: randomUUID(),
++          observedAt: new Date(observed).toISOString(),
++        };
++      this.db
++        .prepare(
++          "INSERT INTO outbox(event_id,purchase_id,payload,queued_at) VALUES(?,?,?,?)",
++        )
++        .run(
++          payload.eventId,
++          payload.purchase.id,
++          JSON.stringify(payload),
++          this.now(),
++        );
++      this.db
++        .prepare(
++          "INSERT INTO capture VALUES(?,?) ON CONFLICT(purchase_id) DO UPDATE SET fingerprint=excluded.fingerprint",
++        )
++        .run(payload.purchase.id, fingerprint);
++      this.set("clock", observed);
++      this.db.exec("COMMIT");
++    } catch (e) {
++      if (this.db.isTransaction) this.db.exec("ROLLBACK");
++      throw e;
++    }
++  }
++  scan() {
++    this.scanOk = false;
++    this.invalid = 0;
++    let users;
++    try {
++      const rows = JSON.parse(
++        readFileSync(join(this.config.sourceDir, "users.json"), "utf8"),
++      );
++      if (!Array.isArray(rows)) throw Error();
++      users = new Map();
++      for (const u of rows) {
++        if (!u || typeof u.id !== "string" || !u.id || users.has(u.id))
++          throw Error();
++        const email = text(u.email, 254);
++        users.set(u.id, {
++          id: u.id,
++          name: text(u.name, 200),
++          phone: text(u.phone, 80),
++          email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "",
++          registeredAt: date(u.createdAt),
++        });
++      }
++    } catch {
++      this.errorCode = "users_read_failed";
++      return;
++    }
++    let wallet;
++    try {
++      try {
++        wallet = JSON.parse(
++          readFileSync(join(this.config.sourceDir, "wallets.json"), "utf8"),
++        );
++      } catch (e) {
++        if (e.code !== "ENOENT") throw e;
++        try {
++          readFileSync(join(this.config.sourceDir, "wallets.json.initialized"));
++          throw Error("MISSING_INITIALIZED_WALLET");
++        } catch (marker) {
++          if (marker.code !== "ENOENT") throw marker;
++        }
++        wallet = { version: 1, purchases: [] };
++      }
++      if (wallet.version !== 1 || !Array.isArray(wallet.purchases))
++        throw Error();
++    } catch {
++      this.errorCode = "wallet_read_failed";
++      return;
++    }
++    const events = [],
++      ids = new Set(),
++      ownership = new Set();
++    try {
++      for (const row of wallet.purchases) {
++        const u = users.get(row?.userId) || {
++          id: row?.userId,
++          name: "",
++          phone: "",
++          email: "",
++          registeredAt: null,
++        };
++        const event = normalizeDocsSale(
++          {
++            protocol: 1,
++            eventId: "validation",
++            observedAt: new Date(this.now()).toISOString(),
++            user: u,
++            purchase: {
++              id: row.id,
++              userId: row.userId,
++              instructionId: row.instructionId,
++              title: text(row.title, 500),
++              format: row.format,
++              amountMinor: row.amountMinor,
++              currency: "RUB",
++              createdAt: row.createdAt,
++            },
++          },
++          this.now(),
++        );
++        const key = JSON.stringify([
++          event.user.id,
++          event.purchase.instructionId,
++          event.purchase.format,
++        ]);
++        if (ids.has(event.purchase.id) || ownership.has(key)) throw Error();
++        ids.add(event.purchase.id);
++        ownership.add(key);
++        events.push(event);
++      }
++    } catch {
++      this.errorCode = "invalid_source_data";
++      this.invalid = 1;
++      return;
++    }
++    for (const event of events) this.capture(event);
++    this.sourceCount = events.length;
++    this.set("source_count", events.length);
++    this.set("source_generated_at", new Date(this.now()).toISOString());
++    const previous = Number(this.get("maximum_source_count") || 0);
++    this.errorCode = events.length < previous ? "source_count_decreased" : "";
++    this.set("maximum_source_count", Math.max(previous, events.length));
++    this.scanOk = true;
++  }
++  status() {
++    const row = this.db
++      .prepare(
++        "SELECT count(*) pending,MIN(queued_at) oldest,COALESCE(SUM(error IN ('HTTP_400','HTTP_401','HTTP_403','HTTP_409','HTTP_413','HTTP_422','INVALID_ACK')),0) rejected FROM outbox WHERE delivered=0",
++      )
++      .get();
++    const stalled =
++      row.oldest &&
++      this.now() - row.oldest > 300000 &&
++      this.now() - Number(this.get("last_delivery_at") || 0) > 180000;
++    return {
++      scanOk: this.scanOk,
++      sourceCount: this.sourceCount,
++      pending: row.pending,
++      rejected: row.rejected + this.invalid,
++      errorCode: this.errorCode || (stalled ? "delivery_delayed" : ""),
++      sourceGeneratedAt:
++        this.get("source_generated_at") || new Date(this.now()).toISOString(),
++    };
++  }
++  request(path, payload) {
++    return this.fetcher(this.config.endpoint + path, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + this.config.token,
++      },
++      body: JSON.stringify(payload),
++      redirect: "error",
++      signal: AbortSignal.timeout(12000),
++    });
++  }
++  async deliver() {
++    const fresh = this.db
++        .prepare(
++          "SELECT rowid,* FROM outbox WHERE delivered=0 AND next_at<=? ORDER BY rowid DESC LIMIT 10",
++        )
++        .all(this.now()),
++      old = this.db
++        .prepare(
++          "SELECT rowid,* FROM outbox WHERE delivered=0 AND next_at<=? ORDER BY rowid LIMIT 50",
++        )
++        .all(this.now());
++    const rows = [
++        ...new Map([...fresh, ...old].map((r) => [r.event_id, r])).values(),
++      ].slice(0, 50),
++      started = Date.now();
++    for (const row of rows) {
++      if (Date.now() - started > 90000) break;
++      let error = "",
++        stop = false;
++      try {
++        const p = JSON.parse(row.payload),
++          r = await this.request("", p);
++        if (!r.ok) {
++          error = "HTTP_" + r.status;
++          stop = r.status === 401 || r.status === 403;
++        } else {
++          const ack = await r.json();
++          if (
++            ack.ok === true &&
++            ack.eventId === row.event_id &&
++            ack.externalId === p.user.id &&
++            ack.saleId === p.purchase.id
++          ) {
++            this.db
++              .prepare(
++                "UPDATE outbox SET delivered=1,error='' WHERE event_id=?",
++              )
++              .run(row.event_id);
++            this.set("last_delivery_at", this.now());
++            continue;
++          }
++          error = "INVALID_ACK";
++        }
++      } catch {
++        error = "NETWORK_ERROR";
++        stop = true;
++      }
++      this.db
++        .prepare(
++          "UPDATE outbox SET attempts=attempts+1,next_at=?,error=? WHERE event_id=?",
++        )
++        .run(
++          this.now() + Math.min(900000, 5000 * 2 ** Math.min(row.attempts, 8)),
++          error,
++          row.event_id,
++        );
++      if (stop) break;
++    }
++  }
++  async cycle() {
++    this.scan();
++    await this.deliver();
++    const s = this.status(),
++      response = await this.request("/heartbeat", s);
++    if (!response.ok)
++      throw Error("DOCS_SALES_HEARTBEAT_HTTP_" + response.status);
++    const ack = await response.json();
++    if (ack.ok !== true || ack.source !== "boykovdocs-sales")
++      throw Error("INVALID_DOCS_SALES_HEARTBEAT");
++    const file = join(this.config.stateDir, "status.json"),
++      temporary = file + "." + randomUUID();
++    try {
++      writeFileSync(
++        temporary,
++        JSON.stringify({ ...s, checkedAt: new Date(this.now()).toISOString() }),
++        { mode: 0o600, flag: "wx" },
++      );
++      renameSync(temporary, file);
++    } finally {
++      rmSync(temporary, { force: true });
++    }
++    return s;
++  }
++  close() {
++    this.db.close();
++  }
++}
++if (
++  process.argv[1] &&
++  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
++) {
++  process.umask(0o077);
++  let config;
++  try {
++    config = JSON.parse(readFileSync(process.argv[2], "utf8"));
++  } catch {
++    throw Error("DOCS_SALES_CONFIGURATION_UNREADABLE");
++  }
++  const agent = new DocsSalesAgent(config),
++    stop = new AbortController();
++  for (const signal of ["SIGTERM", "SIGINT"])
++    process.once(signal, () => stop.abort());
++  const cycle = async () => {
++    try {
++      const s = await agent.cycle();
++      console.log(
++        "DOCS_SALES_SYNC=" +
++          (s.scanOk && !s.rejected && !s.errorCode ? "OK" : "CHECK_REQUIRED") +
++          " SOURCE_PURCHASES=" +
++          s.sourceCount +
++          " PENDING=" +
++          s.pending +
++          " REJECTED=" +
++          s.rejected,
++      );
++      return s.scanOk && !s.rejected && !s.errorCode;
++    } catch {
++      console.error("DOCS_SALES_SYNC=CONNECTION_CHECK_REQUIRED");
++      return false;
++    }
++  };
++  try {
++    if (process.argv.includes("--once"))
++      process.exitCode = (await cycle()) ? 0 : 1;
++    else
++      while (!stop.signal.aborted) {
++        await cycle();
++        if (!stop.signal.aborted)
++          await delay(30000, undefined, { signal: stop.signal }).catch((e) => {
++            if (e.name !== "AbortError") throw e;
++          });
++      }
++  } finally {
++    agent.close();
++  }
++}
+diff --git a/scripts/install-docs-sales.sh b/scripts/install-docs-sales.sh
+new file mode 100644
+index 0000000..5cb4a72
+--- /dev/null
++++ b/scripts/install-docs-sales.sh
+@@ -0,0 +1,95 @@
++#!/usr/bin/env bash
++# Run on the BoykovDocs VPS. This installs a separate read-only collector only.
++set -Eeuo pipefail
++umask 077
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo DOCS_SALES_REQUIRES_ROOT; exit 1; }
++for command in docker python3; do command -v "$command" >/dev/null || { echo "DOCS_SALES_MISSING=$command"; exit 1; }; done
++docker compose version >/dev/null
++for file in integrations/docs-customers/sales-agent.mjs shared/docs-sales.js shared/docs-customers.js; do [[ -f "$file" ]] || { echo DOCS_SALES_SOURCE_MISSING; exit 1; }; done
++existing_config=/opt/boykovdocs-customers-delivery/config.json
++[[ -f "$existing_config" ]] || { echo DOCS_SALES_CONNECT_CUSTOMERS_FIRST; exit 1; }
++source_dir=$(docker inspect boykovdocs-api --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}')
++[[ "$source_dir" == /* && -f "$source_dir/users.json" ]] || { echo DOCS_SALES_SOURCE_DATA_NOT_FOUND; exit 1; }
++source_uid=$(docker exec boykovdocs-api id -u)
++source_gid=$(docker exec boykovdocs-api id -g)
++[[ "$source_uid" =~ ^[0-9]+$ && "$source_gid" =~ ^[0-9]+$ ]] || exit 1
++root=/opt/boykovdocs-sales-delivery
++install -d -m 700 "$root"
++backup=$(mktemp -d "$root/pre-connect-XXXXXXXX")
++for file in config.json compose.json; do if [[ -f "$root/$file" ]]; then cp -p "$root/$file" "$backup/$file"; fi; done
++# Reuse the already installed private key; never echo it or pass it in arguments.
++python3 - "$existing_config" "$backup/candidate-config.json" <<'PY'
++import sys,json,re,urllib.request,urllib.parse,os
++class NoRedirect(urllib.request.HTTPRedirectHandler):
++ def redirect_request(self,*args): return None
++try:
++ with open(sys.argv[1],encoding='utf-8') as file: old=json.load(file)
++ url=urllib.parse.urlsplit(old['endpoint'])
++ if url.scheme!='https' or not url.netloc or url.username or url.password or url.query or url.fragment or url.path!='/hooks/docs-customers': raise ValueError()
++ key=old['token']
++ if not re.fullmatch('[a-f0-9]{64}',key): raise ValueError()
++ endpoint=old['endpoint']+'/sales'
++ request=urllib.request.Request(endpoint+'/handshake',data=b'{}',headers={'Content-Type':'application/json','Authorization':'Bearer '+key},method='POST')
++ with urllib.request.build_opener(NoRedirect).open(request,timeout=20) as response: result=json.load(response)
++ if result.get('ok') is not True or result.get('source')!='boykovdocs-sales' or result.get('protocol')!=1 or result.get('scope')!='all-purchases': raise ValueError()
++ with open(sys.argv[2],'x',encoding='utf-8') as file: json.dump({'endpoint':endpoint,'token':key,'sourceDir':'/source','stateDir':'/state'},file)
++ os.chmod(sys.argv[2],0o600)
++except Exception: raise SystemExit('DOCS_SALES_HUB_CHECK_FAILED: сначала обновите Boykov Services и проверьте подключение клиентов')
++print('DOCS_SALES_HUB=OK')
++PY
++code=$(mktemp -d "$root/code-XXXXXXXX")
++chmod 755 "$code"
++install -d -m 755 "$code/integrations/docs-customers" "$code/shared"
++install -m 644 integrations/docs-customers/sales-agent.mjs "$code/integrations/docs-customers/sales-agent.mjs"
++install -m 644 shared/docs-sales.js shared/docs-customers.js "$code/shared/"
++printf '{"type":"module"}\n' > "$code/package.json"
++chmod 644 "$code/package.json"
++install -d -m 700 -o "$source_uid" -g "$source_gid" "$root/state"
++python3 - "$root" "$code" "$source_dir" "$source_uid" "$source_gid" "$backup/candidate-compose.json" <<'PY'
++import json,sys
++root,code,source,uid,gid,destination=sys.argv[1:]
++service={
++ 'image':'node:24-bookworm-slim','user':uid+':'+gid,'restart':'unless-stopped',
++ 'command':['node','/connector/integrations/docs-customers/sales-agent.mjs','/config/config.json'],
++ 'environment':{'NODE_OPTIONS':'--max-old-space-size=384'},
++ 'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],
++ 'mem_limit':'512m','pids_limit':64,'stop_grace_period':'180s',
++ 'tmpfs':['/tmp:rw,noexec,nosuid,size=16m'],
++ 'volumes':[
++  {'type':'bind','source':source,'target':'/source','read_only':True},
++  {'type':'bind','source':code,'target':'/connector','read_only':True},
++  {'type':'bind','source':root+'/config.json','target':'/config/config.json','read_only':True},
++  {'type':'bind','source':root+'/state','target':'/state'}],
++ 'logging':{'driver':'json-file','options':{'max-size':'5m','max-file':'2'}},
++ 'healthcheck':{'test':['CMD','node','-e',"const s=JSON.parse(require('fs').readFileSync('/state/status.json'));process.exit(Date.now()-Date.parse(s.checkedAt)<180000&&s.scanOk&&s.rejected===0&&!s.errorCode?0:1)"],'interval':'30s','timeout':'5s','start_period':'120s','retries':3}}
++with open(destination,'x') as file: json.dump({'name':'boykovdocs-sales-delivery','services':{'delivery':service}},file,indent=2)
++PY
++changed=0
++recover() {
++ result=$?
++ if [[ "$result" != 0 ]]; then
++  if [[ "$changed" == 1 ]]; then
++   docker compose -f "$root/compose.json" stop delivery || true
++   if [[ -f "$backup/compose.json" && -f "$backup/config.json" ]]; then
++    cp -p "$backup/config.json" "$root/config.json"
++    cp -p "$backup/compose.json" "$root/compose.json"
++    docker compose -f "$root/compose.json" up -d --no-deps delivery || true
++   fi
++  fi
++  printf 'DOCS_SALES_CHECK_REQUIRED BACKUP=%s\n' "$backup"
++ fi
++}
++trap recover EXIT
++# Validate and pull before stopping a previous sales collector. The website and customer collector stay running.
++docker compose -f "$backup/candidate-compose.json" config --quiet
++docker compose -f "$backup/candidate-compose.json" pull delivery
++changed=1
++if [[ -f "$root/compose.json" ]]; then docker compose -f "$root/compose.json" stop delivery; fi
++install -m 600 -o "$source_uid" -g "$source_gid" "$backup/candidate-config.json" "$root/config.json"
++install -m 600 "$backup/candidate-compose.json" "$root/compose.json"
++compose=(docker compose -f "$root/compose.json")
++"${compose[@]}" run --rm --no-deps delivery node /connector/integrations/docs-customers/sales-agent.mjs /config/config.json --once
++"${compose[@]}" up -d --no-deps --wait --wait-timeout 180 delivery
++"${compose[@]}" ps
++printf 'DOCS_SALES_CONNECTION=OK\nDOCS_SALES_DIRECTORY=%s\nBACKUP=%s\n' "$root" "$backup"
+diff --git a/server/modules/docs-sales/index.js b/server/modules/docs-sales/index.js
+new file mode 100644
+index 0000000..277bc2d
+--- /dev/null
++++ b/server/modules/docs-sales/index.js
+@@ -0,0 +1,399 @@
++import { createHash } from "node:crypto";
++import { customerDate, customerText } from "../../../shared/docs-customers.js";
++import {
++  normalizeDocsSale,
++  salesRange,
++  moscowDay,
++} from "../../../shared/docs-sales.js";
++const bad = (message, status = 400) =>
++  Object.assign(new Error(message), { status });
++const hash = (v) => createHash("sha256").update(v).digest("hex");
++const wrap = (fn) => (req, res, next) =>
++  Promise.resolve()
++    .then(() => fn(req, res))
++    .catch(next);
++const transaction = (db, fn) => {
++  db.exec("BEGIN IMMEDIATE");
++  try {
++    const value = fn();
++    db.exec("COMMIT");
++    return value;
++  } catch (e) {
++    if (db.isTransaction) db.exec("ROLLBACK");
++    throw e;
++  }
++};
++export function createDocsSalesModule(
++  db,
++  { authorize, configured, now = Date.now },
++) {
++  db.exec(`CREATE TABLE IF NOT EXISTS docs_sales_purchases(id TEXT PRIMARY KEY,buyer_id TEXT NOT NULL,instruction_id TEXT NOT NULL,title TEXT NOT NULL,format TEXT NOT NULL,amount_minor INTEGER NOT NULL,created_at TEXT NOT NULL,received_at TEXT NOT NULL);
++ CREATE INDEX IF NOT EXISTS docs_sales_purchases_date ON docs_sales_purchases(created_at DESC,id);
++ CREATE UNIQUE INDEX IF NOT EXISTS docs_sales_purchases_access ON docs_sales_purchases(buyer_id,instruction_id,format);
++ CREATE INDEX IF NOT EXISTS docs_sales_purchases_buyer ON docs_sales_purchases(buyer_id,created_at DESC);
++ CREATE TABLE IF NOT EXISTS docs_sales_buyers(id TEXT PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL,phone TEXT NOT NULL,registered_at TEXT,observed_at TEXT NOT NULL,search_text TEXT NOT NULL);
++ CREATE TABLE IF NOT EXISTS docs_sales_receipts(event_id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,purchase_id TEXT NOT NULL,received_at TEXT NOT NULL);
++ CREATE TABLE IF NOT EXISTS docs_sales_connection(id INTEGER PRIMARY KEY CHECK(id=1),last_heartbeat_at TEXT,last_received_at TEXT,source_generated_at TEXT,source_count INTEGER NOT NULL DEFAULT 0,pending INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,scan_ok INTEGER NOT NULL DEFAULT 0,error_code TEXT NOT NULL DEFAULT '');
++ INSERT OR IGNORE INTO docs_sales_connection(id) VALUES(1);`);
++  const storedCount = () =>
++    db.prepare("SELECT count(*) n FROM docs_sales_purchases").get().n;
++  function connection() {
++    const row = db
++        .prepare("SELECT * FROM docs_sales_connection WHERE id=1")
++        .get(),
++      count = storedCount(),
++      hasKey = configured(),
++      age = row.last_heartbeat_at
++        ? now() - Date.parse(row.last_heartbeat_at)
++        : Infinity;
++    return {
++      configured: hasKey,
++      lastHeartbeatAt: row.last_heartbeat_at,
++      lastReceivedAt: row.last_received_at,
++      sourceGeneratedAt: row.source_generated_at,
++      sourceCount: row.source_count,
++      storedCount: count,
++      pending: row.pending,
++      rejected: row.rejected,
++      scanOk: !!row.scan_ok,
++      errorCode: row.error_code,
++      status: !hasKey
++        ? "unconfigured"
++        : !row.last_heartbeat_at
++          ? "waiting"
++          : age > 180000
++            ? "offline"
++            : !row.scan_ok || row.rejected || row.error_code
++              ? "attention"
++              : row.pending
++                ? "syncing"
++                : row.source_count !== count
++                  ? "attention"
++                  : "online",
++    };
++  }
++  function receive(req, res) {
++    authorize(req);
++    const e = normalizeDocsSale(req.body, now()),
++      digest = hash(JSON.stringify(e));
++    const result = transaction(db, () => {
++      const receipt = db
++        .prepare("SELECT * FROM docs_sales_receipts WHERE event_id=?")
++        .get(e.eventId);
++      if (receipt) {
++        if (receipt.payload_hash !== digest)
++          throw bad(
++            "Идентификатор покупки уже использован с другими данными.",
++            409,
++          );
++        return { duplicate: true };
++      }
++      const p = e.purchase,
++        old = db
++          .prepare("SELECT * FROM docs_sales_purchases WHERE id=?")
++          .get(p.id),
++        stamp = new Date(now()).toISOString();
++      if (
++        old &&
++        (old.buyer_id !== e.user.id ||
++          old.instruction_id !== p.instructionId ||
++          old.title !== p.title ||
++          old.format !== p.format ||
++          old.amount_minor !== p.amountMinor ||
++          old.created_at !== p.createdAt)
++      )
++        throw bad("Сохранённая покупка отличается от данных источника.", 409);
++      const access = db
++        .prepare(
++          "SELECT id FROM docs_sales_purchases WHERE buyer_id=? AND instruction_id=? AND format=?",
++        )
++        .get(e.user.id, p.instructionId, p.format);
++      if (access && access.id !== p.id)
++        throw bad(
++          "Для этого пользователя уже сохранена покупка такого формата инструкции.",
++          409,
++        );
++      const buyer = db
++          .prepare("SELECT * FROM docs_sales_buyers WHERE id=?")
++          .get(e.user.id),
++        u = e.user;
++      if (!buyer || e.observedAt > buyer.observed_at)
++        db.prepare(
++          "INSERT INTO docs_sales_buyers VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,email=excluded.email,phone=excluded.phone,registered_at=COALESCE(docs_sales_buyers.registered_at,excluded.registered_at),observed_at=excluded.observed_at,search_text=excluded.search_text",
++        ).run(
++          u.id,
++          u.name,
++          u.email,
++          u.phone,
++          u.registeredAt,
++          e.observedAt,
++          [u.id, u.name, u.email, u.phone, u.phone.replace(/\D/g, "")]
++            .join(" ")
++            .toLowerCase(),
++        );
++      if (!old)
++        db.prepare(
++          "INSERT INTO docs_sales_purchases VALUES(?,?,?,?,?,?,?,?)",
++        ).run(
++          p.id,
++          u.id,
++          p.instructionId,
++          p.title,
++          p.format,
++          p.amountMinor,
++          p.createdAt,
++          stamp,
++        );
++      db.prepare("INSERT INTO docs_sales_receipts VALUES(?,?,?,?)").run(
++        e.eventId,
++        digest,
++        p.id,
++        stamp,
++      );
++      db.prepare(
++        "UPDATE docs_sales_connection SET last_received_at=? WHERE id=1",
++      ).run(stamp);
++      return { duplicate: !!old };
++    });
++    res.status(result.duplicate ? 200 : 201).json({
++      ok: true,
++      eventId: e.eventId,
++      externalId: e.user.id,
++      saleId: e.purchase.id,
++      duplicate: result.duplicate,
++    });
++  }
++  function heartbeat(req, res) {
++    authorize(req);
++    const b = req.body;
++    if (
++      !b ||
++      typeof b.scanOk !== "boolean" ||
++      !["sourceCount", "pending", "rejected"].every(
++        (k) => Number.isSafeInteger(b[k]) && b[k] >= 0,
++      ) ||
++      ![
++        "",
++        "wallet_read_failed",
++        "users_read_failed",
++        "invalid_source_data",
++        "delivery_delayed",
++        "source_count_decreased",
++      ].includes(b.errorCode || "")
++    )
++      throw bad("Некорректный статус доставки продаж.");
++    const sourceAt = customerDate(b.sourceGeneratedAt, { now: now() });
++    db.prepare(
++      "UPDATE docs_sales_connection SET last_heartbeat_at=?,source_generated_at=?,source_count=?,pending=?,rejected=?,scan_ok=?,error_code=? WHERE id=1",
++    ).run(
++      new Date(now()).toISOString(),
++      sourceAt,
++      b.sourceCount,
++      b.pending,
++      b.rejected,
++      Number(b.scanOk),
++      b.errorCode || "",
++    );
++    res.json({ ok: true, source: "boykovdocs-sales" });
++  }
++  function filters(req) {
++    const period = String(req.query.period || "total"),
++      format = String(req.query.format || "all"),
++      range = salesRange(period, now());
++    if (!["all", "pdf", "docx"].includes(format))
++      throw bad("Выберите формат инструкции.");
++    const where = ["p.created_at<=?"],
++      args = [range.end];
++    if (range.start) {
++      where.push("p.created_at>=?");
++      args.push(range.start);
++    }
++    if (format !== "all") {
++      where.push("p.format=?");
++      args.push(format);
++    }
++    return { period, format, range, where, args };
++  }
++  const condition = (f) => " WHERE " + f.where.join(" AND ");
++  function totals(f) {
++    return db
++      .prepare(
++        "SELECT count(*) count,COALESCE(SUM(p.amount_minor),0) amountMinor,count(DISTINCT p.buyer_id) buyers,count(DISTINCT p.instruction_id) instructions,COALESCE(SUM(p.format='pdf'),0) pdf,COALESCE(SUM(p.format='docx'),0) docx,MIN(p.created_at) firstPurchaseAt,MAX(p.created_at) lastPurchaseAt FROM docs_sales_purchases p" +
++          condition(f),
++      )
++      .get(...f.args);
++  }
++  function pagination(req, total) {
++    const n = Number(req.query.page || 1);
++    if (!Number.isSafeInteger(n) || n < 1 || n > 100000)
++      throw bad("Проверьте номер страницы.");
++    const pages = Math.max(1, Math.ceil(total / 25));
++    return { page: Math.min(n, pages), pages, total };
++  }
++  function buyerView(row) {
++    return {
++      id: row.id,
++      name: row.name,
++      email: row.email,
++      phone: row.phone,
++      registeredAt: row.registered_at,
++      customerId: row.customer_deleted ? null : row.customer_id || null,
++      customerInTrash: !!row.customer_deleted,
++    };
++  }
++  function chart(f, t) {
++    const start = f.range.start || t.firstPurchaseAt;
++    if (!start) return { unit: "day", items: [] };
++    const first = moscowDay(Date.parse(start)),
++      last = moscowDay(now()),
++      monthly = (Date.parse(last) - Date.parse(first)) / 86400000 > 120;
++    const unit = monthly ? "month" : "day",
++      size = monthly ? 7 : 10;
++    const rows = db
++        .prepare(
++          "SELECT substr(datetime(p.created_at,'+3 hours'),1," +
++            size +
++            ") key,count(*) count,SUM(p.amount_minor) amountMinor FROM docs_sales_purchases p" +
++            condition(f) +
++            " GROUP BY key ORDER BY key",
++        )
++        .all(...f.args),
++      byKey = new Map(rows.map((r) => [r.key, r]));
++    const items = [];
++    let cursor = first.slice(0, size),
++      limit = last.slice(0, size);
++    while (cursor <= limit) {
++      items.push(
++        byKey.get(cursor) || { key: cursor, count: 0, amountMinor: 0 },
++      );
++      cursor = monthly
++        ? new Date(
++            Date.UTC(Number(cursor.slice(0, 4)), Number(cursor.slice(5, 7)), 1),
++          )
++            .toISOString()
++            .slice(0, 7)
++        : new Date(Date.parse(cursor + "T12:00:00Z") + 86400000)
++            .toISOString()
++            .slice(0, 10);
++    }
++    return { unit, items };
++  }
++  function report(req) {
++    const f = filters(req),
++      summary = totals(f),
++      q = customerText(req.query.q, 300).toLowerCase(),
++      sort = String(req.query.sort || "purchases");
++    if (!["purchases", "amount", "recent"].includes(sort))
++      throw bad("Проверьте сортировку покупателей.");
++    const filtered = { where: [...f.where], args: [...f.args] };
++    if (q) {
++      filtered.where.push("b.search_text LIKE ? ESCAPE '\\'");
++      filtered.args.push("%" + q.replace(/[\\%_]/g, "\\$&") + "%");
++    }
++    const join =
++      " FROM docs_sales_purchases p JOIN docs_sales_buyers b ON b.id=p.buyer_id LEFT JOIN docs_customers c ON c.external_id=b.id";
++    const total = db
++        .prepare("SELECT count(DISTINCT b.id) n" + join + condition(filtered))
++        .get(...filtered.args).n,
++      page = pagination(req, total);
++    const rows = db
++      .prepare(
++        "SELECT b.*,c.id customer_id,c.deleted_at customer_deleted,count(*) purchaseCount,count(DISTINCT p.instruction_id) uniqueInstructions,SUM(p.amount_minor) amountMinor,MAX(p.created_at) lastPurchaseAt,SUM(p.format='pdf') pdf,SUM(p.format='docx') docx" +
++          join +
++          condition(filtered) +
++          " GROUP BY b.id ORDER BY " +
++          {
++            purchases:
++              "purchaseCount DESC,amountMinor DESC,lastPurchaseAt DESC",
++            amount: "amountMinor DESC,purchaseCount DESC,lastPurchaseAt DESC",
++            recent: "lastPurchaseAt DESC,purchaseCount DESC",
++          }[sort] +
++          ",b.id LIMIT 25 OFFSET ?",
++      )
++      .all(...filtered.args, (page.page - 1) * 25);
++    const topInstructions = db
++      .prepare(
++        "SELECT p.instruction_id id,p.title,count(*) count,SUM(p.amount_minor) amountMinor FROM docs_sales_purchases p" +
++          condition(f) +
++          " GROUP BY p.instruction_id ORDER BY count DESC,amountMinor DESC,p.instruction_id LIMIT 10",
++      )
++      .all(...f.args);
++    return {
++      range: f.range,
++      format: f.format,
++      summary,
++      connection: connection(),
++      chart: chart(f, summary),
++      topInstructions,
++      buyers: rows.map((r) => ({
++        ...buyerView(r),
++        purchaseCount: r.purchaseCount,
++        uniqueInstructions: r.uniqueInstructions,
++        amountMinor: r.amountMinor,
++        lastPurchaseAt: r.lastPurchaseAt,
++        pdf: r.pdf,
++        docx: r.docx,
++      })),
++      ...page,
++    };
++  }
++  function buyer(req) {
++    const id = customerText(req.params.id, 160, true),
++      row = db
++        .prepare(
++          "SELECT b.*,c.id customer_id,c.deleted_at customer_deleted FROM docs_sales_buyers b LEFT JOIN docs_customers c ON c.external_id=b.id WHERE b.id=?",
++        )
++        .get(id);
++    if (!row) throw bad("Покупатель не найден.", 404);
++    const f = filters(req);
++    f.where.push("p.buyer_id=?");
++    f.args.push(id);
++    const summary = totals(f),
++      page = pagination(req, summary.count);
++    const purchases = db
++      .prepare(
++        "SELECT id,instruction_id instructionId,title,format,amount_minor amountMinor,created_at createdAt FROM docs_sales_purchases p" +
++          condition(f) +
++          " ORDER BY p.created_at DESC,p.id LIMIT 25 OFFSET ?",
++      )
++      .all(...f.args, (page.page - 1) * 25);
++    const lifetime = totals({
++      where: ["p.buyer_id=?", "p.created_at<=?"],
++      args: [id, new Date(now()).toISOString()],
++    });
++    return {
++      buyer: buyerView(row),
++      range: f.range,
++      format: f.format,
++      summary,
++      lifetime,
++      purchases,
++      ...page,
++    };
++  }
++  function register(app) {
++    app.get(
++      "/api/docs-sales/report",
++      wrap((req, res) => res.json(report(req))),
++    );
++    app.get(
++      "/api/docs-sales/buyers/:id",
++      wrap((req, res) => res.json(buyer(req))),
++    );
++  }
++  return {
++    register,
++    connection,
++    receive: wrap(receive),
++    heartbeat: wrap(heartbeat),
++    handshake: wrap((req, res) => {
++      authorize(req);
++      res.json({
++        ok: true,
++        source: "boykovdocs-sales",
++        protocol: 1,
++        scope: "all-purchases",
++      });
++    }),
++  };
++}
+diff --git a/shared/docs-sales.js b/shared/docs-sales.js
+new file mode 100644
+index 0000000..c073a5c
+--- /dev/null
++++ b/shared/docs-sales.js
+@@ -0,0 +1,76 @@
++import { customerDate, customerText } from "./docs-customers.js";
++const invalid = () =>
++  Object.assign(new Error("Проверьте данные покупки BoykovDocs."), {
++    status: 400,
++  });
++export function normalizeDocsSale(input, now = Date.now()) {
++  if (
++    !input ||
++    typeof input !== "object" ||
++    Array.isArray(input) ||
++    input.protocol !== 1
++  )
++    throw invalid();
++  const eventId = customerText(input.eventId, 160, true);
++  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(eventId)) throw invalid();
++  const u = input.user,
++    p = input.purchase;
++  if (!u || !p || Array.isArray(u) || Array.isArray(p)) throw invalid();
++  const id = customerText(u.id, 160, true);
++  if (!/^[A-Za-z0-9_-]+$/.test(id) || p.userId !== id) throw invalid();
++  const user = {
++    id,
++    name: customerText(u.name, 200),
++    phone: customerText(u.phone, 80),
++    email: customerText(u.email, 254),
++    registeredAt: customerDate(u.registeredAt, { nullable: true, now }),
++  };
++  if (user.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user.email))
++    throw invalid();
++  const purchase = {
++    id: customerText(p.id, 160, true),
++    userId: id,
++    instructionId: customerText(p.instructionId, 200, true),
++    title: customerText(p.title, 500, true),
++    format: p.format === undefined ? "pdf" : p.format,
++    amountMinor: p.amountMinor,
++    currency: "RUB",
++    createdAt: customerDate(p.createdAt, { now }),
++  };
++  if (
++    !/^[A-Za-z0-9_-]+$/.test(purchase.id) ||
++    !["pdf", "docx"].includes(purchase.format) ||
++    !Number.isSafeInteger(purchase.amountMinor) ||
++    purchase.amountMinor <= 0 ||
++    purchase.amountMinor > 1000000000 ||
++    p.currency !== "RUB"
++  )
++    throw invalid();
++  return {
++    protocol: 1,
++    eventId,
++    observedAt: customerDate(input.observedAt, { now }),
++    user,
++    purchase,
++  };
++}
++export const SALES_PERIODS = {
++  today: 1,
++  "7d": 7,
++  "30d": 30,
++  "90d": 90,
++  total: null,
++};
++export const moscowDay = (ms) =>
++  new Date(ms + 10800000).toISOString().slice(0, 10);
++export function salesRange(period, now = Date.now()) {
++  if (!Object.hasOwn(SALES_PERIODS, period)) throw invalid();
++  const end = new Date(now).toISOString(),
++    days = SALES_PERIODS[period];
++  const start = days
++    ? new Date(
++        Date.parse(moscowDay(now) + "T00:00:00+03:00") - (days - 1) * 86400000,
++      ).toISOString()
++    : null;
++  return { period, start, end, timeZone: "Europe/Moscow" };
++}
+diff --git a/src/pages/DocsSales.css b/src/pages/DocsSales.css
+new file mode 100644
+index 0000000..cfaf9d2
+--- /dev/null
++++ b/src/pages/DocsSales.css
+@@ -0,0 +1,423 @@
++.docs-subtabs {
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  padding: 5px;
++  background: #eaece5;
++  border-radius: 12px;
++  width: fit-content;
++  margin: 0 0 26px;
++}
++.docs-subtabs button {
++  padding: 11px 19px;
++  display: flex;
++  gap: 8px;
++  align-items: center;
++  border-radius: 9px;
++  font-size: 14px;
++}
++.docs-subtabs button[aria-selected="true"] {
++  background: var(--ink);
++  color: #fff;
++}
++.ds-heading {
++  display: flex;
++  justify-content: space-between;
++  align-items: flex-start;
++  gap: 20px;
++  margin: 0 0 24px;
++}
++.ds-heading h2 {
++  font-size: 27px;
++  font-weight: 500;
++  margin: 0 0 9px;
++  letter-spacing: -0.8px;
++}
++.ds-heading p,
++.ds-muted {
++  font-size: 14px;
++  line-height: 1.8;
++  color: #6c7365;
++  margin: 0;
++}
++.ds-periods {
++  flex-shrink: 0;
++  flex-wrap: wrap;
++}
++.ds-metric strong {
++  font-size: clamp(27px, 2.8vw, 39px);
++  overflow-wrap: anywhere;
++}
++.ds-definition {
++  font-size: 14px;
++  color: #6a7164;
++  line-height: 1.8;
++  margin: 0 0 22px;
++}
++.ds-overview {
++  display: grid;
++  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
++  gap: 18px;
++  margin: 0 0 24px;
++}
++.ds-panel {
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 24px;
++  background: #fff;
++  min-width: 0;
++}
++.ds-panel-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 15px;
++  margin: 0 0 20px;
++}
++.ds-panel-head h3,
++.ds-buyers h3,
++.ds-history-heading h3 {
++  font-size: 20px;
++  font-weight: 500;
++  letter-spacing: -0.5px;
++  margin: 0;
++}
++.ds-panel-head > span {
++  font-size: 12px;
++  color: #747b6d;
++  white-space: nowrap;
++}
++.ds-chart {
++  display: block;
++  width: 100%;
++  overflow: visible;
++}
++.ds-chart text {
++  font-family: inherit;
++  font-size: 13px;
++  fill: #717968;
++}
++.ds-chart-grid {
++  stroke: #e8eadf;
++  stroke-width: 1;
++}
++.ds-chart-bar {
++  fill: #e7bacd;
++}
++.ds-chart-bar.selected,
++.ds-chart g:hover .ds-chart-bar,
++.ds-chart g:focus .ds-chart-bar {
++  fill: #a6bc67;
++}
++.ds-chart-hit {
++  fill: transparent;
++}
++.ds-chart g:focus {
++  outline: 2px solid #a67388;
++  outline-offset: 2px;
++}
++.ds-chart-caption {
++  display: flex;
++  gap: 15px;
++  align-items: center;
++  flex-wrap: wrap;
++  font-size: 14px;
++  color: #6d7564;
++  border-top: 1px solid var(--line);
++  padding-top: 16px;
++}
++.ds-chart-caption strong {
++  font-weight: 500;
++  color: var(--ink);
++}
++.ds-top {
++  display: grid;
++  gap: 0;
++  max-height: 270px;
++  overflow: auto;
++}
++.ds-top > div {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto auto;
++  align-items: center;
++  gap: 14px;
++  padding: 13px 0;
++  border-top: 1px solid var(--line);
++}
++.ds-top > div:first-child {
++  border-top: 0;
++  padding-top: 0;
++}
++.ds-top > div > span {
++  font-size: 14px;
++  line-height: 1.7;
++  display: -webkit-box;
++  -webkit-line-clamp: 2;
++  -webkit-box-orient: vertical;
++  overflow: hidden;
++}
++.ds-top strong {
++  font-weight: 600;
++  font-size: 15px;
++}
++.ds-top small {
++  font-size: 13px;
++  color: #72796a;
++}
++.ds-buyers-heading {
++  padding: 24px 24px 0;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 12px;
++}
++.ds-buyers-heading > span {
++  font-size: 13px;
++  color: #72796a;
++}
++.ds-buyers .dc-toolbar {
++  gap: 16px;
++  align-items: center;
++}
++.ds-buyers .dc-sort {
++  flex-direction: column;
++  gap: 7px;
++  align-items: flex-start;
++  font-weight: 500;
++}
++.ds-buyers .dc-search {
++  align-self: flex-end;
++}
++.ds-buyer-head,
++.ds-buyer-row {
++  display: grid;
++  grid-template-columns:
++    minmax(210px, 1.5fr) minmax(120px, 0.7fr) minmax(100px, 0.65fr)
++    minmax(135px, 0.8fr) auto;
++  align-items: center;
++  gap: 18px;
++  padding: 20px 24px;
++}
++.ds-buyer-head {
++  background: #f7f8f3;
++  color: #6e7665;
++  font-size: 13px;
++  padding-top: 13px;
++  padding-bottom: 13px;
++  border-top: 1px solid var(--line);
++}
++.ds-buyer-row {
++  border-top: 1px solid var(--line);
++}
++.ds-buyer-row .dc-contact-links small {
++  font-size: 12px;
++  color: #747c6d;
++  overflow-wrap: anywhere;
++}
++.ds-count {
++  display: grid;
++  gap: 4px;
++}
++.ds-count strong {
++  font-size: 22px;
++  font-weight: 500;
++}
++.ds-count span {
++  font-size: 13px;
++  color: #606957;
++}
++.ds-count small {
++  font-size: 12px;
++  color: #78816f;
++}
++.ds-amount {
++  font-size: 16px;
++  font-weight: 500;
++}
++.ds-date {
++  font-size: 13px;
++  color: #6d7663;
++  line-height: 1.8;
++}
++.ds-buyer-row > .button {
++  font-size: 14px;
++}
++.ds-buyer-contact {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 18px;
++  margin: 0 0 24px;
++}
++.ds-buyer-contact small {
++  font-size: 12px;
++  color: #757c6d;
++}
++.ds-buyer-totals {
++  display: grid;
++  grid-template-columns: repeat(3, minmax(0, 1fr));
++  gap: 13px;
++  margin: 0 0 28px;
++}
++.ds-buyer-totals > div {
++  border: 1px solid var(--line);
++  border-radius: 11px;
++  background: #f6f8ee;
++  padding: 18px;
++  display: grid;
++  gap: 10px;
++}
++.ds-buyer-totals > div:nth-child(2) {
++  background: #fbf0f4;
++}
++.ds-buyer-totals span {
++  font-size: 13px;
++  color: #69715e;
++}
++.ds-buyer-totals strong {
++  font-size: 27px;
++  font-weight: 500;
++  overflow-wrap: anywhere;
++}
++.ds-history-heading {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 16px;
++  margin: 0 0 18px;
++}
++.ds-history-heading > span {
++  font-size: 13px;
++  color: #727b67;
++}
++.ds-purchase-list > article {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto auto;
++  gap: 20px;
++  align-items: center;
++  border-top: 1px solid var(--line);
++  padding: 18px 0;
++}
++.ds-purchase-list strong {
++  font-size: 16px;
++  font-weight: 500;
++  line-height: 1.8;
++}
++.ds-purchase-list small {
++  display: block;
++  font-size: 12px;
++  color: #76806b;
++  margin-top: 7px;
++  overflow-wrap: anywhere;
++}
++.ds-format {
++  font-size: 13px;
++  padding: 5px 10px;
++  border-radius: 6px;
++  background: #eff3e0;
++  color: #536732;
++}
++.ds-format.docx {
++  background: #f6e4eb;
++  color: #83516a;
++}
++@media (max-width: 1200px) {
++  .ds-heading {
++    flex-direction: column;
++  }
++  .ds-buyer-head,
++  .ds-buyer-row {
++    grid-template-columns:
++      minmax(200px, 1.4fr) minmax(110px, 0.7fr) minmax(90px, 0.65fr)
++      auto;
++  }
++  .ds-buyer-head span:nth-child(4) {
++    display: none;
++  }
++  .ds-date {
++    grid-column: 1;
++    padding-left: 52px;
++  }
++  .ds-buyer-row > .button {
++    grid-column: 4;
++    grid-row: 1;
++  }
++}
++@media (max-width: 900px) {
++  .ds-overview {
++    grid-template-columns: 1fr;
++  }
++  .ds-buyers .dc-toolbar {
++    flex-wrap: wrap;
++  }
++  .ds-buyers .dc-search {
++    flex-basis: 100%;
++  }
++  .ds-buyers .dc-sort {
++    flex: 1;
++  }
++  .ds-buyers .dc-sort select {
++    width: 100%;
++  }
++}
++@media (max-width: 650px) {
++  .ds-buyer-head {
++    display: none;
++  }
++  .ds-buyer-row {
++    grid-template-columns: 1fr auto;
++    padding: 20px 18px;
++  }
++  .ds-buyer-row > .dc-user-cell {
++    grid-column: 1/-1;
++  }
++  .ds-count {
++    grid-column: 1;
++    grid-row: 2;
++    padding-left: 52px;
++  }
++  .ds-amount {
++    grid-column: 2;
++    grid-row: 2;
++  }
++  .ds-date {
++    grid-row: 3;
++    grid-column: 1;
++  }
++  .ds-buyer-row > .button {
++    grid-row: 3;
++    grid-column: 2;
++  }
++  .ds-periods {
++    gap: 2px;
++  }
++  .ds-periods button {
++    padding: 9px 10px;
++  }
++  .ds-buyer-contact,
++  .ds-history-heading {
++    flex-direction: column;
++    align-items: flex-start;
++  }
++  .ds-buyer-totals {
++    grid-template-columns: 1fr;
++  }
++  .ds-buyer-totals > div {
++    display: flex;
++    justify-content: space-between;
++    align-items: center;
++  }
++  .ds-purchase-list > article {
++    grid-template-columns: minmax(0, 1fr) auto;
++    gap: 10px;
++  }
++  .ds-purchase-list > article > div {
++    grid-column: 1/-1;
++  }
++  .ds-panel {
++    padding: 20px;
++  }
++  .ds-buyers-heading {
++    padding: 20px 18px 0;
++  }
++}
+diff --git a/src/pages/DocsSales.tsx b/src/pages/DocsSales.tsx
+new file mode 100644
+index 0000000..3c4f8bf
+--- /dev/null
++++ b/src/pages/DocsSales.tsx
+@@ -0,0 +1,759 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import {
++  BookOpen,
++  FileText,
++  Search,
++  ShoppingBag,
++  UsersRound,
++  X,
++} from "lucide-react";
++import { api, dateTime, errorText, number } from "../api";
++import { Empty, Loading, Notice, TitleDot } from "../components/Common";
++import { initials } from "../identity";
++import "./DocsSales.css";
++type Totals = {
++  count: number;
++  amountMinor: number;
++  buyers: number;
++  instructions: number;
++  pdf: number;
++  docx: number;
++  firstPurchaseAt: string | null;
++  lastPurchaseAt: string | null;
++};
++type Buyer = {
++  id: string;
++  name: string;
++  email: string;
++  phone: string;
++  registeredAt: string | null;
++  customerId: string | null;
++  customerInTrash: boolean;
++};
++type BuyerRow = Buyer & {
++  purchaseCount: number;
++  uniqueInstructions: number;
++  amountMinor: number;
++  lastPurchaseAt: string;
++  pdf: number;
++  docx: number;
++};
++type ChartItem = { key: string; count: number; amountMinor: number };
++type Report = {
++  range: {
++    period: string;
++    start: string | null;
++    end: string;
++    timeZone: string;
++  };
++  summary: Totals;
++  format: string;
++  connection: {
++    status: string;
++    lastHeartbeatAt: string | null;
++    lastReceivedAt: string | null;
++    sourceCount: number;
++    storedCount: number;
++    pending: number;
++    rejected: number;
++    errorCode: string;
++  };
++  chart: { unit: string; items: ChartItem[] };
++  topInstructions: {
++    id: string;
++    title: string;
++    count: number;
++    amountMinor: number;
++  }[];
++  buyers: BuyerRow[];
++  page: number;
++  pages: number;
++  total: number;
++};
++type BuyerDetail = {
++  buyer: Buyer;
++  range: Report["range"];
++  format: string;
++  summary: Totals;
++  lifetime: Totals;
++  purchases: {
++    id: string;
++    instructionId: string;
++    title: string;
++    format: string;
++    amountMinor: number;
++    createdAt: string;
++  }[];
++  page: number;
++  pages: number;
++  total: number;
++};
++const money = (n: number) =>
++  new Intl.NumberFormat("ru-RU", {
++    style: "currency",
++    currency: "RUB",
++    maximumFractionDigits: n % 100 ? 2 : 0,
++  }).format(n / 100);
++const counted = (n: number, forms: [string, string, string]) => {
++  const hundred = n % 100,
++    ten = n % 10;
++  return (
++    number(n) +
++    " " +
++    forms[
++      hundred >= 11 && hundred <= 14
++        ? 2
++        : ten === 1
++          ? 0
++          : ten >= 2 && ten <= 4
++            ? 1
++            : 2
++    ]
++  );
++};
++const periods = [
++  ["total", "Всё время"],
++  ["today", "Сегодня"],
++  ["7d", "7 дней"],
++  ["30d", "30 дней"],
++  ["90d", "90 дней"],
++];
++const periodName = (v: string) =>
++  periods.find((p) => p[0] === v)?.[1] || "Всё время";
++const statuses: Record<string, string> = {
++  unconfigured: "Ожидает подключения",
++  waiting: "Ожидает первого запуска",
++  online: "Продажи синхронизированы",
++  syncing: "Загружаем историю продаж",
++  offline: "Нет связи с источником",
++  attention: "Нужна проверка продаж",
++};
++function Contacts({ buyer }: { buyer: Buyer }) {
++  return (
++    <div className="dc-contact-links">
++      {buyer.phone && (
++        <a href={"tel:" + buyer.phone.replace(/[^+\d]/g, "")}>{buyer.phone}</a>
++      )}
++      {buyer.email && (
++        <a href={"mailto:" + encodeURIComponent(buyer.email)}>{buyer.email}</a>
++      )}
++      <small>ID {buyer.id}</small>
++    </div>
++  );
++}
++function SalesChart({ chart }: { chart: Report["chart"] }) {
++  const [selected, setSelected] = useState<string | null>(null),
++    items = chart.items,
++    max = Math.max(1, ...items.map((i) => i.count)),
++    cell = 720 / Math.max(1, items.length),
++    bar = Math.min(48, cell * 0.65),
++    current = items.find((i) => i.key === selected) || items.at(-1);
++  const label = (key: string) =>
++    key.length === 7
++      ? key.slice(5) + "." + key.slice(0, 4)
++      : key.slice(8) + "." + key.slice(5, 7);
++  return (
++    <section className="ds-panel">
++      <div className="ds-panel-head">
++        <h3>Динамика продаж</h3>
++        <span>{chart.unit === "month" ? "По месяцам" : "По дням"}</span>
++      </div>
++      {!items.length ? (
++        <p className="ds-muted">График появится после синхронизации покупок.</p>
++      ) : (
++        <>
++          <svg
++            className="ds-chart"
++            viewBox="0 0 800 205"
++            role="img"
++            aria-label="Количество покупок по датам"
++          >
++            <line x1="44" x2="764" y1="26" y2="26" className="ds-chart-grid" />
++            <line
++              x1="44"
++              x2="764"
++              y1="161"
++              y2="161"
++              className="ds-chart-grid"
++            />
++            <text x="7" y="30">
++              {number(max)}
++            </text>
++            <text x="14" y="164">
++              0
++            </text>
++            {items.map((i, n) => {
++              const h = (i.count / max) * 135,
++                x = 44 + n * cell + (cell - bar) / 2;
++              return (
++                <g
++                  key={i.key}
++                  tabIndex={0}
++                  role="img"
++                  aria-label={`${i.key}: покупок ${i.count}, ${money(i.amountMinor)}`}
++                  onMouseEnter={() => setSelected(i.key)}
++                  onFocus={() => setSelected(i.key)}
++                >
++                  <title>
++                    {i.key}: {i.count} · {money(i.amountMinor)}
++                  </title>
++                  <rect
++                    x={44 + n * cell}
++                    y="21"
++                    width={cell}
++                    height="145"
++                    className="ds-chart-hit"
++                  />
++                  <rect
++                    x={x}
++                    y={161 - h}
++                    width={bar}
++                    height={Math.max(h, 1)}
++                    rx="3"
++                    className={
++                      "ds-chart-bar" +
++                      (current?.key === i.key ? " selected" : "")
++                    }
++                  />
++                </g>
++              );
++            })}
++            {[
++              ...new Set([
++                0,
++                Math.floor((items.length - 1) / 2),
++                items.length - 1,
++              ]),
++            ].map((n) => (
++              <text
++                key={n}
++                x={44 + n * cell + cell / 2}
++                y="188"
++                textAnchor="middle"
++              >
++                {label(items[n].key)}
++              </text>
++            ))}
++          </svg>
++          {current && (
++            <div className="ds-chart-caption">
++              <span>{current.key}</span>
++              <strong>
++                {counted(current.count, ["покупка", "покупки", "покупок"])}
++              </strong>
++              <span>{money(current.amountMinor)}</span>
++            </div>
++          )}
++        </>
++      )}
++    </section>
++  );
++}
++export default function DocsSales({
++  active,
++  refreshKey,
++  onOpenCustomer,
++}: {
++  active: boolean;
++  refreshKey: number;
++  onOpenCustomer: (id: string) => void;
++}) {
++  const [data, setData] = useState<Report | null>(null),
++    [error, setError] = useState(""),
++    [period, setPeriod] = useState("total"),
++    [format, setFormat] = useState("all"),
++    [query, setQuery] = useState(""),
++    [search, setSearch] = useState(""),
++    [sort, setSort] = useState("purchases"),
++    [page, setPage] = useState(1),
++    [buyer, setBuyer] = useState<string | null>(null);
++  const generation = useRef(0);
++  // A failed filter request must not present the previous period as the new report.
++  useEffect(() => {
++    setData(null);
++  }, [period, format, search, sort, page]);
++  useEffect(() => {
++    const timer = setTimeout(() => {
++      setSearch(query.trim());
++      setPage(1);
++    }, 250);
++    return () => clearTimeout(timer);
++  }, [query]);
++  const refresh = useCallback(async () => {
++    const n = ++generation.current;
++    try {
++      const params = new URLSearchParams({
++          period,
++          format,
++          q: search,
++          sort,
++          page: String(page),
++        }),
++        r = await api<Report>("/docs-sales/report?" + params);
++      if (n === generation.current) {
++        setData(r);
++        setError("");
++      }
++    } catch (e) {
++      if (n === generation.current) setError(errorText(e));
++    }
++  }, [period, format, search, sort, page]);
++  useEffect(() => {
++    if (!active) {
++      setBuyer(null);
++      return;
++    }
++    void refresh();
++    const timer = setInterval(() => {
++      if (!document.hidden) void refresh();
++    }, 30000);
++    return () => {
++      generation.current++;
++      clearInterval(timer);
++    };
++  }, [active, refresh, refreshKey]);
++  const ready =
++    data &&
++    (!["unconfigured", "waiting"].includes(data.connection.status) ||
++      data.summary.count > 0);
++  return (
++    <div className="ds-page">
++      <div className="ds-heading">
++        <div>
++          <h2>
++            Продажи инструкций
++            <TitleDot />
++          </h2>
++          <p>Покупки PDF и Word с привязкой к пользователю BoykovDocs.</p>
++        </div>
++        <div className="dc-tabs ds-periods" aria-label="Период продаж">
++          {periods.map(([key, label]) => (
++            <button
++              key={key}
++              aria-pressed={period === key}
++              className={period === key ? "selected" : ""}
++              onClick={() => {
++                setPeriod(key);
++                setPage(1);
++              }}
++            >
++              {label}
++            </button>
++          ))}
++        </div>
++      </div>
++      {error && <Notice tone="error">{error}</Notice>}
++      {!data ? (
++        <Loading />
++      ) : (
++        <>
++          <div className="dc-metrics ds-metrics">
++            {[
++              [
++                "Куплено инструкций",
++                number(data.summary.count),
++                ShoppingBag,
++                "lime",
++              ],
++              [
++                "Сумма покупок",
++                money(data.summary.amountMinor),
++                BookOpen,
++                "pink",
++              ],
++              ["Покупатели", number(data.summary.buyers), UsersRound, ""],
++              [
++                "Уникальные инструкции",
++                number(data.summary.instructions),
++                FileText,
++                "",
++              ],
++            ].map(([label, value, Icon, tone]) => {
++              const Glyph = Icon as typeof ShoppingBag;
++              return (
++                <div
++                  className={"dc-metric ds-metric " + tone}
++                  key={String(label)}
++                >
++                  <span>
++                    {String(label)}
++                    <Glyph size={19} />
++                  </span>
++                  <strong>{ready ? String(value) : "—"}</strong>
++                  <div className="dc-metric-decoration" aria-hidden="true" />
++                </div>
++              );
++            })}
++          </div>
++          <div className="dc-connection ds-connection">
++            <span className={"dc-health " + data.connection.status}>
++              <i />
++              {statuses[data.connection.status]}
++            </span>
++            <span>{periodName(period)} · Москва</span>
++            {data.connection.lastHeartbeatAt && (
++              <span>Сверено {dateTime(data.connection.lastHeartbeatAt)}</span>
++            )}
++            {data.connection.pending > 0 && (
++              <span>В очереди: {number(data.connection.pending)}</span>
++            )}
++          </div>
++          {["unconfigured", "waiting"].includes(data.connection.status) && (
++            <Notice>
++              Продажи ещё не синхронизированы. Администратор может подключить
++              источник на сервере BoykovDocs.
++            </Notice>
++          )}
++          {["attention", "offline"].includes(data.connection.status) && (
++            <Notice tone="error">
++              Нет подтверждения полноты статистики продаж. Проверьте доставку на
++              сервере BoykovDocs. Получено покупок:{" "}
++              {number(data.connection.storedCount)}, в источнике при последней
++              проверке: {number(data.connection.sourceCount)}.
++            </Notice>
++          )}
++          <p className="ds-definition">
++            PDF и Word считаются отдельными покупками. Повторные скачивания не
++            увеличивают продажи. Показатели за выбранный период: PDF —{" "}
++            {number(data.summary.pdf)}, Word — {number(data.summary.docx)}.
++          </p>
++          <div className="ds-overview">
++            <SalesChart chart={data.chart} />
++            <section className="ds-panel">
++              <div className="ds-panel-head">
++                <h3>Популярные инструкции</h3>
++                <span>По покупкам</span>
++              </div>
++              {!data.topInstructions.length ? (
++                <p className="ds-muted">Покупок за этот период пока нет.</p>
++              ) : (
++                <div className="ds-top">
++                  {data.topInstructions.map((i) => (
++                    <div key={i.id}>
++                      <span title={i.title}>{i.title}</span>
++                      <strong>{number(i.count)}</strong>
++                      <small>{money(i.amountMinor)}</small>
++                    </div>
++                  ))}
++                </div>
++              )}
++            </section>
++          </div>
++          <section
++            className="dc-directory ds-buyers"
++            aria-label="Покупатели инструкций"
++          >
++            <div className="ds-buyers-heading">
++              <h3>Кто и сколько купил</h3>
++              <span>
++                {counted(data.total, [
++                  "покупатель",
++                  "покупателя",
++                  "покупателей",
++                ])}
++              </span>
++            </div>
++            <div className="dc-toolbar">
++              <label className="dc-search">
++                <Search size={19} />
++                <input
++                  aria-label="Поиск покупателей"
++                  placeholder="Имя, телефон, почта или ID"
++                  value={query}
++                  onChange={(e) => setQuery(e.target.value)}
++                  maxLength={300}
++                />
++              </label>
++              <label className="dc-sort">
++                Формат
++                <select
++                  aria-label="Формат покупок"
++                  value={format}
++                  onChange={(e) => {
++                    setFormat(e.target.value);
++                    setPage(1);
++                  }}
++                >
++                  <option value="all">Все форматы</option>
++                  <option value="pdf">PDF</option>
++                  <option value="docx">Word</option>
++                </select>
++              </label>
++              <label className="dc-sort">
++                Порядок
++                <select
++                  aria-label="Сортировка покупателей"
++                  value={sort}
++                  onChange={(e) => {
++                    setSort(e.target.value);
++                    setPage(1);
++                  }}
++                >
++                  <option value="purchases">Больше покупок</option>
++                  <option value="amount">Больше сумма</option>
++                  <option value="recent">Последние покупки</option>
++                </select>
++              </label>
++            </div>
++            {!data.buyers.length ? (
++              <Empty
++                title={
++                  search
++                    ? "Покупатели не найдены"
++                    : "Покупок за этот период нет"
++                }
++                text={
++                  search
++                    ? "Попробуйте изменить поиск."
++                    : "Выберите другой период или дождитесь синхронизации."
++                }
++              />
++            ) : (
++              <>
++                <div className="ds-buyer-head">
++                  <span>Пользователь</span>
++                  <span>Покупки</span>
++                  <span>Сумма</span>
++                  <span>Последняя покупка</span>
++                  <span />
++                </div>
++                {data.buyers.map((b) => (
++                  <article className="ds-buyer-row" key={b.id}>
++                    <div className="dc-user-cell">
++                      <span className="dc-avatar">{initials(b.name)}</span>
++                      <div>
++                        <button
++                          className="dc-name"
++                          onClick={() => setBuyer(b.id)}
++                        >
++                          {b.name || "Пользователь без имени"}
++                        </button>
++                        <Contacts buyer={b} />
++                      </div>
++                    </div>
++                    <div className="ds-count">
++                      <strong>{number(b.purchaseCount)}</strong>
++                      <span>
++                        {counted(b.uniqueInstructions, [
++                          "уникальная",
++                          "уникальные",
++                          "уникальных",
++                        ])}
++                      </span>
++                      <small>
++                        PDF {number(b.pdf)} · Word {number(b.docx)}
++                      </small>
++                    </div>
++                    <strong className="ds-amount">
++                      {money(b.amountMinor)}
++                    </strong>
++                    <span className="ds-date">
++                      {dateTime(b.lastPurchaseAt, true)}
++                    </span>
++                    <button className="button" onClick={() => setBuyer(b.id)}>
++                      Покупки
++                    </button>
++                  </article>
++                ))}
++              </>
++            )}
++            <footer className="dc-pagination">
++              <span>Покупатели за выбранный период</span>
++              <div>
++                <button
++                  className="button"
++                  disabled={data.page <= 1}
++                  onClick={() => setPage(data.page - 1)}
++                >
++                  Назад
++                </button>
++                <span>
++                  {data.page} / {data.pages}
++                </span>
++                <button
++                  className="button"
++                  disabled={data.page >= data.pages}
++                  onClick={() => setPage(data.page + 1)}
++                >
++                  Далее
++                </button>
++              </div>
++            </footer>
++          </section>
++        </>
++      )}
++      {buyer && (
++        <PurchaseDialog
++          key={buyer + period + format}
++          id={buyer}
++          period={period}
++          format={format}
++          onClose={() => setBuyer(null)}
++          onOpenCustomer={(id) => {
++            setBuyer(null);
++            onOpenCustomer(id);
++          }}
++        />
++      )}
++    </div>
++  );
++}
++function PurchaseDialog({
++  id,
++  period,
++  format,
++  onClose,
++  onOpenCustomer,
++}: {
++  id: string;
++  period: string;
++  format: string;
++  onClose: () => void;
++  onOpenCustomer: (id: string) => void;
++}) {
++  const ref = useRef<HTMLDialogElement>(null),
++    [data, setData] = useState<BuyerDetail | null>(null),
++    [page, setPage] = useState(1),
++    [error, setError] = useState("");
++  useEffect(() => {
++    ref.current?.showModal();
++  }, []);
++  useEffect(() => {
++    let disposed = false;
++    void api<BuyerDetail>(
++      "/docs-sales/buyers/" +
++        encodeURIComponent(id) +
++        "?" +
++        new URLSearchParams({ period, format, page: String(page) }),
++    )
++      .then((r) => {
++        if (!disposed) {
++          setData(r);
++          setError("");
++        }
++      })
++      .catch((e) => {
++        if (!disposed) setError(errorText(e));
++      });
++    return () => {
++      disposed = true;
++    };
++  }, [id, period, format, page]);
++  return (
++    <dialog
++      className="dc-dialog ds-dialog"
++      ref={ref}
++      aria-labelledby="ds-buyer-title"
++      onCancel={(e) => {
++        e.preventDefault();
++        onClose();
++      }}
++    >
++      <div className="dc-dialog-header">
++        <div>
++          <span className="eyebrow">BOYKOVDOCS · ПОКУПКИ ПОЛЬЗОВАТЕЛЯ</span>
++          <h2 id="ds-buyer-title">{data?.buyer.name || "Покупатель"}</h2>
++          <span className="dc-muted">ID пользователя: {id}</span>
++        </div>
++        <button
++          className="icon-button"
++          aria-label="Закрыть покупки"
++          onClick={onClose}
++        >
++          <X size={22} />
++        </button>
++      </div>
++      {error && <Notice tone="error">{error}</Notice>}
++      {!data ? (
++        <Loading />
++      ) : (
++        <>
++          <div className="ds-buyer-contact">
++            <Contacts buyer={data.buyer} />
++            {data.buyer.customerId && (
++              <button
++                className="button"
++                onClick={() => onOpenCustomer(data.buyer.customerId!)}
++              >
++                Карточка клиента
++              </button>
++            )}
++            {data.buyer.customerInTrash && (
++              <span className="dc-muted">Карточка клиента в корзине</span>
++            )}
++          </div>
++          <div className="ds-buyer-totals">
++            <div>
++              <span>{periodName(period)} · покупок</span>
++              <strong>{number(data.summary.count)}</strong>
++            </div>
++            <div>
++              <span>Сумма за период</span>
++              <strong>{money(data.summary.amountMinor)}</strong>
++            </div>
++            <div>
++              <span>Всего куплено за всё время</span>
++              <strong>{number(data.lifetime.count)}</strong>
++            </div>
++          </div>
++          <div className="ds-history-heading">
++            <h3>Приобретённые инструкции</h3>
++            <span>
++              {format === "all"
++                ? "Все форматы"
++                : format === "pdf"
++                  ? "PDF"
++                  : "Word"}{" "}
++              · время Москвы
++            </span>
++          </div>
++          {data.purchases.length ? (
++            <div className="ds-purchase-list">
++              {data.purchases.map((p) => (
++                <article key={p.id}>
++                  <div>
++                    <strong>{p.title}</strong>
++                    <small>
++                      {dateTime(p.createdAt, true)} · ID покупки {p.id}
++                    </small>
++                  </div>
++                  <span className={"ds-format " + p.format}>
++                    {p.format === "docx" ? "Word" : "PDF"}
++                  </span>
++                  <strong>{money(p.amountMinor)}</strong>
++                </article>
++              ))}
++            </div>
++          ) : (
++            <Empty
++              title="Покупок за этот период нет"
++              text="Другие покупки пользователя сохраняются в общей статистике."
++            />
++          )}
++          <footer className="dc-pagination">
++            <span>Покупок: {number(data.total)}</span>
++            <div>
++              <button
++                className="button"
++                disabled={data.page <= 1}
++                onClick={() => setPage(data.page - 1)}
++              >
++                Назад
++              </button>
++              <span>
++                {data.page} / {data.pages}
++              </span>
++              <button
++                className="button"
++                disabled={data.page >= data.pages}
++                onClick={() => setPage(data.page + 1)}
++              >
++                Далее
++              </button>
++            </div>
++          </footer>
++        </>
++      )}
++    </dialog>
++  );
++}
+diff --git a/tests/docs-sales.test.js b/tests/docs-sales.test.js
+new file mode 100644
+index 0000000..2171685
+--- /dev/null
++++ b/tests/docs-sales.test.js
+@@ -0,0 +1,547 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { randomUUID } from "node:crypto";
++import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { createApp } from "../server/app.js";
++import { hashPassword } from "../server/auth.js";
++import { createInitialAdmin } from "../server/accounts.js";
++import {
++  DocsSalesAgent,
++  validateSalesConnection,
++} from "../integrations/docs-customers/sales-agent.mjs";
++const NOW = Date.parse("2026-11-20T07:00:00.000Z"),
++  password = "docs-sales-fixture-password",
++  passwordHash = await hashPassword(password);
++const sample = (overrides = {}) => ({
++  protocol: 1,
++  eventId: randomUUID(),
++  observedAt: "2026-11-20T06:00:00.000Z",
++  user: {
++    id: "docs-buyer-1",
++    name: "Покупатель А",
++    email: "buyer@example.ru",
++    phone: "+7 999 111-22-33",
++    registeredAt: "2026-01-01T00:00:00.000Z",
++  },
++  purchase: {
++    id: "wp_" + randomUUID(),
++    userId: "docs-buyer-1",
++    instructionId: "instruction-1",
++    title: "Инструкция по охране труда",
++    amountMinor: 5000,
++    currency: "RUB",
++    format: "pdf",
++    createdAt: "2026-11-19T21:00:00.000Z",
++  },
++  ...overrides,
++});
++async function fixture(t) {
++  const directory = await mkdtemp(join(tmpdir(), "boykov-docs-sales-"));
++  const app = await createApp({
++    dataDir: directory,
++    passwordHash,
++    now: () => NOW,
++    secureCookies: false,
++    allowedOrigins: [],
++    worker: async () => Response.json({ jobs: [], ok: true }),
++    isConfigured: () => false,
++  });
++  await createInitialAdmin(app.locals.db, {
++    login: "sales-admin",
++    name: "Тестовый администратор",
++    password,
++  });
++  const server = app.listen(0, "127.0.0.1");
++  await new Promise((r) => server.once("listening", r));
++  const base = "http://127.0.0.1:" + server.address().port;
++  t.after(async () => {
++    await new Promise((r) => server.close(r));
++    app.locals.db.close();
++    await rm(directory, { recursive: true, force: true });
++  });
++  const request = (path, method = "GET", body, cookie = "") =>
++    fetch(base + "/api" + path, {
++      method,
++      headers: {
++        "Content-Type": "application/json",
++        "X-Boykov-Request": "1",
++        Cookie: cookie,
++      },
++      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
++    });
++  const login = await request("/auth/login", "POST", {
++      login: "sales-admin",
++      password,
++    }),
++    cookie = login.headers.get("set-cookie").split(";")[0];
++  const api = (path, method = "GET", body) =>
++    request(path, method, body, cookie);
++  const token = (
++    await (await api("/docs-customers/connection/key", "POST", {})).json()
++  ).token;
++  const hook = (data, path = "", key = token) =>
++    fetch(base + "/hooks/docs-customers/sales" + path, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + key,
++      },
++      body: JSON.stringify(data),
++    });
++  const ingest = async (e) => {
++    const r = await hook(e);
++    assert.equal(r.status, 201, await r.clone().text());
++    return r.json();
++  };
++  const report = async (query) => {
++    const r = await api("/docs-sales/report" + (query ? "?" + query : ""));
++    assert.equal(r.status, 200, await r.clone().text());
++    return r.json();
++  };
++  return { app, base, api, request, token, hook, ingest, report };
++}
++test("sales uses the existing private site key and workspace authentication; history does not import old CRM profiles", async (t) => {
++  const s = await fixture(t);
++  assert.equal((await s.request("/docs-sales/report")).status, 401);
++  assert.equal(
++    (await s.request("/docs-sales/buyers/docs-buyer-1")).status,
++    401,
++  );
++  assert.equal((await s.hook(sample(), "", "0".repeat(64))).status, 401);
++  assert.equal(
++    (await (await s.hook({}, "/handshake")).json()).scope,
++    "all-purchases",
++  );
++  const e = sample();
++  e.purchase.createdAt = "2026-01-02T10:00:00.000Z";
++  await s.ingest(e);
++  const r = await s.api("/docs-sales/report");
++  assert.match(r.headers.get("cache-control"), /no-store/);
++  const data = await r.json();
++  assert.equal(data.summary.count, 1);
++  assert.equal(data.summary.amountMinor, 5000);
++  assert.equal(data.buyers[0].id, e.user.id);
++  assert.equal(data.buyers[0].customerId, null);
++  assert.equal(
++    s.app.locals.db.prepare("SELECT count(*) n FROM docs_customers").get().n,
++    0,
++  );
++  assert.ok(!JSON.stringify(data).includes(s.token));
++});
++test("purchase delivery is idempotent and immutable; changed contacts cannot reassign an existing purchase", async (t) => {
++  const s = await fixture(t),
++    e = sample();
++  await s.ingest(e);
++  assert.equal((await s.hook(e)).status, 200);
++  const next = {
++    ...e,
++    eventId: randomUUID(),
++    observedAt: "2026-11-20T06:01:00.000Z",
++    user: { ...e.user, name: "Новое имя" },
++  };
++  assert.equal((await s.hook(next)).status, 200);
++  let r = await s.report();
++  assert.equal(r.summary.count, 1);
++  assert.equal(r.buyers[0].name, "Новое имя");
++  assert.equal(
++    (
++      await s.hook({
++        ...next,
++        eventId: randomUUID(),
++        purchase: { ...e.purchase, amountMinor: 10000 },
++      })
++    ).status,
++    409,
++  );
++  assert.equal(
++    (
++      await s.hook({
++        ...e,
++        eventId: randomUUID(),
++        user: { ...e.user, id: "someone-else" },
++        purchase: { ...e.purchase, userId: "someone-else" },
++      })
++    ).status,
++    409,
++  );
++  assert.equal(
++    (await s.hook({ ...e, user: { ...e.user, id: "wrong" } })).status,
++    400,
++  );
++  assert.equal(
++    (await s.hook({ ...e, purchase: { ...e.purchase, title: "Иной договор" } }))
++      .status,
++    409,
++  );
++  assert.equal(
++    (
++      await s.hook({
++        ...e,
++        eventId: randomUUID(),
++        purchase: { ...e.purchase, id: "wp_" + randomUUID() },
++      })
++    ).status,
++    409,
++  );
++  r = await s.report();
++  assert.equal(r.summary.amountMinor, 5000);
++  assert.equal(r.buyers[0].id, e.user.id);
++});
++test("Moscow calendar periods, PDF/Word formats, unique instructions and totals match the purchase ledger", async (t) => {
++  const s = await fixture(t),
++    first = sample();
++  await s.ingest(first);
++  await s.ingest(
++    sample({
++      purchase: {
++        ...sample().purchase,
++        instructionId: "instruction-2",
++        createdAt: "2026-11-19T20:59:59.999Z",
++      },
++    }),
++  );
++  await s.ingest(
++    sample({ purchase: { ...sample().purchase, format: "docx" } }),
++  );
++  let r = await s.report("period=today");
++  assert.equal(r.range.start, "2026-11-19T21:00:00.000Z");
++  assert.equal(r.summary.count, 2);
++  assert.equal(r.summary.amountMinor, 10000);
++  assert.equal(r.summary.instructions, 1);
++  assert.equal(r.summary.pdf, 1);
++  assert.equal(r.summary.docx, 1);
++  assert.equal(r.chart.items.length, 1);
++  assert.equal(r.chart.items[0].count, 2);
++  r = await s.report("period=7d");
++  assert.equal(r.summary.count, 3);
++  assert.equal(r.chart.items.length, 7);
++  assert.equal(r.buyers[0].purchaseCount, 3);
++  assert.equal(r.buyers[0].uniqueInstructions, 2);
++  r = await s.report("format=docx");
++  assert.equal(r.summary.count, 1);
++  assert.equal(r.summary.amountMinor, 5000);
++  assert.equal(r.topInstructions[0].count, 1);
++  for (const q of ["period=bad", "format=exe", "sort=bad", "page=-1"])
++    assert.equal((await s.api("/docs-sales/report?" + q)).status, 400);
++});
++test("buyer identity is source ID even with identical email; user history and search remain correctly associated", async (t) => {
++  const s = await fixture(t),
++    e = sample();
++  await s.ingest(e);
++  await s.ingest(
++    sample({
++      user: { ...e.user, id: "docs-buyer-2" },
++      purchase: { ...sample().purchase, userId: "docs-buyer-2" },
++    }),
++  );
++  const r = await s.report("q=buyer%40example.ru");
++  assert.equal(r.total, 2);
++  assert.equal(r.summary.buyers, 2);
++  const d = await (await s.api("/docs-sales/buyers/" + e.user.id)).json();
++  assert.equal(d.buyer.id, e.user.id);
++  assert.equal(d.purchases.length, 1);
++  assert.equal(d.purchases[0].id, e.purchase.id);
++  assert.equal(d.lifetime.count, 1);
++  assert.equal(
++    (await s.report("q=" + encodeURIComponent("ПОКУПАТЕЛЬ"))).total,
++    2,
++  );
++  assert.equal((await s.report("q=79991112233")).total, 2);
++  assert.equal((await s.api("/docs-sales/buyers/missing")).status, 404);
++});
++test("connection counts detect missing ledger events and do not report an unconnected source as a confirmed zero", async (t) => {
++  const s = await fixture(t);
++  assert.equal((await s.report()).connection.status, "waiting");
++  const heartbeat = {
++    scanOk: true,
++    sourceCount: 1,
++    pending: 1,
++    rejected: 0,
++    errorCode: "",
++    sourceGeneratedAt: "2026-11-20T06:00:00.000Z",
++  };
++  assert.equal((await s.hook(heartbeat, "/heartbeat")).status, 200);
++  assert.equal((await s.report()).connection.status, "syncing");
++  await s.hook({ ...heartbeat, pending: 0 }, "/heartbeat");
++  assert.equal((await s.report()).connection.status, "attention");
++  await s.ingest(sample());
++  assert.equal((await s.report()).connection.status, "online");
++  await s.hook(
++    {
++      ...heartbeat,
++      pending: 0,
++      scanOk: false,
++      errorCode: "wallet_read_failed",
++    },
++    "/heartbeat",
++  );
++  const r = await s.report();
++  assert.equal(r.connection.status, "attention");
++  assert.equal(r.summary.count, 1);
++});
++test("sales reporting remains intact when a related CRM card is in trash; a purchase never resurrects it", async (t) => {
++  const s = await fixture(t),
++    e = sample();
++  const intake = await fetch(s.base + "/hooks/docs-customers", {
++    method: "POST",
++    headers: {
++      "Content-Type": "application/json",
++      Authorization: "Bearer " + s.token,
++    },
++    body: JSON.stringify({
++      kind: "registration",
++      eventId: randomUUID(),
++      occurredAt: "2026-11-19T08:00:00.000Z",
++      observedAt: "2026-11-19T08:00:00.000Z",
++      user: { ...e.user, registeredAt: "2026-11-19T08:00:00.000Z" },
++    }),
++  });
++  const ack = await intake.json();
++  assert.equal(intake.status, 201);
++  await s.ingest(e);
++  assert.equal((await s.report()).buyers[0].customerId, ack.customerId);
++  await s.api("/docs-customers/" + ack.customerId + "/trash", "POST", {
++    requestId: randomUUID(),
++    action: "delete",
++    version: 1,
++  });
++  const r = await s.report();
++  assert.equal(r.summary.count, 1);
++  assert.equal(r.buyers[0].customerId, null);
++  assert.equal(r.buyers[0].customerInTrash, true);
++  assert.equal((await (await s.api("/docs-customers")).json()).total, 0);
++});
++async function agentFixture(t, fetcher) {
++  const directory = await mkdtemp(join(tmpdir(), "docs-sales-agent-")),
++    sourceDir = join(directory, "source"),
++    stateDir = join(directory, "state");
++  await mkdir(sourceDir);
++  let clock = NOW;
++  const agents = [];
++  const users = [
++      {
++        ...sample().user,
++        createdAt: "2026-01-01T00:00:00.000Z",
++        passwordHash: "NEVER_COPY_PASSWORD",
++        verificationTokenHash: "NEVER_COPY_TOKEN",
++      },
++    ],
++    wallet = {
++      version: 1,
++      purchases: [
++        {
++          ...sample().purchase,
++          createdAt: "2026-01-02T00:00:00.000Z",
++          instruction: { body: "NEVER_COPY_DOCUMENT" },
++          fiscalEvent: { secret: "NEVER_COPY_FISCAL" },
++        },
++      ],
++      topups: [{ secret: "NEVER_COPY_TOPUP" }],
++      payments: [],
++      refunds: [],
++    };
++  const save = async () => {
++    await writeFile(join(sourceDir, "users.json"), JSON.stringify(users));
++    await writeFile(join(sourceDir, "wallets.json"), JSON.stringify(wallet));
++  };
++  await save();
++  const ok = async (url, opts) => {
++    const p = JSON.parse(opts.body);
++    return Response.json(
++      url.endsWith("/heartbeat")
++        ? { ok: true, source: "boykovdocs-sales" }
++        : {
++            ok: true,
++            eventId: p.eventId,
++            externalId: p.user.id,
++            saleId: p.purchase.id,
++          },
++    );
++  };
++  const config = {
++    endpoint: "https://boykov-services.ru/hooks/docs-customers/sales",
++    token: "b".repeat(64),
++    sourceDir,
++    stateDir,
++  };
++  const start = () => {
++    const a = new DocsSalesAgent(config, {
++      now: () => clock,
++      fetcher: fetcher || ok,
++    });
++    agents.push(a);
++    return a;
++  };
++  t.after(async () => {
++    for (const a of agents)
++      try {
++        a.close();
++      } catch {}
++    await rm(directory, { recursive: true, force: true });
++  });
++  return {
++    sourceDir,
++    config,
++    users,
++    wallet,
++    save,
++    start,
++    tick: () => {
++      clock += 1000000;
++    },
++  };
++}
++test("sales collector reads all purchase history only, whitelists fields and never writes source files", async (t) => {
++  const s = await agentFixture(t),
++    a = s.start(),
++    before = await readFile(join(s.sourceDir, "wallets.json"), "utf8");
++  a.scan();
++  assert.equal(a.status().pending, 1);
++  const rows = a.db.prepare("SELECT payload FROM outbox").all();
++  assert.equal(rows.length, 1);
++  assert.ok(!rows[0].payload.includes("NEVER_COPY"));
++  assert.equal(JSON.parse(rows[0].payload).user.id, s.users[0].id);
++  assert.equal(
++    await readFile(join(s.sourceDir, "wallets.json"), "utf8"),
++    before,
++  );
++  await a.cycle();
++  assert.equal(a.status().pending, 0);
++  a.close();
++  const b = s.start();
++  b.scan();
++  assert.equal(b.status().pending, 0);
++  assert.equal(b.db.prepare("SELECT count(*) n FROM outbox").get().n, 1);
++});
++test("sales queue survives a lost acknowledgement, retries the same event and does not mistake HTTP 200 for a valid ACK", async (t) => {
++  let mode = "lost",
++    ids = [];
++  const s = await agentFixture(t, async (url, opts) => {
++      const p = JSON.parse(opts.body);
++      if (url.endsWith("/heartbeat"))
++        return Response.json({ ok: true, source: "boykovdocs-sales" });
++      ids.push(p.eventId);
++      if (mode === "lost") throw Error();
++      if (mode === "invalid") return Response.json({ ok: true });
++      return Response.json({
++        ok: true,
++        eventId: p.eventId,
++        externalId: p.user.id,
++        saleId: p.purchase.id,
++      });
++    }),
++    a = s.start();
++  a.scan();
++  await a.deliver();
++  assert.equal(a.status().pending, 1);
++  a.close();
++  s.tick();
++  mode = "invalid";
++  const b = s.start();
++  await b.deliver();
++  assert.equal(b.status().rejected, 1);
++  s.tick();
++  mode = "ok";
++  await b.cycle();
++  assert.equal(b.status().pending, 0);
++  assert.ok(ids.every((id) => id === ids[0]));
++});
++test("source corruption or removed purchase records expose a warning and retain previously queued sales", async (t) => {
++  const s = await agentFixture(t),
++    a = s.start();
++  await a.cycle();
++  assert.equal(a.status().sourceCount, 1);
++  s.wallet.purchases = [];
++  await s.save();
++  a.scan();
++  assert.equal(a.status().errorCode, "source_count_decreased");
++  assert.equal(a.db.prepare("SELECT count(*) n FROM outbox").get().n, 1);
++  await writeFile(join(s.sourceDir, "wallets.json"), "{broken");
++  a.scan();
++  assert.equal(a.status().scanOk, false);
++  assert.equal(a.status().errorCode, "wallet_read_failed");
++});
++test("collector keeps orphan purchases tied to their original user ID and rejects duplicate access records", async (t) => {
++  const s = await agentFixture(t),
++    a = s.start();
++  s.wallet.purchases[0].userId = "deleted-source-account";
++  await s.save();
++  a.scan();
++  const p = JSON.parse(
++    a.db.prepare("SELECT payload FROM outbox").get().payload,
++  );
++  assert.equal(p.user.id, "deleted-source-account");
++  assert.equal(p.user.email, "");
++  assert.equal(p.purchase.userId, p.user.id);
++  s.wallet.purchases.push({
++    ...s.wallet.purchases[0],
++    id: "wp_" + randomUUID(),
++  });
++  await s.save();
++  a.scan();
++  assert.equal(a.status().scanOk, false);
++  assert.equal(a.status().errorCode, "invalid_source_data");
++});
++test("sales delivery accepts only HTTPS, the dedicated endpoint and a private key", () => {
++  const config = {
++    endpoint: "https://boykov-services.ru/hooks/docs-customers/sales",
++    token: "a".repeat(64),
++  };
++  assert.equal(validateSalesConnection(config), config.endpoint);
++  for (const endpoint of [
++    "http://boykov-services.ru/hooks/docs-customers/sales",
++    "https://boykov-services.ru/hooks/docs-customers",
++    "https://boykov-services.ru/hooks/docs-customers/sales?key=x",
++  ])
++    assert.throws(() => validateSalesConnection({ ...config, endpoint }));
++});
++
++test("buyer and purchase pagination preserve totals, ordering and exact amounts across pages", async (t) => {
++  const s = await fixture(t);
++  for (let i = 0; i < 28; i++) {
++    const e = sample();
++    e.eventId = randomUUID();
++    e.user.id = "buyer-" + String(i).padStart(2, "0");
++    e.purchase.id = "sale-page-" + i;
++    e.purchase.userId = e.user.id;
++    e.purchase.amountMinor = 5025;
++    await s.ingest(e);
++  }
++  for (let i = 1; i <= 26; i++) {
++    const e = sample();
++    e.eventId = randomUUID();
++    e.user.id = "buyer-00";
++    e.purchase.userId = e.user.id;
++    e.purchase.id = "extra-page-" + i;
++    e.purchase.instructionId = "instruction-extra-" + i;
++    e.purchase.amountMinor = 100;
++    await s.ingest(e);
++  }
++  const first = await s.report("page=1"),
++    second = await s.report("page=2");
++  assert.equal(first.total, 28);
++  assert.equal(first.pages, 2);
++  assert.equal(first.buyers.length, 25);
++  assert.equal(second.buyers.length, 3);
++  assert.equal(
++    new Set([...first.buyers, ...second.buyers].map((b) => b.id)).size,
++    28,
++  );
++  assert.equal(first.summary.count, 54);
++  assert.equal(first.summary.amountMinor, 28 * 5025 + 26 * 100);
++  assert.equal(first.buyers[0].id, "buyer-00");
++  const detail = await (
++    await s.api("/docs-sales/buyers/buyer-00?page=2")
++  ).json();
++  assert.equal(detail.total, 27);
++  assert.equal(detail.pages, 2);
++  assert.equal(detail.purchases.length, 2);
++  assert.equal(detail.summary.count, 27);
++  assert.equal(detail.summary.amountMinor, 5025 + 26 * 100);
++  const search = await s.report("q=buyer-00");
++  assert.equal(search.total, 1);
++  assert.equal(search.summary.count, 54);
++  assert.equal((await s.api("/docs-sales/report?page=-1")).status, 400);
++});
