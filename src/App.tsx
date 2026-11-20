@@ -153,7 +153,12 @@ export default function App() {
   }
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k" && sessionRef.current) {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key === "k" &&
+        sessionRef.current &&
+        !document.querySelector("dialog[open]")
+      ) {
         e.preventDefault();
         location.hash = "history";
         setPage("history");

@@ -1,0 +1,2414 @@
+diff --git a/README.md b/README.md
+index 7ed6c5e..5043751 100644
+--- a/README.md
++++ b/README.md
+@@ -142,3 +142,7 @@ npm run check
+ Контакты, данные компании с привязкой к ID пользователя и история звонков отдела продаж. [Установка, подключение и работа](docs/BOYKOVDOCS-CUSTOMERS.md).
+ 
+ В подразделе «Продажи инструкций» — покупки PDF/Word, суммы, динамика и история каждого покупателя. [Источник данных и подключение продаж](docs/BOYKOVDOCS-SALES.md).
++
++## Фото в PDF
++
++В техотделе доступен локальный конвертер фотоотчётов: сжатие, порядок страниц, A4 или размер по фото. Файлы обрабатываются в браузере и на сервер не отправляются. [Параметры, приватность и установка](docs/PHOTO-PDF.md).
+diff --git a/server/app.js b/server/app.js
+index cf5de20..bc4acfb 100644
+--- a/server/app.js
++++ b/server/app.js
+@@ -41,7 +41,7 @@ export async function createApp(options) {
+     if (process.env.NODE_ENV === "production")
+       res.set(
+         "Content-Security-Policy",
+-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
++        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+       );
+     next();
+   });
+diff --git a/src/App.tsx b/src/App.tsx
+index 3ed6b08..3b02c87 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -153,7 +153,12 @@ export default function App() {
+   }
+   useEffect(() => {
+     const listener = (e: KeyboardEvent) => {
+-      if ((e.ctrlKey || e.metaKey) && e.key === "k" && sessionRef.current) {
++      if (
++        (e.ctrlKey || e.metaKey) &&
++        e.key === "k" &&
++        sessionRef.current &&
++        !document.querySelector("dialog[open]")
++      ) {
+         e.preventDefault();
+         location.hash = "history";
+         setPage("history");
+diff --git a/src/pages/Technical.tsx b/src/pages/Technical.tsx
+index 56eb286..1251414 100644
+--- a/src/pages/Technical.tsx
++++ b/src/pages/Technical.tsx
+@@ -7,6 +7,7 @@ import {
+ import { api, post, dateTime, errorText } from "../api";
+ import { Notice, TitleDot } from "../components/Common";
+ import "./technical.css";
++import PhotoPdfResource from "../features/photo-pdf/PhotoPdf";
+ 
+ type Field = { key: string; label: string; sourceIndex: number; targetIndex: number | null };
+ type CustomColumn = { id: string; title: string; sortOrder: number; createdAt: string };
+@@ -697,7 +698,7 @@ export default function Technical() {
+   };
+   useEffect(() => {
+     const handler = (event: KeyboardEvent) => {
+-      if (!(event.ctrlKey || event.metaKey) || event.altKey || busy) return;
++      if (!(event.ctrlKey || event.metaKey) || event.altKey || busy || document.querySelector("dialog[open]")) return;
+       const node = event.target;
+       if (node instanceof Element && node.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]')) return;
+       const key = event.key.toLowerCase();
+@@ -768,6 +769,8 @@ export default function Technical() {
+       </div>
+     </div>
+ 
++    <PhotoPdfResource />
++
+     {error && <Notice tone="error">{error}</Notice>}
+     {meta?.lastError && !meta.syncHealth?.lastError && <Notice tone="error">Ошибка последней синхронизации: {meta.lastError}. Ранее загруженные данные сохранены.</Notice>}
+     {meta?.syncHealth?.level === "stale" && !metaFetchFailed &&
+diff --git a/src/styles.css b/src/styles.css
+index f559be6..0704d28 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -380,7 +380,17 @@ code {
+   z-index: 30;
+   display: flex;
+   flex-direction: column;
+-  padding: 31px 19px 0;
++  padding: 31px 19px env(safe-area-inset-bottom, 0px);
++  height: 100vh;
++  height: 100dvh;
++  overflow-y: auto;
++  overflow-x: hidden;
++  overscroll-behavior-y: contain;
++  scrollbar-width: thin;
++  scrollbar-color: #56614d #191c1a;
++}
++.sidebar > * {
++  flex-shrink: 0;
+ }
+ .sidebar > .wordmark {
+   padding-left: 11px;
+diff --git a/docs/PHOTO-PDF.md b/docs/PHOTO-PDF.md
+new file mode 100644
+index 0000000..698dec2
+--- /dev/null
++++ b/docs/PHOTO-PDF.md
+@@ -0,0 +1,42 @@
++# Фото в PDF — инструмент техотдела
++
++«Техотдел → Фото в PDF → Открыть конвертер» открывает рабочее окно в стилистике Boykov Services. Фотографии можно добавить выбором файлов или перетаскиванием, отсортировать по имени, развернуть порядок, переместить кнопками либо перетащить в списке. Один снимок — одна страница PDF. Таблицы техотдела остаются открыты под инструментом; сочетания отмены таблицы и глобального поиска при открытом диалоге не срабатывают.
++
++## Приватность
++
++Вся обработка выполняется в браузере: File API, ImageBitmap/Canvas, локальный PDF writer. Файлы не передаются HTTP-запросами в API сервиса, на внешние сервисы или CDN; серверного маршрута конвертации нет. Отдельных npm-зависимостей, внешних скриптов и библиотек не добавлено. Настройки, фото и результат не записываются в localStorage, IndexedDB, базу, историю задач или серверную файловую систему. Предпросмотр и скачивание используют временные Object URL. Закрытие окна прекращает обработку, освобождает ссылки и очищает список; повторное открытие начинает новый сеанс. Исходные файлы на устройстве не меняются. Скачанный по кнопке PDF остаётся на устройстве пользователя.
++
++Vite собирает отдельный same-origin worker; обработка идёт в фоне и последовательно декодирует по одному снимку. В браузерах без Worker/OffscreenCanvas есть локальный Canvas fallback. Отмена завершает worker; fallback проверяет AbortSignal между этапами. Ошибка одного изображения останавливает сборку: неполный PDF не выдаётся и страницы не пропускаются молча. Настройки и перестановка фото сбрасывают устаревший результат, а изменение имени позволяет переименовать готовый PDF без пересборки.
++
++В production CSP добавлено только `blob:` в `img-src` для локального предпросмотра. Разрешения для скриптов и соединений остаются same-origin. Документ содержит только JPEG-изображения, страницы и их геометрию, без JavaScript, вложений и EXIF исходных фото.
++
++## Форматы и параметры
++
++- JPG, PNG, WEBP, BMP, AVIF; HEIC/HEIF зависят от поддержки декодера браузера. Если файл не открывается, нужно сохранить его как JPG/PNG.
++- Сигнатура растрового формата проверяется до предпросмотра: HTML/SVG, переименованные в JPG, не принимаются.
++- До 500 снимков в одном PDF, не больше 50 МБ на входной файл. Неподходящие файлы перечисляются явно; подходящие сохраняются в списке.
++- Режимы: компактный 1200 px / 52%, сбалансированный 1600 px / 68%, чёткий текст 2200 px / 83%, высокое качество 3000 px / 90%. При ручном изменении появляется «Свои настройки».
++- Максимальная сторона 1200/1600/2200/3000 px или исходное разрешение; JPEG 35–95%. Маленькие снимки не увеличиваются.
++- A4 с автоматической ориентацией и полем 18 pt либо страница по пропорциям фото без полей. Геометрия сохраняет весь снимок без растяжения/обрезки; поворот камеры учитывается декодером, прозрачность заменяется белым фоном.
++- Защита Canvas: выход не больше 16384 px по стороне и 64 млн пикселей. PDF ограничен 250 МБ; при превышении предлагается уменьшить разрешение или разделить набор. Объём и скорость также зависят от памяти устройства.
++- Сжатие не гарантирует уменьшение любого исходного файла: для уже компактных фото или PNG итоговый PDF может быть больше. Показаны реальные размеры и процент изменения.
++
++## Боковая панель
++
++Закреплённая боковая панель ограничена высотой viewport (`100dvh`, fallback `100vh`), прокручивается отдельно по вертикали и не сжимает дочерние блоки. Нижние пункты, помощь, профиль и выход доступны на невысоком экране. Предусмотрен safe-area inset; горизонтального скролла нет. Цвет полосы прокрутки соответствует панели.
++
++## Установка и деплой
++
++Применить патч PowerShell-установщиком в корне локального проекта, выполнить проверки, затем коммит/push обычным способом. База патча — main `14092a0` или совместимая версия. Установщик сохраняет копию изменяемых файлов в `.git/boykov-patch-backups`, сначала выполняет `git apply --check`, затем `npm run check`; повторный запуск проверяет установленный патч без повторного наложения.
++
++После push на VPS Boykov Services:
++
++```bash
++cd /opt/boykov-services
++git pull --ff-only
++bash scripts/deploy-photo-pdf.sh
++```
++
++Скрипт сохраняет предыдущий образ и команду отката в `BACKUP=...`, пересобирает только `app`, ждёт healthy, проверяет HTTP, CSP и наличие worker в production-сборке. Дополнительных сервисов, миграций данных, ключей или cron не нужно. Коннекторы сайтов и сервис документов не перезапускаются. Команда отката при необходимости — `bash <BACKUP>/rollback-app.sh`.
++
++Проверки: `npm run check`; `tests/photo-pdf.test.js` проверяет геометрию, точные бинарные xref/stream offsets, порядок/целостность PDF, лимиты, сигнатуры, имена Windows и production CSP. В браузере проверяются реальный выбор/сортировка фото, режимы, скачивание, поворот EXIF, белый фон PNG, повреждённый снимок, отмена и очистка при закрытии; скачанный PDF дополнительно проверяется независимым PDF-парсером и рендерером. Скрипт деплоя проверяется `bash -n`; фактическое обновление VPS выполняется пользователем.
+diff --git a/scripts/deploy-photo-pdf.sh b/scripts/deploy-photo-pdf.sh
+new file mode 100644
+index 0000000..eeac69e
+--- /dev/null
++++ b/scripts/deploy-photo-pdf.sh
+@@ -0,0 +1,41 @@
++#!/usr/bin/env bash
++# Frontend + a narrow CSP change only. No data migration or additional service.
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo PHOTO_PDF_DEPLOY_REQUIRES_ROOT; exit 1; }
++[[ -f src/features/photo-pdf/PhotoPdf.tsx && -f .env ]] || { echo PHOTO_PDF_SOURCE_OR_ENV_MISSING; exit 1; }
++[[ -z "$(git status --porcelain --untracked-files=no)" ]] || { echo PHOTO_PDF_TRACKED_LOCAL_CHANGES; exit 1; }
++install -d -m 700 /root/boykov-services-backups
++backup=$(mktemp -d /root/boykov-services-backups/pre-photo-pdf-XXXXXXXX)
++previous=$(docker inspect boykov-services-app-1 --format '{{.Image}}')
++tag="boykov-services-app:pre-photo-pdf-$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
++docker image tag "$previous" "$tag"
++printf '%s\n' "$tag" > "$backup/previous-image.txt"
++git rev-parse HEAD > "$backup/source-commit.txt"
++cat > "$backup/rollback-app.sh" <<ROLLBACK
++#!/usr/bin/env bash
++set -Eeuo pipefail
++cd /opt/boykov-services
++docker image tag '$tag' boykov-services-app:latest
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++ROLLBACK
++chmod 700 "$backup/rollback-app.sh"
++printf 'BACKUP=%s\n' "$backup"
++trap 'result=$?; if [[ "$result" != 0 ]]; then printf "PHOTO_PDF_DEPLOY_CHECK_REQUIRED BACKUP=%s\n" "$backup"; fi' EXIT
++docker compose build app
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++docker compose exec -T app node --input-type=module - <<'VERIFY_PHOTO_PDF'
++import {readdirSync,statSync} from 'node:fs';
++const response=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
++if(!response.ok||(await response.json()).ok!==true)throw Error('PHOTO_PDF_HEALTH_FAILED');
++const csp=response.headers.get('content-security-policy')||'';
++if(!csp.includes("img-src 'self' data: blob:;")||!csp.includes("script-src 'self';")||!csp.includes("connect-src 'self';"))throw Error('PHOTO_PDF_CSP_CHECK_FAILED');
++const files=readdirSync('/app/dist/assets');
++if(!files.some(file=>/^worker-.*\.js$/.test(file)&&statSync('/app/dist/assets/'+file).size>0))throw Error('PHOTO_PDF_WORKER_MISSING');
++const index=await fetch('http://127.0.0.1:8787/',{signal:AbortSignal.timeout(10000)});
++if(!index.ok||!(await index.text()).includes('id="root"'))throw Error('PHOTO_PDF_FRONTEND_FAILED');
++console.log('PHOTO_PDF_MODULE=OK\nPHOTO_PDF_CSP=OK\nPHOTO_PDF_HEALTH=OK');
++VERIFY_PHOTO_PDF
++docker compose ps
++printf 'PHOTO_PDF_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"
+diff --git a/src/features/photo-pdf/PhotoPdf.tsx b/src/features/photo-pdf/PhotoPdf.tsx
+new file mode 100644
+index 0000000..149ad6a
+--- /dev/null
++++ b/src/features/photo-pdf/PhotoPdf.tsx
+@@ -0,0 +1,719 @@
++import { useEffect, useRef, useState } from "react";
++import {
++  Check,
++  ChevronDown,
++  ChevronUp,
++  Download,
++  FileImage,
++  FilePlus2,
++  GripVertical,
++  Images,
++  LoaderCircle,
++  Plus,
++  RotateCcw,
++  ShieldCheck,
++  SlidersHorizontal,
++  Trash2,
++  X,
++} from "lucide-react";
++import { Notice, TitleDot } from "../../components/Common";
++import { createPhotoPdf } from "./client";
++import type { Progress } from "./convert";
++import {
++  defaultSettings,
++  inspectPhoto,
++  MAX_PHOTOS,
++  outputFilename,
++  presets,
++  sizeText,
++} from "./files";
++import type { Settings } from "./files";
++import "./photo-pdf.css";
++type Photo = { id: string; file: File; preview: string; broken: boolean };
++type Result = { url: string; size: number; original: number; pages: number };
++export default function PhotoPdfResource() {
++  const [open, setOpen] = useState(false);
++  return (
++    <>
++      <section className="pp-resource" aria-label="Инструменты техотдела">
++        <span className="pp-resource-icon" aria-hidden="true">
++          <FileImage size={26} strokeWidth={1.5} />
++        </span>
++        <div className="pp-resource-copy">
++          <span>ИНСТРУМЕНТЫ</span>
++          <h2>
++            Фото в PDF
++            <TitleDot />
++          </h2>
++          <p>Фотоотчёт одним файлом. Сжатие и порядок страниц.</p>
++        </div>
++        <span className="pp-resource-privacy">
++          <ShieldCheck size={16} />В вашем браузере
++        </span>
++        <button
++          type="button"
++          className="button secondary"
++          onClick={() => setOpen(true)}
++        >
++          Открыть конвертер
++        </button>
++        <div className="pp-resource-art" aria-hidden="true" />
++      </section>
++      {open && <PhotoPdfDialog onClose={() => setOpen(false)} />}
++    </>
++  );
++}
++function PhotoPdfDialog({ onClose }: { onClose: () => void }) {
++  const dialog = useRef<HTMLDialogElement>(null),
++    input = useRef<HTMLInputElement>(null);
++  const [photos, setPhotos] = useState<Photo[]>([]),
++    photoRef = useRef<Photo[]>([]);
++  const [settings, setSettings] = useState<Settings>({ ...defaultSettings });
++  const [filename, setFilename] = useState("Фотоотчёт"),
++    [result, setResult] = useState<Result | null>(null),
++    resultRef = useRef<Result | null>(null);
++  const [progress, setProgress] = useState<Progress | null>(null),
++    [busy, setBusy] = useState(false),
++    [importing, setImporting] = useState(false);
++  const [errors, setErrors] = useState<string[]>([]),
++    [status, setStatus] = useState("");
++  const [draggingFiles, setDraggingFiles] = useState(false),
++    [target, setTarget] = useState<string | null>(null);
++  const dragging = useRef<string | null>(null),
++    controller = useRef<AbortController | null>(null),
++    alive = useRef(true),
++    importingRef = useRef(false);
++  useEffect(() => {
++    alive.current = true;
++    dialog.current?.showModal();
++    const overflow = document.body.style.overflow;
++    document.body.style.overflow = "hidden";
++    return () => {
++      alive.current = false;
++      controller.current?.abort();
++      for (const photo of photoRef.current) URL.revokeObjectURL(photo.preview);
++      if (resultRef.current) URL.revokeObjectURL(resultRef.current.url);
++      document.body.style.overflow = overflow;
++    };
++  }, []);
++  const updatePhotos = (next: Photo[]) => {
++    photoRef.current = next;
++    setPhotos(next);
++  };
++  const removeResult = () => {
++    if (resultRef.current) URL.revokeObjectURL(resultRef.current.url);
++    resultRef.current = null;
++    setResult(null);
++    setProgress(null);
++    setStatus("");
++  };
++  const locked = busy || importing;
++  const addPhotos = async (files: File[]) => {
++    if (controller.current || importingRef.current || !files.length) return;
++    importingRef.current = true;
++    setImporting(true);
++    setErrors([]);
++    removeResult();
++    const accepted: Photo[] = [],
++      issues: string[] = [];
++    const available = MAX_PHOTOS - photoRef.current.length;
++    if (files.length > available)
++      issues.push(
++        `В одном PDF может быть не больше ${MAX_PHOTOS} фото. Лишние файлы не добавлены.`,
++      );
++    try {
++      for (const file of files.slice(0, available)) {
++        if (!alive.current) break;
++        try {
++          await inspectPhoto(file);
++          if (alive.current)
++            accepted.push({
++              id: crypto.randomUUID(),
++              file,
++              preview: URL.createObjectURL(file),
++              broken: false,
++            });
++        } catch (error) {
++          issues.push(
++            `${file.name}: ${error instanceof Error ? error.message : "Не удалось прочитать файл."}`,
++          );
++        }
++      }
++      if (!alive.current) {
++        for (const photo of accepted) URL.revokeObjectURL(photo.preview);
++        return;
++      }
++      updatePhotos([...photoRef.current, ...accepted]);
++      setErrors(issues);
++      setStatus(
++        accepted.length
++          ? `Добавлено фото: ${accepted.length}. Можно настроить порядок и качество.`
++          : "Новые фотографии не добавлены.",
++      );
++    } finally {
++      importingRef.current = false;
++      if (alive.current) setImporting(false);
++    }
++  };
++  const changeSettings = (patch: Partial<Settings>) => {
++    if (!locked) {
++      setSettings((s) => ({ ...s, ...patch }));
++      removeResult();
++    }
++  };
++  const rearrange = (next: Photo[]) => {
++    if (!locked) {
++      updatePhotos(next);
++      removeResult();
++    }
++  };
++  const move = (id: string, to: number) => {
++    const next = [...photoRef.current],
++      from = next.findIndex((p) => p.id === id);
++    if (from < 0 || to < 0 || to >= next.length || from === to) return;
++    next.splice(to, 0, next.splice(from, 1)[0]);
++    rearrange(next);
++  };
++  const remove = (id: string) => {
++    if (locked) return;
++    const photo = photoRef.current.find((p) => p.id === id);
++    if (photo) URL.revokeObjectURL(photo.preview);
++    rearrange(photoRef.current.filter((p) => p.id !== id));
++  };
++  const clear = () => {
++    if (locked) return;
++    for (const photo of photoRef.current) URL.revokeObjectURL(photo.preview);
++    rearrange([]);
++    setErrors([]);
++  };
++  const run = async () => {
++    if (locked || controller.current || !photos.length) return;
++    const abort = new AbortController();
++    controller.current = abort;
++    const snapshot = [...photos],
++      original = snapshot.reduce((sum, p) => sum + p.file.size, 0);
++    removeResult();
++    setErrors([]);
++    setBusy(true);
++    try {
++      const blob = await createPhotoPdf(
++        snapshot.map((p) => p.file),
++        { ...settings },
++        (p) => {
++          if (alive.current) setProgress(p);
++        },
++        abort.signal,
++      );
++      if (!alive.current || abort.signal.aborted) return;
++      const completed = {
++        url: URL.createObjectURL(blob),
++        size: blob.size,
++        original,
++        pages: snapshot.length,
++      };
++      resultRef.current = completed;
++      setResult(completed);
++      setStatus("PDF готов. Сохраните файл на устройство.");
++    } catch (error) {
++      if (!alive.current) return;
++      setProgress(null);
++      if (abort.signal.aborted)
++        setStatus("Создание PDF остановлено. Фотографии остались в списке.");
++      else {
++        setErrors([
++          error instanceof Error ? error.message : "Не удалось создать PDF.",
++        ]);
++        setStatus("Исправьте ошибку или измените настройки и повторите.");
++      }
++    } finally {
++      controller.current = null;
++      if (alive.current) setBusy(false);
++    }
++  };
++  const original = photos.reduce((sum, p) => sum + p.file.size, 0),
++    preset =
++      presets.find(
++        (p) => p.maxSide === settings.maxSide && p.quality === settings.quality,
++      )?.id || "manual";
++  return (
++    <dialog
++      ref={dialog}
++      className="pp-dialog"
++      aria-labelledby="pp-title"
++      onCancel={(e) => {
++        e.preventDefault();
++        onClose();
++      }}
++      onDragOver={(e) => {
++        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
++      }}
++      onDrop={(e) => {
++        if (e.dataTransfer.files.length) {
++          e.preventDefault();
++          setDraggingFiles(false);
++          void addPhotos(Array.from(e.dataTransfer.files));
++        }
++      }}
++    >
++      <header className="pp-header">
++        <div>
++          <span className="eyebrow">ИНСТРУМЕНТЫ ТЕХОТДЕЛА</span>
++          <h2 id="pp-title">
++            Фото в PDF
++            <TitleDot />
++          </h2>
++          <p>Соберите фотоотчёт: один снимок — одна страница.</p>
++        </div>
++        <div className="pp-header-actions">
++          <span className="pp-private">
++            <ShieldCheck size={17} />
++            Без загрузки на сервер
++          </span>
++          <button
++            type="button"
++            className="icon-button"
++            aria-label="Закрыть конвертер"
++            onClick={onClose}
++          >
++            <X size={22} />
++          </button>
++        </div>
++      </header>
++      <div className="pp-body">
++        <div className="pp-workspace">
++          <section className="pp-photos" aria-labelledby="pp-photos-title">
++            <div className="pp-section-heading">
++              <h3 id="pp-photos-title">Фотографии</h3>
++              <span>
++                {photos.length
++                  ? `${photos.length} фото · ${sizeText(original)}`
++                  : "В порядке страниц PDF"}
++              </span>
++            </div>
++            <input
++              ref={input}
++              type="file"
++              multiple
++              accept=".jpg,.jpeg,.png,.webp,.bmp,.avif,.heic,.heif"
++              className="sr-only"
++              tabIndex={-1}
++              aria-label="Выбрать фотографии"
++              disabled={locked}
++              onChange={(e) => {
++                void addPhotos(Array.from(e.target.files || []));
++                e.target.value = "";
++              }}
++            />
++            <button
++              type="button"
++              disabled={locked}
++              className={`pp-dropzone ${draggingFiles ? "pp-dragover" : ""} ${photos.length ? "pp-dropzone-compact" : ""}`}
++              onClick={() => input.current?.click()}
++              onDragEnter={(e) => {
++                if (e.dataTransfer.types.includes("Files")) {
++                  e.preventDefault();
++                  setDraggingFiles(true);
++                }
++              }}
++              onDragLeave={(e) => {
++                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
++                  setDraggingFiles(false);
++              }}
++            >
++              <span className="pp-upload-art" aria-hidden="true">
++                <Images size={34} strokeWidth={1.3} />
++                <span>
++                  <Plus size={16} />
++                </span>
++              </span>
++              <strong>
++                {importing
++                  ? "Проверяем фотографии…"
++                  : photos.length
++                    ? "Добавить ещё фотографии"
++                    : "Добавьте фотографии"}
++              </strong>
++              <span>
++                {photos.length
++                  ? "Выберите файлы или перетащите сюда"
++                  : "Перетащите сюда или выберите на устройстве"}
++              </span>
++              {!photos.length && (
++                <small>
++                  JPG, PNG, WEBP, BMP, AVIF · до 500 фото, до 50 МБ каждое
++                </small>
++              )}
++            </button>
++            {!!photos.length && (
++              <>
++                <div className="pp-list-toolbar">
++                  <span>Порядок страниц</span>
++                  <div>
++                    <button
++                      type="button"
++                      className="text-button"
++                      disabled={locked || photos.length < 2}
++                      onClick={() =>
++                        rearrange(
++                          [...photos].sort((a, b) =>
++                            a.file.name.localeCompare(b.file.name, "ru", {
++                              numeric: true,
++                              sensitivity: "base",
++                            }),
++                          ),
++                        )
++                      }
++                    >
++                      По имени
++                    </button>
++                    <button
++                      type="button"
++                      className="text-button"
++                      disabled={locked || photos.length < 2}
++                      onClick={() => rearrange([...photos].reverse())}
++                    >
++                      <RotateCcw size={14} />
++                      Развернуть
++                    </button>
++                    <button
++                      type="button"
++                      className="text-button"
++                      disabled={locked}
++                      onClick={clear}
++                    >
++                      <Trash2 size={14} />
++                      Очистить
++                    </button>
++                  </div>
++                </div>
++                <ol className="pp-photo-list" aria-label="Порядок фотографий">
++                  {photos.map((p, index) => (
++                    <li
++                      key={p.id}
++                      className={target === p.id ? "pp-drop-target" : ""}
++                      draggable={!locked}
++                      onDragStart={(e) => {
++                        if (locked) {
++                          e.preventDefault();
++                          return;
++                        }
++                        dragging.current = p.id;
++                        e.dataTransfer.setData("text/plain", p.id);
++                        e.dataTransfer.effectAllowed = "move";
++                      }}
++                      onDragEnd={() => {
++                        dragging.current = null;
++                        setTarget(null);
++                      }}
++                      onDragOver={(e) => {
++                        if (dragging.current && !locked) {
++                          e.preventDefault();
++                          setTarget(p.id);
++                        }
++                      }}
++                      onDrop={(e) => {
++                        if (dragging.current && !locked) {
++                          e.preventDefault();
++                          e.stopPropagation();
++                          move(dragging.current, index);
++                          dragging.current = null;
++                          setTarget(null);
++                        }
++                      }}
++                    >
++                      <GripVertical
++                        size={16}
++                        className="pp-grip"
++                        aria-hidden="true"
++                      />
++                      <span
++                        className="pp-page-index"
++                        aria-label={`Страница ${index + 1}`}
++                      >
++                        {index + 1}
++                      </span>
++                      {p.broken ? (
++                        <span className="pp-broken">
++                          <FileImage size={25} />
++                        </span>
++                      ) : (
++                        <img
++                          src={p.preview}
++                          alt=""
++                          loading="lazy"
++                          decoding="async"
++                          draggable={false}
++                          onError={() =>
++                            updatePhotos(
++                              photoRef.current.map((photo) =>
++                                photo.id === p.id
++                                  ? { ...photo, broken: true }
++                                  : photo,
++                              ),
++                            )
++                          }
++                        />
++                      )}
++                      <div className="pp-photo-meta">
++                        <strong title={p.file.name}>{p.file.name}</strong>
++                        <span>
++                          {sizeText(p.file.size)}
++                          {p.broken ? " · нет предпросмотра" : ""}
++                        </span>
++                      </div>
++                      <div className="pp-photo-actions">
++                        <button
++                          className="icon-button"
++                          type="button"
++                          disabled={locked || index === 0}
++                          aria-label={`Выше: ${p.file.name}`}
++                          onClick={() => move(p.id, index - 1)}
++                        >
++                          <ChevronUp size={18} />
++                        </button>
++                        <button
++                          className="icon-button"
++                          type="button"
++                          disabled={locked || index === photos.length - 1}
++                          aria-label={`Ниже: ${p.file.name}`}
++                          onClick={() => move(p.id, index + 1)}
++                        >
++                          <ChevronDown size={18} />
++                        </button>
++                        <button
++                          className="icon-button pp-remove"
++                          type="button"
++                          disabled={locked}
++                          aria-label={`Убрать: ${p.file.name}`}
++                          onClick={() => remove(p.id)}
++                        >
++                          <X size={17} />
++                        </button>
++                      </div>
++                    </li>
++                  ))}
++                </ol>
++                <p className="pp-caption">
++                  Перетаскивайте фото или используйте кнопки рядом с ним.
++                  Порядок в списке — порядок страниц.
++                </p>
++              </>
++            )}
++            {!!errors.length && (
++              <Notice tone="error">
++                <strong>Проверьте файлы</strong>
++                <ul className="pp-errors">
++                  {errors.slice(0, 8).map((e, i) => (
++                    <li key={i}>{e}</li>
++                  ))}
++                </ul>
++                {errors.length > 8 && (
++                  <span>Ещё ошибок: {errors.length - 8}.</span>
++                )}
++              </Notice>
++            )}
++          </section>
++          <aside className="pp-settings" aria-label="Настройки PDF">
++            <div className="pp-section-heading">
++              <h3>
++                <SlidersHorizontal size={17} />
++                Настройки
++              </h3>
++            </div>
++            <fieldset disabled={locked}>
++              <label>
++                Режим сжатия
++                <select
++                  aria-label="Режим сжатия"
++                  value={preset}
++                  onChange={(e) => {
++                    const p = presets.find((v) => v.id === e.target.value);
++                    if (p)
++                      changeSettings({
++                        maxSide: p.maxSide,
++                        quality: p.quality,
++                      });
++                  }}
++                >
++                  {presets.map((p) => (
++                    <option value={p.id} key={p.id}>
++                      {p.name}
++                    </option>
++                  ))}
++                  <option value="manual">Свои настройки</option>
++                </select>
++              </label>
++              <p className="pp-field-hint">
++                {presets.find((p) => p.id === preset)?.description ||
++                  "Выбранные вами разрешение и качество"}
++              </p>
++              <label>
++                Максимальная сторона
++                <select
++                  aria-label="Максимальная сторона"
++                  value={settings.maxSide}
++                  onChange={(e) =>
++                    changeSettings({ maxSide: Number(e.target.value) })
++                  }
++                >
++                  {[1200, 1600, 2200, 3000, 0].map((n) => (
++                    <option value={n} key={n}>
++                      {n
++                        ? `${n.toLocaleString("ru-RU")} пикселей`
++                        : "Исходное разрешение"}
++                    </option>
++                  ))}
++                </select>
++              </label>
++              <label className="pp-quality">
++                <span>
++                  Качество JPEG<strong>{settings.quality}%</strong>
++                </span>
++                <input
++                  aria-label="Качество JPEG"
++                  type="range"
++                  min={35}
++                  max={95}
++                  value={settings.quality}
++                  onChange={(e) =>
++                    changeSettings({ quality: Number(e.target.value) })
++                  }
++                />
++              </label>
++              <p className="pp-field-hint">
++                Ниже качество — меньше файл. Для мелкого текста выбирайте
++                «Чёткий текст».
++              </p>
++              <label>
++                Страницы PDF
++                <select
++                  aria-label="Страницы PDF"
++                  value={settings.pageMode}
++                  onChange={(e) =>
++                    changeSettings({
++                      pageMode: e.target.value as Settings["pageMode"],
++                    })
++                  }
++                >
++                  <option value="a4">A4 · по ориентации снимка</option>
++                  <option value="image">По пропорциям фото · без полей</option>
++                </select>
++              </label>
++              <p className="pp-field-hint">
++                Без обрезки и растяжения. Прозрачность заменяется белым фоном.
++              </p>
++            </fieldset>
++            <div className="pp-local-note">
++              <ShieldCheck size={20} />
++              <p>
++                Фото и PDF остаются в вашем браузере. На сервер ничего не
++                отправляется и в истории сервиса не сохраняется.
++              </p>
++            </div>
++          </aside>
++        </div>
++        <section className="pp-export" aria-label="Создание PDF">
++          <div className="pp-export-main">
++            <label>
++              Имя файла
++              <input
++                aria-label="Имя PDF"
++                type="text"
++                value={filename}
++                maxLength={150}
++                onChange={(e) => setFilename(e.target.value)}
++                placeholder="Фотоотчёт"
++              />
++              <span className="pp-caption">{outputFilename(filename)}</span>
++            </label>
++            <div className="pp-export-action">
++              {busy ? (
++                <button
++                  className="button secondary"
++                  type="button"
++                  onClick={() => controller.current?.abort()}
++                >
++                  <X size={17} />
++                  Остановить
++                </button>
++              ) : (
++                <button
++                  className="button primary"
++                  type="button"
++                  disabled={locked || !photos.length}
++                  onClick={() => void run()}
++                >
++                  <FilePlus2 size={18} />
++                  Создать PDF
++                </button>
++              )}
++              <span>
++                {photos.length
++                  ? `Страниц: ${photos.length}`
++                  : "Сначала добавьте фото"}
++              </span>
++            </div>
++          </div>
++          {busy && progress && (
++            <div className="pp-progress" role="status" aria-live="polite">
++              <div>
++                <LoaderCircle size={16} className="spin" />
++                <span>
++                  {progress.phase === "pdf"
++                    ? "Собираем PDF…"
++                    : `Обработка ${progress.done + 1} из ${progress.total}`}
++                </span>
++                <span>
++                  {Math.round((progress.done / progress.total) * 100)}%
++                </span>
++              </div>
++              <progress
++                aria-label="Создание PDF"
++                value={progress.done}
++                max={progress.total}
++              />
++              <small title={progress.filename}>{progress.filename}</small>
++            </div>
++          )}
++          {!busy && status && (
++            <p className="pp-status" role="status">
++              {status}
++            </p>
++          )}
++          {result && (
++            <div className="pp-result" role="status">
++              <span className="pp-result-icon">
++                <Check size={23} />
++              </span>
++              <div>
++                <h3>Фотоотчёт готов</h3>
++                <p>
++                  {result.pages} стр. · {sizeText(result.size)}{" "}
++                  <span>из {sizeText(result.original)}</span>
++                </p>
++                <small>
++                  {result.size < result.original
++                    ? `На ${Math.round((1 - result.size / result.original) * 100)}% меньше исходных фото`
++                    : `На ${Math.round((result.size / result.original - 1) * 100)}% больше исходных фото. Такое бывает с уже сжатыми снимками.`}
++                </small>
++              </div>
++              <a
++                className="button primary"
++                href={result.url}
++                download={outputFilename(filename)}
++              >
++                <Download size={18} />
++                Скачать PDF
++              </a>
++            </div>
++          )}
++        </section>
++        <p className="pp-footer-note">
++          HEIC и HEIF доступны, если их поддерживает ваш браузер. Если снимок не
++          открывается, сохраните его как JPG. При закрытии конвертера выбранные
++          фото и результат очищаются.
++        </p>
++      </div>
++    </dialog>
++  );
++}
+diff --git a/src/features/photo-pdf/client.ts b/src/features/photo-pdf/client.ts
+new file mode 100644
+index 0000000..5aee802
+--- /dev/null
++++ b/src/features/photo-pdf/client.ts
+@@ -0,0 +1,73 @@
++import { convertLocally } from "./convert";
++import type { Progress } from "./convert";
++import { validateSettings } from "./files";
++import type { Settings } from "./files";
++const aborted = () =>
++  new DOMException("Создание PDF остановлено.", "AbortError");
++const check = (signal: AbortSignal) => {
++  if (signal.aborted) throw aborted();
++};
++export async function createPhotoPdf(
++  files: File[],
++  settings: Settings,
++  onProgress: (p: Progress) => void,
++  signal: AbortSignal,
++): Promise<Blob> {
++  check(signal);
++  validateSettings(settings);
++  if (typeof Worker === "undefined")
++    return convertLocally(files, settings, onProgress, signal);
++  let worker: Worker;
++  try {
++    worker = new Worker(new URL("./worker.ts", import.meta.url), {
++      type: "module",
++    });
++  } catch {
++    return convertLocally(files, settings, onProgress, signal);
++  }
++  const result = await new Promise<Blob | null>((resolve, reject) => {
++    let started = false,
++      settled = false;
++    const finish = (value: Blob | null, error?: Error) => {
++      if (settled) return;
++      settled = true;
++      signal.removeEventListener("abort", cancel);
++      worker.terminate();
++      if (error) reject(error);
++      else resolve(value);
++    };
++    const cancel = () => finish(null, aborted());
++    signal.addEventListener("abort", cancel, { once: true });
++    if (signal.aborted) {
++      cancel();
++      return;
++    }
++    worker.onerror = (event) => {
++      event.preventDefault();
++      finish(
++        null,
++        started
++          ? Error(
++              "Обработка прервалась. Уменьшите разрешение или количество фото и повторите.",
++            )
++          : undefined,
++      );
++    };
++    worker.onmessage = ({ data }) => {
++      if (data.kind === "unsupported") finish(null);
++      else if (data.kind === "progress") {
++        started = true;
++        onProgress(data.progress);
++      } else if (data.kind === "done" && data.blob instanceof Blob)
++        finish(data.blob);
++      else if (data.kind === "error") finish(null, Error(data.message));
++    };
++    try {
++      worker.postMessage({ files, settings });
++    } catch {
++      finish(null, Error("Браузер не смог запустить обработку фотографий."));
++    }
++  });
++  check(signal);
++  return result || convertLocally(files, settings, onProgress, signal);
++}
+diff --git a/src/features/photo-pdf/convert.ts b/src/features/photo-pdf/convert.ts
+new file mode 100644
+index 0000000..2c4fadb
+--- /dev/null
++++ b/src/features/photo-pdf/convert.ts
+@@ -0,0 +1,136 @@
++import { imageDimensions, validateSettings } from "./files";
++import type { Settings } from "./files";
++import { PhotoPdfWriter } from "./pdf";
++export type Progress = {
++  done: number;
++  total: number;
++  filename: string;
++  phase: "images" | "pdf";
++};
++const aborted = () =>
++  new DOMException("Создание PDF остановлено.", "AbortError");
++const check = (signal?: AbortSignal) => {
++  if (signal?.aborted) throw aborted();
++};
++async function decode(file: File): Promise<ImageBitmap | HTMLImageElement> {
++  if (typeof createImageBitmap === "function") {
++    try {
++      return await createImageBitmap(file, { imageOrientation: "from-image" });
++    } catch {
++      /* Native Image supports some formats not handled by ImageBitmap. */
++    }
++  }
++  if (typeof Image === "undefined")
++    throw Error(
++      "Этот формат не открывается в браузере. Сохраните снимок как JPG или PNG.",
++    );
++  const url = URL.createObjectURL(file);
++  try {
++    return await new Promise<HTMLImageElement>((resolve, reject) => {
++      const image = new Image();
++      image.onload = () => resolve(image);
++      image.onerror = () =>
++        reject(
++          Error(
++            "Этот формат не открывается в браузере. Сохраните снимок как JPG или PNG.",
++          ),
++        );
++      image.src = url;
++    });
++  } finally {
++    URL.revokeObjectURL(url);
++  }
++}
++async function jpeg(file: File, settings: Settings, signal?: AbortSignal) {
++  const image = await decode(file);
++  let canvas: OffscreenCanvas | HTMLCanvasElement | undefined;
++  try {
++    check(signal);
++    const dimensions = imageDimensions(
++      image.width,
++      image.height,
++      settings.maxSide,
++    );
++    canvas =
++      typeof OffscreenCanvas !== "undefined"
++        ? new OffscreenCanvas(dimensions.width, dimensions.height)
++        : document.createElement("canvas");
++    canvas.width = dimensions.width;
++    canvas.height = dimensions.height;
++    const context = canvas.getContext("2d", { alpha: false }) as
++      | OffscreenCanvasRenderingContext2D
++      | CanvasRenderingContext2D
++      | null;
++    if (!context) throw Error("Браузер не смог обработать изображение.");
++    context.fillStyle = "#fff";
++    context.fillRect(0, 0, canvas.width, canvas.height);
++    context.imageSmoothingEnabled = true;
++    context.imageSmoothingQuality = "high";
++    context.drawImage(image, 0, 0, canvas.width, canvas.height);
++    const blob =
++      "convertToBlob" in canvas
++        ? await canvas.convertToBlob({
++            type: "image/jpeg",
++            quality: settings.quality / 100,
++          })
++        : await new Promise<Blob | null>((resolve) =>
++            (canvas as HTMLCanvasElement).toBlob(
++              resolve,
++              "image/jpeg",
++              settings.quality / 100,
++            ),
++          );
++    check(signal);
++    if (!blob || blob.type !== "image/jpeg")
++      throw Error("Браузер не смог сжать фотографию.");
++    return { bytes: new Uint8Array(await blob.arrayBuffer()), ...dimensions };
++  } finally {
++    if ("close" in image) image.close();
++    if (canvas) {
++      canvas.width = 1;
++      canvas.height = 1;
++    }
++  }
++}
++export async function convertLocally(
++  files: File[],
++  settings: Settings,
++  onProgress: (p: Progress) => void,
++  signal?: AbortSignal,
++) {
++  validateSettings(settings);
++  check(signal);
++  const writer = new PhotoPdfWriter(files.length, settings.pageMode);
++  for (let i = 0; i < files.length; i++) {
++    check(signal);
++    onProgress({
++      done: i,
++      total: files.length,
++      filename: files[i].name,
++      phase: "images",
++    });
++    // Yield between photos, including in the fallback for browsers without worker canvas.
++    await new Promise<void>((resolve) => setTimeout(resolve, 0));
++    check(signal);
++    try {
++      const page = await jpeg(files[i], settings, signal);
++      check(signal);
++      writer.add(page);
++    } catch (error) {
++      if (signal?.aborted) throw aborted();
++      throw Error(
++        `«${files[i].name}»: ${error instanceof Error ? error.message : "Не удалось открыть фотографию."}`,
++      );
++    }
++  }
++  onProgress({
++    done: files.length,
++    total: files.length,
++    filename: "",
++    phase: "pdf",
++  });
++  check(signal);
++  const blob = writer.finish();
++  check(signal);
++  return blob;
++}
+diff --git a/src/features/photo-pdf/files.ts b/src/features/photo-pdf/files.ts
+new file mode 100644
+index 0000000..66c5a56
+--- /dev/null
++++ b/src/features/photo-pdf/files.ts
+@@ -0,0 +1,118 @@
++export const MAX_PHOTOS = 500;
++export const MAX_FILE_BYTES = 50 * 1024 * 1024;
++export const presets = [
++  {
++    id: "balanced",
++    name: "Сбалансированный",
++    description: "Для обычного фотоотчёта",
++    maxSide: 1600,
++    quality: 68,
++  },
++  {
++    id: "text",
++    name: "Чёткий текст",
++    description: "Документы и мелкие подписи",
++    maxSide: 2200,
++    quality: 83,
++  },
++  {
++    id: "small",
++    name: "Компактный",
++    description: "Небольшой файл для отправки",
++    maxSide: 1200,
++    quality: 52,
++  },
++  {
++    id: "quality",
++    name: "Высокое качество",
++    description: "Детали и крупные фотографии",
++    maxSide: 3000,
++    quality: 90,
++  },
++] as const;
++export type Settings = {
++  maxSide: number;
++  quality: number;
++  pageMode: "a4" | "image";
++};
++export const defaultSettings: Settings = {
++  maxSide: 1600,
++  quality: 68,
++  pageMode: "a4",
++};
++export function validateSettings(settings: Settings) {
++  if (
++    ![0, 1200, 1600, 2200, 3000].includes(settings.maxSide) ||
++    !Number.isInteger(settings.quality) ||
++    settings.quality < 35 ||
++    settings.quality > 95 ||
++    !["a4", "image"].includes(settings.pageMode)
++  )
++    throw Error("Проверьте настройки сжатия.");
++}
++export function imageDimensions(
++  width: number,
++  height: number,
++  maxSide: number,
++) {
++  if (![width, height].every((n) => Number.isSafeInteger(n) && n > 0))
++    throw Error("Не удалось определить размер фотографии.");
++  const scale = maxSide ? Math.min(1, maxSide / Math.max(width, height)) : 1;
++  const w = Math.max(1, Math.round(width * scale)),
++    h = Math.max(1, Math.round(height * scale));
++  if (w > 16384 || h > 16384 || w * h > 64_000_000)
++    throw Error(
++      "Слишком высокое разрешение для браузера. Выберите максимальную сторону 3000 пикселей или меньше.",
++    );
++  return { width: w, height: h };
++}
++export function outputFilename(value: string) {
++  const name =
++    value
++      .trim()
++      .replace(/(?:\.pdf)+$/i, "")
++      .replace(
++        /[\\/:*?"<>|\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,
++        "_",
++      )
++      .replace(/[. ]+$/g, "")
++      .slice(0, 120) || "Фотоотчёт";
++  return (
++    (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? "_" : "") +
++    name +
++    ".pdf"
++  );
++}
++export const sizeText = (bytes: number) =>
++  new Intl.NumberFormat("ru-RU", {
++    maximumFractionDigits: bytes < 1024 ? 0 : 1,
++  }).format(
++    bytes < 1024 ? bytes : bytes < 1048576 ? bytes / 1024 : bytes / 1048576,
++  ) + (bytes < 1024 ? " Б" : bytes < 1048576 ? " КБ" : " МБ");
++// Check raster signatures before creating previews. Renamed HTML/SVG files cannot load subresources.
++export async function inspectPhoto(file: File) {
++  if (!file.size) throw Error("Файл пустой.");
++  if (file.size > MAX_FILE_BYTES) throw Error("Файл больше 50 МБ.");
++  const h = new Uint8Array(await file.slice(0, 64).arrayBuffer()),
++    ascii = (from: number, to: number) =>
++      String.fromCharCode(...h.slice(from, to));
++  const jpeg = h[0] === 255 && h[1] === 216 && h[2] === 255;
++  const png = h.slice(0, 8).join(",") === "137,80,78,71,13,10,26,10";
++  const webp = ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP";
++  const bmp = ascii(0, 2) === "BM";
++  const brands = Array.from(
++    { length: Math.max(0, Math.floor((h.length - 8) / 4)) },
++    (_, i) => ascii(8 + i * 4, 12 + i * 4),
++  );
++  const heif =
++    ascii(4, 8) === "ftyp" &&
++    brands.some((b) =>
++      ["avif", "avis", "heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(
++        b,
++      ),
++    );
++  if (!jpeg && !png && !webp && !bmp && !heif)
++    throw Error(
++      "Нужна фотография в формате JPG, PNG, WEBP, BMP, AVIF или HEIC.",
++    );
++}
+diff --git a/src/features/photo-pdf/pdf.ts b/src/features/photo-pdf/pdf.ts
+new file mode 100644
+index 0000000..ae39dcf
+--- /dev/null
++++ b/src/features/photo-pdf/pdf.ts
+@@ -0,0 +1,143 @@
++// Browser-local PDF 1.4 writer: one re-encoded RGB JPEG per page, no scripts or attachments.
++export type PageMode = "a4" | "image";
++export type JpegPage = {
++  bytes: Uint8Array<ArrayBuffer>;
++  width: number;
++  height: number;
++};
++export const MAX_PDF_BYTES = 250 * 1024 * 1024;
++const encoder = new TextEncoder();
++const decimal = (value: number) => Number(value.toFixed(3));
++export function pageLayout(width: number, height: number, mode: PageMode) {
++  if (
++    ![width, height].every((n) => Number.isSafeInteger(n) && n > 0) ||
++    !["a4", "image"].includes(mode)
++  )
++    throw Error("Некорректный размер страницы.");
++  const landscape = width > height;
++  const pw =
++    mode === "a4"
++      ? landscape
++        ? 841.89
++        : 595.28
++      : (width * 841.89) / Math.max(width, height);
++  const ph =
++    mode === "a4"
++      ? landscape
++        ? 595.28
++        : 841.89
++      : (height * 841.89) / Math.max(width, height);
++  const margin = mode === "a4" ? 18 : 0;
++  const scale = Math.min((pw - margin * 2) / width, (ph - margin * 2) / height);
++  const dw = width * scale,
++    dh = height * scale;
++  return {
++    width: pw,
++    height: ph,
++    x: (pw - dw) / 2,
++    y: (ph - dh) / 2,
++    imageWidth: dw,
++    imageHeight: dh,
++  };
++}
++export class PhotoPdfWriter {
++  private parts: BlobPart[] = [];
++  private offsets = [0];
++  private position = 0;
++  private pages = 0;
++  private finished = false;
++  private count: number;
++  private mode: PageMode;
++  private limit: number;
++  constructor(count: number, mode: PageMode, limit = MAX_PDF_BYTES) {
++    this.count = count;
++    this.mode = mode;
++    this.limit = limit;
++    if (
++      !Number.isSafeInteger(count) ||
++      count < 1 ||
++      count > 500 ||
++      !["a4", "image"].includes(mode)
++    )
++      throw Error("Добавьте от 1 до 500 фотографий.");
++    this.push(
++      new Uint8Array([
++        37, 80, 68, 70, 45, 49, 46, 52, 10, 37, 226, 227, 207, 211, 10,
++      ]),
++    );
++    this.object(1, "<< /Type /Catalog /Pages 2 0 R >>");
++    this.object(
++      2,
++      `<< /Type /Pages /Count ${count} /Kids [${Array.from({ length: count }, (_, i) => `${5 + i * 3} 0 R`).join(" ")}] >>`,
++    );
++  }
++  private push(value: string | Uint8Array<ArrayBuffer>) {
++    const bytes = typeof value === "string" ? encoder.encode(value) : value;
++    if (this.position + bytes.byteLength > this.limit)
++      throw Error(
++        "PDF превышает 250 МБ. Уменьшите разрешение или разделите фото на несколько файлов.",
++      );
++    this.parts.push(bytes);
++    this.position += bytes.byteLength;
++  }
++  private object(id: number, body: string | (() => void)) {
++    this.offsets[id] = this.position;
++    this.push(`${id} 0 obj\n`);
++    if (typeof body === "string") this.push(body);
++    else body();
++    this.push("\nendobj\n");
++  }
++  add(page: JpegPage) {
++    if (this.finished || this.pages >= this.count)
++      throw Error("PDF уже собран.");
++    const { bytes, width, height } = page;
++    if (
++      bytes.length < 4 ||
++      bytes[0] !== 255 ||
++      bytes[1] !== 216 ||
++      bytes.at(-2) !== 255 ||
++      bytes.at(-1) !== 217
++    )
++      throw Error("Не удалось подготовить JPEG для PDF.");
++    const box = pageLayout(width, height, this.mode),
++      imageId = 3 + this.pages * 3,
++      contentId = imageId + 1,
++      pageId = imageId + 2;
++    this.object(imageId, () => {
++      this.push(
++        `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`,
++      );
++      this.push(bytes);
++      this.push("\nendstream");
++    });
++    const instructions = encoder.encode(
++      `q\n${decimal(box.imageWidth)} 0 0 ${decimal(box.imageHeight)} ${decimal(box.x)} ${decimal(box.y)} cm\n/Photo Do\nQ\n`,
++    );
++    this.object(contentId, () => {
++      this.push(`<< /Length ${instructions.length} >>\nstream\n`);
++      this.push(instructions);
++      this.push("endstream");
++    });
++    this.object(
++      pageId,
++      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${decimal(box.width)} ${decimal(box.height)}] /Resources << /XObject << /Photo ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`,
++    );
++    this.pages++;
++  }
++  finish() {
++    if (this.finished || this.pages !== this.count)
++      throw Error("Не все фотографии добавлены в PDF.");
++    const xref = this.position,
++      size = 3 + this.count * 3;
++    this.push(`xref\n0 ${size}\n0000000000 65535 f \n`);
++    for (let i = 1; i < size; i++)
++      this.push(`${String(this.offsets[i]).padStart(10, "0")} 00000 n \n`);
++    this.push(
++      `trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`,
++    );
++    const blob = new Blob(this.parts, { type: "application/pdf" });
++    this.parts = [];
++    this.finished = true;
++    return blob;
++  }
++}
+diff --git a/src/features/photo-pdf/photo-pdf.css b/src/features/photo-pdf/photo-pdf.css
+new file mode 100644
+index 0000000..1ba465c
+--- /dev/null
++++ b/src/features/photo-pdf/photo-pdf.css
+@@ -0,0 +1,772 @@
++/* Scoped to the local converter; shared typography, buttons and palette come from the workspace. */
++.pp-resource {
++  display: flex;
++  align-items: center;
++  gap: 18px;
++  position: relative;
++  isolation: isolate;
++  overflow: hidden;
++  padding: 20px 24px;
++  border: 1px solid #e8dfe3;
++  border-radius: var(--radius);
++  background: #fbf5f7;
++  color: var(--ink);
++}
++.pp-resource-icon {
++  display: grid;
++  place-items: center;
++  flex: none;
++  width: 52px;
++  height: 58px;
++  border-radius: 10px;
++  background: #f0c3d2;
++  color: #5d3947;
++  border: 1px solid #dba7bb;
++  transform: rotate(-5deg);
++}
++.pp-resource-copy {
++  min-width: 0;
++  flex: 1;
++}
++.pp-resource-copy > span {
++  display: block;
++  font-size: 10px;
++  font-weight: 650;
++  letter-spacing: 0.12em;
++  color: #906d7b;
++  margin-bottom: 4px;
++}
++.pp-resource-copy h2 {
++  font-size: 19px;
++  margin: 0 0 4px;
++  letter-spacing: -0.035em;
++}
++.pp-resource-copy p {
++  font-size: 14px;
++  margin: 0;
++  color: #756c71;
++  line-height: 1.6;
++}
++.pp-resource-privacy {
++  display: flex;
++  gap: 7px;
++  align-items: center;
++  color: #736971;
++  font-size: 13px;
++  white-space: nowrap;
++}
++.pp-resource .button {
++  font-size: 14px;
++  position: relative;
++  background: #fff;
++  z-index: 1;
++  flex: none;
++}
++.pp-resource-art {
++  position: absolute;
++  z-index: -1;
++  right: 100px;
++  bottom: -90px;
++  width: 200px;
++  height: 200px;
++  border-radius: 50%;
++  border: 24px solid #f2e8ec;
++  opacity: 0.7;
++}
++.pp-dialog {
++  border: 1px solid var(--line);
++  padding: 0;
++  border-radius: 20px;
++  width: min(1160px, calc(100% - 40px));
++  max-width: none;
++  max-height: calc(100dvh - 48px);
++  background: #f5f5f2;
++  color: var(--ink);
++  box-shadow: 0 24px 100px #11191335;
++  overflow: auto;
++  overscroll-behavior: contain;
++  scrollbar-width: thin;
++}
++.pp-dialog::backdrop {
++  background: #141b15a8;
++  backdrop-filter: blur(5px);
++}
++.pp-header {
++  position: sticky;
++  top: 0;
++  z-index: 3;
++  display: flex;
++  justify-content: space-between;
++  align-items: flex-start;
++  gap: 20px;
++  padding: 28px 32px 24px;
++  background: #fff;
++  border-bottom: 1px solid var(--line);
++}
++.pp-header .eyebrow {
++  color: #8e6c7b;
++  font-size: 10px;
++}
++.pp-header h2 {
++  font-size: 34px;
++  line-height: 1.25;
++  margin: 8px 0 8px;
++  letter-spacing: -0.045em;
++}
++.pp-header p {
++  font-size: 14px;
++  color: #73796c;
++  margin: 0;
++  line-height: 1.65;
++}
++.pp-header-actions {
++  display: flex;
++  align-items: center;
++  gap: 18px;
++}
++.pp-header-actions .icon-button {
++  width: 36px;
++  height: 36px;
++  border: 1px solid var(--line);
++  background: white;
++}
++.pp-private {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  border-radius: 8px;
++  background: #eff3e4;
++  color: #56663e;
++  font-size: 13px;
++  padding: 10px 12px;
++  white-space: nowrap;
++}
++.pp-body {
++  padding: 24px 32px;
++}
++.pp-workspace {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) 310px;
++  gap: 20px;
++  align-items: start;
++}
++.pp-photos,
++.pp-settings {
++  background: #fff;
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 22px;
++  min-width: 0;
++}
++.pp-section-heading {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  margin: 0 0 18px;
++}
++.pp-section-heading h3 {
++  display: flex;
++  align-items: center;
++  gap: 9px;
++  font-size: 18px;
++  letter-spacing: -0.03em;
++  margin: 0;
++  font-weight: 600;
++}
++.pp-section-heading > span {
++  font-size: 12px;
++  color: #7a8172;
++  text-align: right;
++}
++.pp-dropzone {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  width: 100%;
++  min-height: 270px;
++  padding: 30px 18px;
++  border: 1px dashed #c3cdb0;
++  border-radius: 12px;
++  background: #f9fbf3;
++  transition:
++    background 0.16s,
++    border-color 0.16s;
++  text-align: center;
++  gap: 8px;
++}
++.pp-dropzone:hover:not(:disabled),
++.pp-dropzone.pp-dragover {
++  background: #eff5db;
++  border-color: #7b8f4f;
++}
++.pp-upload-art {
++  width: 75px;
++  height: 80px;
++  position: relative;
++  display: grid;
++  place-items: center;
++  color: #4d6136;
++  background: #e3edae;
++  border: 1px solid #c7d68d;
++  border-radius: 13px;
++  transform: rotate(-6deg);
++  box-shadow: 8px 6px 0 #eef1e4;
++  margin-bottom: 15px;
++}
++.pp-upload-art > span {
++  position: absolute;
++  display: grid;
++  place-items: center;
++  width: 26px;
++  height: 26px;
++  border-radius: 50%;
++  background: #efc6d5;
++  border: 2px solid #f9fbf3;
++  right: -10px;
++  bottom: 0;
++  transform: rotate(6deg);
++  color: #64404e;
++}
++.pp-dropzone strong {
++  font-size: 19px;
++  font-weight: 600;
++  letter-spacing: -0.025em;
++}
++.pp-dropzone > span:not(.pp-upload-art) {
++  font-size: 14px;
++  color: #737c67;
++  line-height: 1.7;
++}
++.pp-dropzone small {
++  font-size: 12px;
++  color: #8a907d;
++  line-height: 1.7;
++  margin-top: 5px;
++}
++.pp-dropzone-compact {
++  min-height: 102px;
++  padding: 15px 18px;
++  display: grid;
++  grid-template-columns: 38px 1fr;
++  column-gap: 14px;
++  row-gap: 4px;
++  justify-items: start;
++  text-align: left;
++}
++.pp-dropzone-compact .pp-upload-art {
++  grid-row: 1/3;
++  transform: none;
++  width: 36px;
++  height: 40px;
++  box-shadow: none;
++  border-radius: 6px;
++  margin: 0;
++}
++.pp-dropzone-compact .pp-upload-art > svg {
++  width: 22px;
++  height: 22px;
++}
++.pp-dropzone-compact .pp-upload-art > span {
++  display: none;
++}
++.pp-dropzone-compact strong {
++  font-size: 15px;
++}
++.pp-dropzone-compact > span:not(.pp-upload-art) {
++  font-size: 13px;
++}
++.pp-list-toolbar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  margin: 20px 0 12px;
++}
++.pp-list-toolbar > span {
++  font-size: 13px;
++  color: #737c69;
++}
++.pp-list-toolbar > div {
++  display: flex;
++  gap: 13px;
++  flex-wrap: wrap;
++}
++.pp-list-toolbar .text-button {
++  font-size: 12px;
++  gap: 5px;
++}
++.pp-photo-list {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  max-height: 340px;
++  overflow: auto;
++  scrollbar-width: thin;
++  border: 1px solid var(--line);
++  border-radius: 11px;
++  overscroll-behavior: contain;
++}
++.pp-photo-list li {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 13px 12px;
++  border-top: 1px solid var(--line);
++  min-height: 80px;
++  position: relative;
++  background: white;
++}
++.pp-photo-list li:first-child {
++  border-top: 0;
++}
++.pp-photo-list li.pp-drop-target {
++  box-shadow: inset 0 3px #b78196;
++  background: #fcf5f8;
++}
++.pp-grip {
++  color: #a0a68f;
++  flex: none;
++  cursor: grab;
++}
++.pp-page-index {
++  font-variant-numeric: tabular-nums;
++  font-size: 12px;
++  color: #848c79;
++  min-width: 16px;
++  text-align: center;
++  flex: none;
++}
++.pp-photo-list img,
++.pp-broken {
++  width: 54px;
++  height: 52px;
++  border-radius: 6px;
++  object-fit: cover;
++  background: #f2f3ed;
++  flex: none;
++}
++.pp-broken {
++  display: grid;
++  place-items: center;
++  color: #8c937f;
++}
++.pp-photo-meta {
++  flex: 1;
++  min-width: 0;
++  display: grid;
++  gap: 5px;
++}
++.pp-photo-meta strong {
++  font-size: 14px;
++  font-weight: 500;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++.pp-photo-meta > span {
++  font-size: 12px;
++  color: #8a917e;
++}
++.pp-photo-actions {
++  display: flex;
++  gap: 2px;
++  flex: none;
++}
++.pp-photo-actions .icon-button {
++  width: 28px;
++  height: 30px;
++  color: #79806d;
++}
++.pp-photo-actions .pp-remove:hover {
++  background: #fbecf1;
++  color: #9f536f;
++}
++.pp-caption {
++  font-size: 12px !important;
++  line-height: 1.7;
++  color: #848b7b;
++  font-weight: 400;
++  margin: 12px 0 0;
++}
++.pp-photos .notice {
++  margin: 18px 0 0;
++  align-items: flex-start;
++}
++.pp-errors {
++  padding-left: 18px;
++  margin: 8px 0 0;
++  max-width: 100%;
++  overflow-wrap: anywhere;
++  font-size: 13px;
++  line-height: 1.75;
++}
++.pp-settings fieldset {
++  padding: 0;
++  border: 0;
++  margin: 0;
++  min-width: 0;
++  display: grid;
++  gap: 18px;
++}
++.pp-settings label,
++.pp-export label {
++  font-size: 14px;
++  font-weight: 500;
++  line-height: 1.5;
++  gap: 8px;
++  color: #555f49;
++}
++.pp-settings select,
++.pp-export input {
++  font-size: 14px;
++  border-radius: 9px;
++  padding: 11px 30px 11px 12px;
++  border: 1px solid #dfe2d8;
++  background-color: #fff;
++  min-height: 44px;
++}
++.pp-settings select {
++  appearance: none;
++  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23747e67' stroke-width='1.7'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
++  background-position: right 12px center;
++  background-repeat: no-repeat;
++}
++.pp-field-hint {
++  font-size: 12px;
++  line-height: 1.75;
++  color: #858d79;
++  margin: -10px 0 0;
++}
++.pp-quality > span {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 10px;
++}
++.pp-quality strong {
++  font-weight: 600;
++  color: #945e75;
++}
++.pp-quality input {
++  width: 100%;
++  min-height: 24px;
++  height: 24px;
++  padding: 0;
++  border: 0;
++  accent-color: #b77a93;
++  background: transparent;
++  margin: 2px 0;
++}
++.pp-local-note {
++  display: flex;
++  align-items: flex-start;
++  gap: 11px;
++  border-top: 1px solid var(--line);
++  padding-top: 18px;
++  margin-top: 22px;
++  color: #778365;
++}
++.pp-local-note svg {
++  flex: none;
++  margin-top: 3px;
++}
++.pp-local-note p {
++  margin: 0;
++  font-size: 12px;
++  line-height: 1.8;
++}
++.pp-export {
++  padding: 22px;
++  background: white;
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  margin-top: 20px;
++}
++.pp-export-main {
++  display: flex;
++  gap: 24px;
++  justify-content: space-between;
++  align-items: center;
++}
++.pp-export-main > label {
++  width: min(370px, 100%);
++  min-width: 0;
++}
++.pp-export .pp-caption {
++  margin: 0;
++  overflow-wrap: anywhere;
++}
++.pp-export-action {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  gap: 9px;
++  flex: none;
++}
++.pp-export-action .button {
++  min-width: 185px;
++  font-size: 14px;
++  min-height: 48px;
++}
++.pp-export-action > span {
++  font-size: 12px;
++  color: #869078;
++}
++.pp-progress {
++  padding-top: 20px;
++}
++.pp-progress > div {
++  display: flex;
++  align-items: center;
++  gap: 9px;
++  font-size: 13px;
++  color: #6c775f;
++  margin-bottom: 9px;
++}
++.pp-progress > div > span:last-child {
++  margin-left: auto;
++}
++.pp-progress progress {
++  width: 100%;
++  height: 7px;
++  accent-color: #b77a93;
++  border: 0;
++  border-radius: 5px;
++  display: block;
++}
++.pp-progress progress::-webkit-progress-bar {
++  background: #eff0ea;
++  border-radius: 5px;
++}
++.pp-progress progress::-webkit-progress-value {
++  background: #b77a93;
++  border-radius: 5px;
++}
++.pp-progress small {
++  display: block;
++  font-size: 12px;
++  color: #8d9483;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  margin-top: 9px;
++}
++.pp-status {
++  font-size: 13px;
++  margin: 15px 0 0;
++  color: #7a846d;
++  line-height: 1.7;
++}
++.pp-result {
++  display: flex;
++  align-items: center;
++  gap: 15px;
++  border-radius: 12px;
++  background: #eef3dc;
++  border: 1px solid #dce6bc;
++  padding: 18px 20px;
++  margin-top: 18px;
++}
++.pp-result-icon {
++  display: grid;
++  place-items: center;
++  flex: none;
++  width: 42px;
++  height: 42px;
++  background: #e0eaa6;
++  border-radius: 50%;
++  color: #566d34;
++}
++.pp-result > div {
++  flex: 1;
++  min-width: 0;
++}
++.pp-result h3 {
++  font-size: 18px;
++  margin: 0 0 6px;
++  letter-spacing: -0.03em;
++}
++.pp-result p {
++  font-size: 14px;
++  margin: 0 0 3px;
++  line-height: 1.7;
++}
++.pp-result p span {
++  color: #7e886e;
++  margin-left: 8px;
++  font-size: 12px;
++}
++.pp-result small {
++  font-size: 12px;
++  color: #7c866b;
++  line-height: 1.65;
++}
++.pp-result .button {
++  font-size: 14px;
++  flex: none;
++}
++.pp-footer-note {
++  font-size: 12px;
++  line-height: 1.8;
++  color: #8b9381;
++  max-width: 850px;
++  margin: 16px 0 0;
++}
++@media (max-width: 1000px) {
++  .pp-resource-privacy {
++    display: none;
++  }
++  .pp-workspace {
++    grid-template-columns: minmax(0, 1fr) 280px;
++    gap: 15px;
++  }
++  .pp-header,
++  .pp-body {
++    padding: 22px;
++  }
++  .pp-header-actions {
++    gap: 10px;
++  }
++  .pp-private {
++    font-size: 12px;
++    padding: 8px;
++  }
++  .pp-photos,
++  .pp-settings,
++  .pp-export {
++    padding: 18px;
++  }
++  .pp-photo-list li {
++    gap: 7px;
++    padding: 12px 8px;
++  }
++  .pp-grip {
++    display: none;
++  }
++  .pp-photo-list img,
++  .pp-broken {
++    width: 42px;
++    height: 42px;
++  }
++  .pp-photo-actions {
++    gap: 0;
++  }
++  .pp-photo-actions .icon-button {
++    width: 25px;
++  }
++  .pp-list-toolbar {
++    align-items: flex-start;
++    flex-direction: column;
++  }
++}
++@media (max-width: 760px) {
++  .pp-resource {
++    padding: 17px;
++    gap: 14px;
++    flex-wrap: wrap;
++  }
++  .pp-resource-copy {
++    flex-basis: calc(100% - 75px);
++  }
++  .pp-resource .button {
++    width: 100%;
++  }
++  .pp-dialog {
++    width: calc(100% - 20px);
++    max-height: calc(100dvh - 20px);
++    border-radius: 14px;
++  }
++  .pp-header {
++    padding: 20px;
++    gap: 10px;
++  }
++  .pp-header h2 {
++    font-size: 28px;
++  }
++  .pp-header-actions {
++    align-items: flex-end;
++    flex-direction: column-reverse;
++  }
++  .pp-private {
++    padding: 0;
++    background: none;
++    font-size: 11px;
++    white-space: normal;
++    max-width: 130px;
++    align-items: flex-start;
++    line-height: 1.6;
++  }
++  .pp-private svg {
++    flex: none;
++  }
++  .pp-body {
++    padding: 16px;
++  }
++  .pp-workspace {
++    grid-template-columns: minmax(0, 1fr);
++    gap: 16px;
++  }
++  .pp-dropzone {
++    min-height: 230px;
++  }
++  .pp-dropzone-compact {
++    min-height: 90px;
++  }
++  .pp-list-toolbar {
++    flex-direction: row;
++    align-items: center;
++    flex-wrap: wrap;
++  }
++  .pp-export-main {
++    flex-direction: column;
++    align-items: stretch;
++    gap: 16px;
++  }
++  .pp-export-main > label {
++    width: 100%;
++  }
++  .pp-export-action {
++    align-items: stretch;
++  }
++  .pp-export-action > span {
++    text-align: center;
++  }
++  .pp-result {
++    flex-wrap: wrap;
++    gap: 12px;
++  }
++  .pp-result .button {
++    width: 100%;
++  }
++  .pp-photo-list {
++    max-height: 300px;
++  }
++  .pp-section-heading {
++    align-items: flex-start;
++  }
++  .pp-photo-actions .icon-button {
++    width: 27px;
++  }
++  .pp-photo-list li {
++    flex-wrap: wrap;
++  }
++  .pp-photo-meta {
++    min-width: 90px;
++  }
++  .pp-photo-actions {
++    margin-left: auto;
++  }
++  .pp-settings fieldset {
++    gap: 18px;
++  }
++}
++@media (prefers-reduced-motion: reduce) {
++  .pp-dropzone {
++    transition: none;
++  }
++  .pp-dialog .spin {
++    animation: none;
++  }
++}
+diff --git a/src/features/photo-pdf/worker.ts b/src/features/photo-pdf/worker.ts
+new file mode 100644
+index 0000000..316e6fd
+--- /dev/null
++++ b/src/features/photo-pdf/worker.ts
+@@ -0,0 +1,23 @@
++import { convertLocally } from "./convert";
++// Bundled by Vite and served from this application. No external scripts or services.
++self.onmessage = async ({ data }) => {
++  if (
++    typeof OffscreenCanvas === "undefined" ||
++    typeof createImageBitmap !== "function"
++  ) {
++    self.postMessage({ kind: "unsupported" });
++    return;
++  }
++  try {
++    const blob = await convertLocally(data.files, data.settings, (progress) =>
++      self.postMessage({ kind: "progress", progress }),
++    );
++    self.postMessage({ kind: "done", blob });
++  } catch (error) {
++    self.postMessage({
++      kind: "error",
++      message:
++        error instanceof Error ? error.message : "Не удалось собрать PDF.",
++    });
++  }
++};
+diff --git a/tests/photo-pdf.test.js b/tests/photo-pdf.test.js
+new file mode 100644
+index 0000000..fc2b7c1
+--- /dev/null
++++ b/tests/photo-pdf.test.js
+@@ -0,0 +1,191 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { createServer } from "node:http";
++import { mkdtemp, rm } from "node:fs/promises";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { createApp } from "../server/app.js";
++import { PhotoPdfWriter, pageLayout } from "../src/features/photo-pdf/pdf.ts";
++import {
++  defaultSettings,
++  imageDimensions,
++  inspectPhoto,
++  outputFilename,
++  validateSettings,
++} from "../src/features/photo-pdf/files.ts";
++const jpg = new Uint8Array([255, 216, 255, 224, 0, 4, 0, 0, 255, 217]);
++test("PDF geometry contains portrait and landscape photos without cropping or stretching", () => {
++  for (const [w, h] of [
++    [1200, 2400],
++    [2400, 1200],
++    [600, 600],
++  ]) {
++    const p = pageLayout(w, h, "a4");
++    assert.ok(p.x >= 17.999 && p.y >= 17.999);
++    assert.ok(p.x + p.imageWidth <= p.width - 17.999);
++    assert.ok(p.y + p.imageHeight <= p.height - 17.999);
++    assert.ok(Math.abs(p.imageWidth / p.imageHeight - w / h) < 1e-9);
++    assert.equal(p.width, w > h ? 841.89 : 595.28);
++    const fit = pageLayout(w, h, "image");
++    assert.ok(Math.abs(fit.x) < 1e-9 && Math.abs(fit.y) < 1e-9);
++    assert.equal(Math.max(fit.width, fit.height), 841.89);
++  }
++  assert.throws(() => pageLayout(0, 20, "a4"));
++  assert.throws(() => pageLayout(200, 20, "invalid"));
++});
++test("PDF binary offsets and stream lengths are exact, pages ordered and no incomplete document can download", async () => {
++  const pdf = new PhotoPdfWriter(2, "a4");
++  pdf.add({ bytes: jpg, width: 160, height: 240 });
++  assert.throws(() => pdf.finish(), /Не все/);
++  pdf.add({ bytes: jpg, width: 240, height: 160 });
++  const blob = pdf.finish(),
++    buffer = Buffer.from(await blob.arrayBuffer()),
++    text = buffer.toString("latin1");
++  assert.equal(blob.type, "application/pdf");
++  assert.match(text, /^%PDF-1\.4/);
++  assert.match(text, /\/Kids \[5 0 R 8 0 R\]/);
++  assert.equal((text.match(/\/Type \/Page /g) || []).length, 2);
++  const offset = Number(text.match(/startxref\n(\d+)/)[1]);
++  assert.equal(text.slice(offset, offset + 4), "xref");
++  const lines = text.slice(offset).split("\n");
++  assert.equal(lines[1], "0 9");
++  for (let id = 1; id <= 8; id++) {
++    const at = Number(lines[2 + id].slice(0, 10));
++    assert.equal(text.slice(at, at + String(id).length + 6), `${id} 0 obj`);
++  }
++  let streams = 0;
++  for (const m of text.matchAll(/\/Length (\d+) >>\nstream\n/g)) {
++    const first = m.index + m[0].length,
++      last = first + Number(m[1]);
++    assert.match(text.slice(last, last + 12), /^\n?endstream/);
++    streams++;
++  }
++  assert.equal(streams, 4);
++  assert.throws(() => pdf.add({ bytes: jpg, width: 1, height: 1 }));
++  assert.throws(() => pdf.finish());
++  assert.doesNotMatch(text, /\/JavaScript|\/EmbeddedFile|\/OpenAction/);
++});
++test("PDF limits fail explicitly rather than create a truncated or silently incomplete document", () => {
++  assert.throws(() => new PhotoPdfWriter(0, "a4"));
++  assert.throws(() => new PhotoPdfWriter(501, "a4"));
++  const small = new PhotoPdfWriter(1, "a4", 600);
++  assert.throws(
++    () =>
++      small.add({
++        bytes: new Uint8Array([255, 216, ...new Array(700).fill(0), 255, 217]),
++        width: 100,
++        height: 100,
++      }),
++    /250 МБ/,
++  );
++  assert.throws(
++    () =>
++      new PhotoPdfWriter(1, "a4").add({
++        bytes: new Uint8Array([1, 2, 3, 4]),
++        width: 1,
++        height: 1,
++      }),
++    /JPEG/,
++  );
++});
++test("compression never enlarges pixels; original resolution and invalid settings have explicit canvas limits", () => {
++  assert.deepEqual(imageDimensions(4000, 2000, 1600), {
++    width: 1600,
++    height: 800,
++  });
++  assert.deepEqual(imageDimensions(600, 900, 1600), {
++    width: 600,
++    height: 900,
++  });
++  assert.deepEqual(imageDimensions(600, 900, 0), { width: 600, height: 900 });
++  assert.deepEqual(imageDimensions(20000, 10000, 3000), {
++    width: 3000,
++    height: 1500,
++  });
++  assert.throws(() => imageDimensions(20000, 10000, 0), /разрешение/);
++  assert.throws(() => imageDimensions(0, 100, 1600));
++  validateSettings(defaultSettings);
++  assert.throws(() => validateSettings({ ...defaultSettings, quality: 96 }));
++  assert.throws(() => validateSettings({ ...defaultSettings, maxSide: -1 }));
++  assert.throws(() =>
++    validateSettings({ ...defaultSettings, pageMode: "bad" }),
++  );
++});
++test("raster signature check rejects renamed HTML/SVG, empty and oversized files before previews", async () => {
++  await inspectPhoto(new File([jpg], "photo.jpg"));
++  await inspectPhoto(
++    new File(
++      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0])],
++      "photo.png",
++    ),
++  );
++  await inspectPhoto(new File(["RIFF0000WEBP0000"], "photo.webp"));
++  await inspectPhoto(new File(["0000ftypavif0000"], "photo.avif"));
++  await inspectPhoto(new File(["0000ftypheic0000"], "photo.heic"));
++  await assert.rejects(
++    () =>
++      inspectPhoto(
++        new File(
++          [
++            '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.invalid/private"/></svg>',
++          ],
++          "fake.jpg",
++          { type: "image/jpeg" },
++        ),
++      ),
++    /формате/,
++  );
++  await assert.rejects(
++    () =>
++      inspectPhoto(
++        new File(["<html>bad</html>"], "fake.png", { type: "image/png" }),
++      ),
++    /формате/,
++  );
++  await assert.rejects(() => inspectPhoto(new File([], "empty.jpg")), /пустой/);
++  await assert.rejects(
++    () => inspectPhoto({ size: 50 * 1024 * 1024 + 1 }),
++    /50 МБ/,
++  );
++});
++test("download names are usable on Windows, keep Russian names and never double the extension", () => {
++  assert.equal(outputFilename("  Фотоотчёт.pdf.pdf  "), "Фотоотчёт.pdf");
++  assert.equal(outputFilename(""), "Фотоотчёт.pdf");
++  assert.equal(outputFilename("..."), "Фотоотчёт.pdf");
++  assert.equal(outputFilename("Объект: A/B"), "Объект_ A_B.pdf");
++  assert.equal(outputFilename("CON"), "_CON.pdf");
++  assert.equal(outputFilename("test\u202eexe"), "test_exe.pdf");
++  assert.ok(outputFilename("я".repeat(180)).length <= 124);
++});
++test("production CSP permits local photo previews without enabling remote images or inline scripts", async (t) => {
++  const previous = process.env.NODE_ENV;
++  process.env.NODE_ENV = "production";
++  t.after(() => {
++    if (previous === undefined) delete process.env.NODE_ENV;
++    else process.env.NODE_ENV = previous;
++  });
++  const dataDir = await mkdtemp(join(tmpdir(), "photo-pdf-csp-"));
++  const app = await createApp({
++    dataDir,
++    passwordHash: "",
++    allowedOrigins: [],
++    secureCookies: false,
++    isConfigured: () => false,
++    worker: async () => Response.json({ jobs: [], ok: true }),
++  });
++  const server = createServer(app);
++  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
++  t.after(async () => {
++    await new Promise((resolve) => server.close(resolve));
++    app.locals.db.close();
++    await rm(dataDir, { recursive: true, force: true });
++  });
++  const response = await fetch(
++      `http://127.0.0.1:${server.address().port}/healthz`,
++    ),
++    csp = response.headers.get("content-security-policy");
++  assert.match(csp, /img-src 'self' data: blob:;/);
++  assert.match(csp, /script-src 'self';/);
++  assert.match(csp, /connect-src 'self';/);
++  assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval|https:\/\/|\*/);
++});

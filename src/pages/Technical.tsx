@@ -7,6 +7,7 @@ import {
 import { api, post, dateTime, errorText } from "../api";
 import { Notice, TitleDot } from "../components/Common";
 import "./technical.css";
+import PhotoPdfResource from "../features/photo-pdf/PhotoPdf";
 
 type Field = { key: string; label: string; sourceIndex: number; targetIndex: number | null };
 type CustomColumn = { id: string; title: string; sortOrder: number; createdAt: string };
@@ -697,7 +698,7 @@ export default function Technical() {
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || busy) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || busy || document.querySelector("dialog[open]")) return;
       const node = event.target;
       if (node instanceof Element && node.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]')) return;
       const key = event.key.toLowerCase();
@@ -767,6 +768,8 @@ export default function Technical() {
           <span className="tech-sync-label"><Clock3 size={14}/> Таблицы: {dateTime(meta.updatedAt)}</span>}
       </div>
     </div>
+
+    <PhotoPdfResource />
 
     {error && <Notice tone="error">{error}</Notice>}
     {meta?.lastError && !meta.syncHealth?.lastError && <Notice tone="error">Ошибка последней синхронизации: {meta.lastError}. Ранее загруженные данные сохранены.</Notice>}
