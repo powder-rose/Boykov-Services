@@ -24,6 +24,13 @@ import {
 import type { CompanyField } from "../../shared/docs-customers.js";
 import "./DocsCustomers.css";
 import DocsSales from "./DocsSales";
+import DocsCommerce from "../features/docs-commerce/DocsCommerce";
+const customerSections = [
+  { key: "customers", label: "Клиенты" },
+  { key: "sales", label: "Продажи инструкций" },
+  { key: "generations", label: "Генерации" },
+  { key: "topups", label: "Пополнения" },
+] as const;
 type Outcome = keyof typeof DOCS_CALL_OUTCOMES;
 type Company = Record<CompanyField, string> & { savedAt: string };
 type Call = {
@@ -138,7 +145,8 @@ export default function DocsCustomers({
   active: boolean;
   account?: AccountIdentity;
 }) {
-  const [section, setSection] = useState<"customers" | "sales">("customers"),
+  const [section, setSection] =
+      useState<(typeof customerSections)[number]["key"]>("customers"),
     [salesRefresh, setSalesRefresh] = useState(0);
   const [listing, setListing] = useState<Listing | null>(null),
     [connection, setConnection] = useState<Connection | null>(null),
@@ -214,7 +222,7 @@ export default function DocsCustomers({
       <PageHead
         eyebrow="КЛИЕНТСКАЯ БАЗА"
         title="Клиенты BoykovDocs"
-        description="Пользователи, компании, продажи инструкций и история общения."
+        description="Пользователи, компании, покупки инструкций, генерации и пополнения счёта."
       >
         <button
           className="button"
@@ -223,7 +231,7 @@ export default function DocsCustomers({
             else setSalesRefresh((v) => v + 1);
           }}
           aria-label={
-            section === "customers" ? "Обновить клиентов" : "Обновить продажи"
+            section === "customers" ? "Обновить клиентов" : "Обновить операции"
           }
         >
           <RefreshCw size={17} />
@@ -234,25 +242,42 @@ export default function DocsCustomers({
         className="docs-subtabs"
         role="tablist"
         aria-label="Подразделы BoykovDocs"
+        onKeyDown={(e) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+            return;
+          e.preventDefault();
+          const buttons = Array.from(
+            e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+          );
+          const current = buttons.indexOf(
+            document.activeElement as HTMLButtonElement,
+          );
+          const next =
+            e.key === "Home"
+              ? 0
+              : e.key === "End"
+                ? buttons.length - 1
+                : (current +
+                    (e.key === "ArrowLeft" ? -1 : 1) +
+                    buttons.length) %
+                  buttons.length;
+          setSection(customerSections[next].key);
+          buttons[next].focus();
+        }}
       >
-        <button
-          role="tab"
-          id="docs-customers-tab"
-          aria-controls="docs-customers-panel"
-          aria-selected={section === "customers"}
-          onClick={() => setSection("customers")}
-        >
-          Клиенты
-        </button>
-        <button
-          role="tab"
-          id="docs-sales-tab"
-          aria-controls="docs-sales-panel"
-          aria-selected={section === "sales"}
-          onClick={() => setSection("sales")}
-        >
-          Продажи инструкций
-        </button>
+        {customerSections.map(({ key, label }) => (
+          <button
+            key={key}
+            role="tab"
+            id={`docs-${key}-tab`}
+            aria-controls={`docs-${key}-panel`}
+            aria-selected={section === key}
+            tabIndex={section === key ? 0 : -1}
+            onClick={() => setSection(key)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div
         role="tabpanel"
@@ -613,6 +638,22 @@ export default function DocsCustomers({
           onOpenCustomer={setSelected}
         />
       </div>
+      {(["generations", "topups"] as const).map((kind) => (
+        <div
+          key={kind}
+          role="tabpanel"
+          id={`docs-${kind}-panel`}
+          aria-labelledby={`docs-${kind}-tab`}
+          hidden={section !== kind}
+        >
+          <DocsCommerce
+            kind={kind}
+            active={active && section === kind}
+            refreshKey={salesRefresh}
+            onOpenCustomer={setSelected}
+          />
+        </div>
+      ))}
       {selected && (
         <CustomerDialog
           key={selected}

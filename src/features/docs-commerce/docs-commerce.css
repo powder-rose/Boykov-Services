@@ -1,0 +1,170 @@
+.docs-subtabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.dcom-page .dc-sort {
+  min-width: 210px;
+}
+.dcom-page .dc-sort select {
+  padding-right: 32px;
+}
+.dcom-table-scroll {
+  overflow: auto;
+}
+.dcom-table {
+  border-collapse: collapse;
+  width: 100%;
+  text-align: left;
+}
+.dcom-table th {
+  background: #f7f8f3;
+  color: #6e7665;
+  font-size: 14px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.dcom-table td,
+.dcom-table th {
+  padding: 18px 24px;
+  border-top: 1px solid var(--line);
+}
+.dcom-table td {
+  vertical-align: middle;
+}
+.dcom-table .dc-user-cell {
+  min-width: 230px;
+}
+.dcom-table td:last-child {
+  text-align: right;
+}
+.dcom-table .dc-contact-links small {
+  font-size: 12px;
+  color: #747c6d;
+  overflow-wrap: anywhere;
+}
+.dcom-table .ds-amount {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dcom-count {
+  font-size: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.dcom-refund-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+  color: #986379;
+  white-space: nowrap;
+}
+.dcom-documents {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 28px;
+  background: #fafbf6;
+}
+.dcom-documents .ds-top {
+  max-height: none;
+}
+.dcom-documents .ds-top > div > span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.dcom-history > article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 18px;
+  align-items: center;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.dcom-history > article > div > strong {
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.dcom-history small {
+  display: block;
+  font-size: 13px;
+  color: #747d69;
+  line-height: 1.7;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.dcom-status {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: #f1f2eb;
+  color: #6b745d;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.dcom-status.generated,
+.dcom-status.confirmed {
+  background: #eaf1d5;
+  color: #536a31;
+}
+.dcom-status.refunded,
+.dcom-status.refunding,
+.dcom-status.refund_pending {
+  background: #f7e5ed;
+  color: #936079;
+}
+.dcom-status.generating,
+.dcom-status.moderating {
+  background: #f0eddc;
+  color: #877a46;
+}
+.dcom-operation-amount {
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.dcom-operation-amount.refunded {
+  color: #986379;
+}
+.dcom-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .docs-subtabs {
+    width: 100%;
+    gap: 3px;
+  }
+  .docs-subtabs button {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 11px 12px;
+  }
+  .dcom-table td,
+  .dcom-table th {
+    padding: 16px 18px;
+  }
+  .dcom-history > article {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .dcom-history > article > div {
+    grid-column: 1/-1;
+  }
+  .dcom-status {
+    justify-self: start;
+  }
+  .dcom-operation-amount {
+    justify-self: end;
+  }
+  .dcom-documents {
+    padding: 16px;
+  }
+}

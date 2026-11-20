@@ -40,8 +40,27 @@ export function validateSalesConnection(config) {
   return url.href;
 }
 export class DocsSalesAgent {
+  static validateConnection = validateSalesConnection;
+  sourceName = "boykovdocs-sales";
+  recordId(event) {
+    return event.purchase.id;
+  }
+  captureContent(event) {
+    return { user: event.user, purchase: event.purchase };
+  }
+  acknowledges(ack, payload, eventId) {
+    return (
+      ack.ok === true &&
+      ack.eventId === eventId &&
+      ack.externalId === payload.user.id &&
+      ack.saleId === payload.purchase.id
+    );
+  }
   constructor(config, { fetcher = fetch, now = Date.now } = {}) {
-    this.config = { ...config, endpoint: validateSalesConnection(config) };
+    this.config = {
+      ...config,
+      endpoint: this.constructor.validateConnection(config),
+    };
     this.fetcher = fetcher;
     this.now = now;
     mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
@@ -84,12 +103,12 @@ export class DocsSalesAgent {
       .run(key, String(value));
   }
   capture(event) {
-    const content = { user: event.user, purchase: event.purchase },
+    const content = this.captureContent(event),
       fingerprint = hash(JSON.stringify(content));
     if (
       this.db
         .prepare("SELECT fingerprint FROM capture WHERE purchase_id=?")
-        .get(event.purchase.id)?.fingerprint === fingerprint
+        .get(this.recordId(event))?.fingerprint === fingerprint
     )
       return;
     this.db.exec("BEGIN IMMEDIATE");
@@ -106,7 +125,7 @@ export class DocsSalesAgent {
         )
         .run(
           payload.eventId,
-          payload.purchase.id,
+          this.recordId(payload),
           JSON.stringify(payload),
           this.now(),
         );
@@ -114,7 +133,7 @@ export class DocsSalesAgent {
         .prepare(
           "INSERT INTO capture VALUES(?,?) ON CONFLICT(purchase_id) DO UPDATE SET fingerprint=excluded.fingerprint",
         )
-        .run(payload.purchase.id, fingerprint);
+        .run(this.recordId(payload), fingerprint);
       this.set("clock", observed);
       this.db.exec("COMMIT");
     } catch (e) {
@@ -284,12 +303,7 @@ export class DocsSalesAgent {
           stop = r.status === 401 || r.status === 403;
         } else {
           const ack = await r.json();
-          if (
-            ack.ok === true &&
-            ack.eventId === row.event_id &&
-            ack.externalId === p.user.id &&
-            ack.saleId === p.purchase.id
-          ) {
+          if (this.acknowledges(ack, p, row.event_id)) {
             this.db
               .prepare(
                 "UPDATE outbox SET delivered=1,error='' WHERE event_id=?",
@@ -324,7 +338,7 @@ export class DocsSalesAgent {
     if (!response.ok)
       throw Error("DOCS_SALES_HEARTBEAT_HTTP_" + response.status);
     const ack = await response.json();
-    if (ack.ok !== true || ack.source !== "boykovdocs-sales")
+    if (ack.ok !== true || ack.source !== this.sourceName)
       throw Error("INVALID_DOCS_SALES_HEARTBEAT");
     const file = join(this.config.stateDir, "status.json"),
       temporary = file + "." + randomUUID();
