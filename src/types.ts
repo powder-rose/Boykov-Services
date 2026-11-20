@@ -1,4 +1,5 @@
 export type Page =
+  | "docs-customers"
   | "cabinet"
   | "overview"
   | "contracts"
