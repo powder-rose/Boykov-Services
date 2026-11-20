@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { nativeSources, reportPeriod } from "../../../shared/statistics.js";
 import { validateNativePacket } from "./validation.js";
+import { buildStatisticsOverview, statisticsColor } from "./overview.js";
 const bad = (message, status = 400) =>
   Object.assign(new Error(message), { status });
 const digest = (text) => createHash("sha256").update(text).digest("hex");
@@ -13,6 +14,8 @@ export async function createStatisticsModule(db, options) {
     site_id TEXT NOT NULL, period TEXT NOT NULL, source_host TEXT NOT NULL, report TEXT NOT NULL,
     generated_at TEXT NOT NULL, received_at TEXT NOT NULL, packet_hash TEXT NOT NULL,
     PRIMARY KEY(site_id,period));`);
+  db.exec(`CREATE TABLE IF NOT EXISTS statistics_site_colors (
+    site_id TEXT PRIMARY KEY, color_index INTEGER NOT NULL UNIQUE CHECK(color_index>=0));`);
   const now = options.now || Date.now;
   const getSite = (id) => {
     const s = db
@@ -105,9 +108,9 @@ export async function createStatisticsModule(db, options) {
       .status(201)
       .json({ ok: true, siteId: site.id, generatedAt: packet.generatedAt });
   }
-  function report(id, key) {
+  function report(id, key, clock = now()) {
     const s = getSite(id),
-      range = reportPeriod(key, now());
+      range = reportPeriod(key, clock);
     const saved = db
       .prepare(
         "SELECT * FROM statistics_native_reports WHERE site_id=? AND period=? AND source_host=?",
@@ -116,7 +119,7 @@ export async function createStatisticsModule(db, options) {
     if (saved) {
       const value = JSON.parse(saved.report),
         stale =
-          now() - Date.parse(saved.generated_at) > 180000 ||
+          clock - Date.parse(saved.generated_at) > 180000 ||
           (key !== "24h" && value.period.from !== range.from);
       return {
         site: s,
@@ -127,7 +130,7 @@ export async function createStatisticsModule(db, options) {
           : null,
         fetchedAt: saved.generated_at,
         receivedAt: saved.received_at,
-        checkedAt: new Date(now()).toISOString(),
+        checkedAt: new Date(clock).toISOString(),
         provider: nativeSources[s.host]?.label || "Статистика сайта",
         leadsOrigin: "native",
         ...Object.fromEntries(
@@ -161,7 +164,7 @@ export async function createStatisticsModule(db, options) {
       error: null,
       fetchedAt: null,
       receivedAt: null,
-      checkedAt: new Date(now()).toISOString(),
+      checkedAt: new Date(clock).toISOString(),
       provider: nativeSources[s.host]?.label || "Статистика сайта",
       leadsOrigin: "hub",
       totals: {
@@ -176,6 +179,76 @@ export async function createStatisticsModule(db, options) {
       articles: [],
     };
   }
+  function overview(key) {
+    const clock = now();
+    reportPeriod(key, clock);
+    const sites = list();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const lookup = db.prepare(
+        "SELECT color_index FROM statistics_site_colors WHERE site_id=?",
+      );
+      let next = db
+        .prepare(
+          "SELECT COALESCE(MAX(color_index),-1)+1 n FROM statistics_site_colors",
+        )
+        .get().n;
+      for (const site of sites) {
+        let row = lookup.get(site.id);
+        if (!row) {
+          row = { color_index: next++ };
+          db.prepare("INSERT INTO statistics_site_colors VALUES(?,?)").run(
+            site.id,
+            row.color_index,
+          );
+        }
+        site.color = statisticsColor(row.color_index);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw error;
+    }
+    const reports = sites.map((site) => {
+      try {
+        const value = report(site.id, key, clock);
+        if (
+          !Array.isArray(value.daily) ||
+          !value.totals ||
+          !Number.isFinite(Date.parse(value.period.from)) ||
+          !Number.isFinite(Date.parse(value.period.to)) ||
+          !["visits", "views", "articles", "leads"].every((metric) =>
+            value.totals[metric] === null
+              ? value.daily.every((p) => p?.[metric] === null)
+              : Number.isSafeInteger(value.totals[metric]) &&
+                value.totals[metric] >= 0 &&
+                value.totals[metric] ===
+                  value.daily.reduce((sum, p) => sum + (p?.[metric] ?? 0), 0),
+          ) ||
+          !value.daily.every(
+            (point) =>
+              point &&
+              Number.isFinite(Date.parse(point.at)) &&
+              Number.isFinite(Date.parse(point.end)) &&
+              ["visits", "views", "articles", "leads"].every(
+                (metric) =>
+                  point[metric] === null ||
+                  (Number.isSafeInteger(point[metric]) && point[metric] >= 0),
+              ),
+          )
+        )
+          throw Error("INVALID_SAVED_STATISTICS");
+        return value;
+      } catch {
+        return {
+          status: "error",
+          error:
+            "Не удалось прочитать отчёт сайта. Откройте отдельную статистику для проверки.",
+        };
+      }
+    });
+    return buildStatisticsOverview(sites, reports, key, clock);
+  }
   function register(app) {
     app.use("/api/statistics", (req, res, next) => {
       res.set("Cache-Control", "private, no-store");
@@ -186,6 +259,10 @@ export async function createStatisticsModule(db, options) {
       wrap((req, res) =>
         res.json({ sites: list(), canConfigure: req.actor?.role === "admin" }),
       ),
+    );
+    app.get(
+      "/api/statistics/overview",
+      wrap((req, res) => res.json(overview(String(req.query.period || "24h")))),
     );
     app.get(
       "/api/statistics/report",
@@ -199,5 +276,5 @@ export async function createStatisticsModule(db, options) {
       ),
     );
   }
-  return { register, receive: wrap(receive), report, list };
+  return { register, receive: wrap(receive), report, list, overview };
 }

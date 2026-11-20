@@ -1,0 +1,10 @@
+README.md
+docs/STATISTICS-OVERVIEW.md
+scripts/deploy-statistics-overview.sh
+server/modules/statistics/index.js
+server/modules/statistics/overview.js
+src/features/statistics-overview/StatisticsOverview.tsx
+src/features/statistics-overview/model.ts
+src/features/statistics-overview/statistics-overview.css
+src/pages/Statistics.tsx
+tests/statistics-overview.test.js

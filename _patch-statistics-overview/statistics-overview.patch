@@ -1,0 +1,2360 @@
+diff --git a/README.md b/README.md
+index 5043751..6e9b758 100644
+--- a/README.md
++++ b/README.md
+@@ -146,3 +146,7 @@ npm run check
+ ## Фото в PDF
+ 
+ В техотделе доступен локальный конвертер фотоотчётов: сжатие, порядок страниц, A4 или размер по фото. Файлы обрабатываются в браузере и на сервер не отправляются. [Параметры, приватность и установка](docs/PHOTO-PDF.md).
++
++## Общий обзор статистики
++
++«Статистика → Все сайты»: сравнение сайтов по цветным тегам, общие показатели, динамика по часам/дням и накопительный график. Подробные отчёты по каждому сайту сохранены. [Подсчёт, полнота данных и установка](docs/STATISTICS-OVERVIEW.md).
+diff --git a/server/modules/statistics/index.js b/server/modules/statistics/index.js
+index af6fe5a..a9808cc 100644
+--- a/server/modules/statistics/index.js
++++ b/server/modules/statistics/index.js
+@@ -1,6 +1,7 @@
+ import { createHash, timingSafeEqual } from "node:crypto";
+ import { nativeSources, reportPeriod } from "../../../shared/statistics.js";
+ import { validateNativePacket } from "./validation.js";
++import { buildStatisticsOverview, statisticsColor } from "./overview.js";
+ const bad = (message, status = 400) =>
+   Object.assign(new Error(message), { status });
+ const digest = (text) => createHash("sha256").update(text).digest("hex");
+@@ -13,6 +14,8 @@ export async function createStatisticsModule(db, options) {
+     site_id TEXT NOT NULL, period TEXT NOT NULL, source_host TEXT NOT NULL, report TEXT NOT NULL,
+     generated_at TEXT NOT NULL, received_at TEXT NOT NULL, packet_hash TEXT NOT NULL,
+     PRIMARY KEY(site_id,period));`);
++  db.exec(`CREATE TABLE IF NOT EXISTS statistics_site_colors (
++    site_id TEXT PRIMARY KEY, color_index INTEGER NOT NULL UNIQUE CHECK(color_index>=0));`);
+   const now = options.now || Date.now;
+   const getSite = (id) => {
+     const s = db
+@@ -105,9 +108,9 @@ export async function createStatisticsModule(db, options) {
+       .status(201)
+       .json({ ok: true, siteId: site.id, generatedAt: packet.generatedAt });
+   }
+-  function report(id, key) {
++  function report(id, key, clock = now()) {
+     const s = getSite(id),
+-      range = reportPeriod(key, now());
++      range = reportPeriod(key, clock);
+     const saved = db
+       .prepare(
+         "SELECT * FROM statistics_native_reports WHERE site_id=? AND period=? AND source_host=?",
+@@ -116,7 +119,7 @@ export async function createStatisticsModule(db, options) {
+     if (saved) {
+       const value = JSON.parse(saved.report),
+         stale =
+-          now() - Date.parse(saved.generated_at) > 180000 ||
++          clock - Date.parse(saved.generated_at) > 180000 ||
+           (key !== "24h" && value.period.from !== range.from);
+       return {
+         site: s,
+@@ -127,7 +130,7 @@ export async function createStatisticsModule(db, options) {
+           : null,
+         fetchedAt: saved.generated_at,
+         receivedAt: saved.received_at,
+-        checkedAt: new Date(now()).toISOString(),
++        checkedAt: new Date(clock).toISOString(),
+         provider: nativeSources[s.host]?.label || "Статистика сайта",
+         leadsOrigin: "native",
+         ...Object.fromEntries(
+@@ -161,7 +164,7 @@ export async function createStatisticsModule(db, options) {
+       error: null,
+       fetchedAt: null,
+       receivedAt: null,
+-      checkedAt: new Date(now()).toISOString(),
++      checkedAt: new Date(clock).toISOString(),
+       provider: nativeSources[s.host]?.label || "Статистика сайта",
+       leadsOrigin: "hub",
+       totals: {
+@@ -176,6 +179,76 @@ export async function createStatisticsModule(db, options) {
+       articles: [],
+     };
+   }
++  function overview(key) {
++    const clock = now();
++    reportPeriod(key, clock);
++    const sites = list();
++    db.exec("BEGIN IMMEDIATE");
++    try {
++      const lookup = db.prepare(
++        "SELECT color_index FROM statistics_site_colors WHERE site_id=?",
++      );
++      let next = db
++        .prepare(
++          "SELECT COALESCE(MAX(color_index),-1)+1 n FROM statistics_site_colors",
++        )
++        .get().n;
++      for (const site of sites) {
++        let row = lookup.get(site.id);
++        if (!row) {
++          row = { color_index: next++ };
++          db.prepare("INSERT INTO statistics_site_colors VALUES(?,?)").run(
++            site.id,
++            row.color_index,
++          );
++        }
++        site.color = statisticsColor(row.color_index);
++      }
++      db.exec("COMMIT");
++    } catch (error) {
++      if (db.isTransaction) db.exec("ROLLBACK");
++      throw error;
++    }
++    const reports = sites.map((site) => {
++      try {
++        const value = report(site.id, key, clock);
++        if (
++          !Array.isArray(value.daily) ||
++          !value.totals ||
++          !Number.isFinite(Date.parse(value.period.from)) ||
++          !Number.isFinite(Date.parse(value.period.to)) ||
++          !["visits", "views", "articles", "leads"].every((metric) =>
++            value.totals[metric] === null
++              ? value.daily.every((p) => p?.[metric] === null)
++              : Number.isSafeInteger(value.totals[metric]) &&
++                value.totals[metric] >= 0 &&
++                value.totals[metric] ===
++                  value.daily.reduce((sum, p) => sum + (p?.[metric] ?? 0), 0),
++          ) ||
++          !value.daily.every(
++            (point) =>
++              point &&
++              Number.isFinite(Date.parse(point.at)) &&
++              Number.isFinite(Date.parse(point.end)) &&
++              ["visits", "views", "articles", "leads"].every(
++                (metric) =>
++                  point[metric] === null ||
++                  (Number.isSafeInteger(point[metric]) && point[metric] >= 0),
++              ),
++          )
++        )
++          throw Error("INVALID_SAVED_STATISTICS");
++        return value;
++      } catch {
++        return {
++          status: "error",
++          error:
++            "Не удалось прочитать отчёт сайта. Откройте отдельную статистику для проверки.",
++        };
++      }
++    });
++    return buildStatisticsOverview(sites, reports, key, clock);
++  }
+   function register(app) {
+     app.use("/api/statistics", (req, res, next) => {
+       res.set("Cache-Control", "private, no-store");
+@@ -187,6 +260,10 @@ export async function createStatisticsModule(db, options) {
+         res.json({ sites: list(), canConfigure: req.actor?.role === "admin" }),
+       ),
+     );
++    app.get(
++      "/api/statistics/overview",
++      wrap((req, res) => res.json(overview(String(req.query.period || "24h")))),
++    );
+     app.get(
+       "/api/statistics/report",
+       wrap((req, res) =>
+@@ -199,5 +276,5 @@ export async function createStatisticsModule(db, options) {
+       ),
+     );
+   }
+-  return { register, receive: wrap(receive), report, list };
++  return { register, receive: wrap(receive), report, list, overview };
+ }
+diff --git a/src/pages/Statistics.tsx b/src/pages/Statistics.tsx
+index 5d14361..99cc290 100644
+--- a/src/pages/Statistics.tsx
++++ b/src/pages/Statistics.tsx
+@@ -15,6 +15,7 @@ import {
+ import { api, dateTime, errorText, number } from "../api";
+ import { Empty, Notice, PageHead } from "../components/Common";
+ import "./Statistics.css";
++import StatisticsOverview from "../features/statistics-overview/StatisticsOverview";
+ 
+ type Period = "24h" | "7" | "30" | "90";
+ type Site = {
+@@ -298,7 +299,15 @@ function ConnectionDialog({
+   );
+ }
+ 
+-export default function Statistics({ active }: { active: boolean }) {
++function SiteStatistics({
++  active,
++  revision,
++  requested,
++}: {
++  active: boolean;
++  revision: number;
++  requested: { id: string; period: Period } | null;
++}) {
+   const [sites, setSites] = useState<Site[]>([]),
+     [selected, setSelected] = useState(""),
+     [period, setPeriod] = useState<Period>("24h"),
+@@ -307,8 +316,13 @@ export default function Statistics({ active }: { active: boolean }) {
+     [error, setError] = useState(""),
+     [loading, setLoading] = useState(false),
+     [sitesLoading, setSitesLoading] = useState(false),
+-    [settingsOpen, setSettingsOpen] = useState(false),
+-    [revision, setRevision] = useState(0);
++    [settingsOpen, setSettingsOpen] = useState(false);
++  useEffect(() => {
++    if (requested) {
++      setSelected(requested.id);
++      setPeriod(requested.period);
++    }
++  }, [requested]);
+   const sequence = useRef(0);
+   const loadSites = useCallback(async () => {
+     setSitesLoading(true);
+@@ -333,7 +347,7 @@ export default function Statistics({ active }: { active: boolean }) {
+   }, []);
+   useEffect(() => {
+     if (active) void loadSites();
+-  }, [active, loadSites]);
++  }, [active, loadSites, revision]);
+   useEffect(() => {
+     if (!active || !selected) return;
+     let controller: AbortController | null = null;
+@@ -447,29 +461,6 @@ export default function Statistics({ active }: { active: boolean }) {
+       : 0;
+   return (
+     <>
+-      <PageHead
+-        eyebrow="МАРКЕТИНГ И РЕЗУЛЬТАТЫ"
+-        title="Статистика сайтов"
+-        description="Посещаемость, популярные материалы и обращения клиентов."
+-      >
+-        <div className="stats-head-actions">
+-          <span className="stats-auto">
+-            <RefreshCw size={14} />
+-            Автообновление · 30 с
+-          </span>
+-          <button
+-            className="button secondary"
+-            onClick={() => {
+-              void loadSites();
+-              setRevision((r) => r + 1);
+-            }}
+-            disabled={loading || !site}
+-          >
+-            <RefreshCw size={16} className={loading ? "spin" : ""} />
+-            Обновить
+-          </button>
+-        </div>
+-      </PageHead>
+       {error && <Notice tone="error">{error}</Notice>}
+       {!sitesLoading && !sites.length ? (
+         <Empty
+@@ -525,7 +516,7 @@ export default function Statistics({ active }: { active: boolean }) {
+               </button>
+             )}
+           </section>
+-          <div className="stats-report-meta">
++          <div className="stats-report-meta" aria-busy={loading}>
+             <div>
+               <span className="stats-provider">
+                 {visible?.provider || site?.source?.label || "Статистика сайта"}
+@@ -777,3 +768,110 @@ export default function Statistics({ active }: { active: boolean }) {
+     </>
+   );
+ }
++
++export default function Statistics({ active }: { active: boolean }) {
++  const [view, setView] = useState<"overview" | "site">("overview"),
++    [revision, setRevision] = useState(0),
++    [requested, setRequested] = useState<{ id: string; period: Period } | null>(
++      null,
++    );
++  const tabs = useRef<HTMLDivElement>(null);
++  return (
++    <>
++      <PageHead
++        eyebrow="МАРКЕТИНГ И РЕЗУЛЬТАТЫ"
++        title="Статистика сайтов"
++        description="Все сайты в одном обзоре. Посещаемость, динамика и обращения клиентов."
++      >
++        <div className="stats-head-actions">
++          <span className="stats-auto">
++            <RefreshCw size={14} />
++            Автообновление · 30 с
++          </span>
++          <button
++            className="button secondary"
++            onClick={() => setRevision((v) => v + 1)}
++          >
++            <RefreshCw size={16} />
++            Обновить
++          </button>
++        </div>
++      </PageHead>
++      <div
++        className="so-view-tabs"
++        role="tablist"
++        aria-label="Вид статистики"
++        ref={tabs}
++        onKeyDown={(e) => {
++          if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
++            e.preventDefault();
++            const next =
++              e.key === "Home"
++                ? "overview"
++                : e.key === "End"
++                  ? "site"
++                  : view === "overview"
++                    ? "site"
++                    : "overview";
++            setView(next);
++            tabs.current
++              ?.querySelector<HTMLButtonElement>(`[id="stats-${next}-tab"]`)
++              ?.focus();
++          }
++        }}
++      >
++        <button
++          type="button"
++          role="tab"
++          id="stats-overview-tab"
++          aria-controls="stats-overview-panel"
++          aria-selected={view === "overview"}
++          tabIndex={view === "overview" ? 0 : -1}
++          onClick={() => setView("overview")}
++        >
++          <BarChart3 size={17} />
++          Все сайты
++        </button>
++        <button
++          type="button"
++          role="tab"
++          id="stats-site-tab"
++          aria-controls="stats-site-panel"
++          aria-selected={view === "site"}
++          tabIndex={view === "site" ? 0 : -1}
++          onClick={() => setView("site")}
++        >
++          <Globe2 size={17} />
++          Отчёт по сайту
++        </button>
++      </div>
++      <div
++        role="tabpanel"
++        id="stats-overview-panel"
++        aria-labelledby="stats-overview-tab"
++        hidden={view !== "overview"}
++      >
++        <StatisticsOverview
++          active={active && view === "overview"}
++          revision={revision}
++          onOpenSite={(id, period) => {
++            setRequested({ id, period });
++            setView("site");
++          }}
++        />
++      </div>
++      <div
++        role="tabpanel"
++        id="stats-site-panel"
++        aria-labelledby="stats-site-tab"
++        hidden={view !== "site"}
++      >
++        <SiteStatistics
++          active={active && view === "site"}
++          revision={revision}
++          requested={requested}
++        />
++      </div>
++    </>
++  );
++}
+diff --git a/docs/STATISTICS-OVERVIEW.md b/docs/STATISTICS-OVERVIEW.md
+new file mode 100644
+index 0000000..0656fd8
+--- /dev/null
++++ b/docs/STATISTICS-OVERVIEW.md
+@@ -0,0 +1,47 @@
++# Общая статистика сайтов
++
++Раздел «Статистика → Все сайты» дополняет существующий подробный отчёт. По умолчанию выбраны все зарегистрированные сайты и период 7 дней. Нажатие на тег показывает/скрывает сайт; график, общие суммы и таблица меняются сразу. «Показать все» и «Снять выбор» управляют всем набором. Если ничего не выбрано, показывается приглашение выбрать сайты вместо фиктивных нулевых показателей.
++
++## Интерфейс
++
++- Цветной кружок рядом с названием совпадает с цветом линии и обозначением в значениях/таблице. Цвет закрепляется за ID сайта в `statistics_site_colors`, одинаков для всей команды и сохраняется после переименования, добавления сайтов и перезапуска. Назначение индекса выполняется транзакцией. Удаление другого сайта не меняет цвета оставшихся.
++- Карточки «Визиты», «Просмотры страниц», «Просмотры статей», «Заявки» показывают суммы выбранных сайтов; клик меняет показатель графика. Показатель можно также выбрать прямо над графиком.
++- Периоды: последние 24 часа с часовыми интервалами либо 7/30/90 календарных дней по Москве, включая доступную часть сегодняшнего дня.
++- «По дням/часам» показывает значения интервала. «Накопительно» складывает значения с начала отчёта каждого сайта: это рост накопленного количества, не процент изменения к прошлому периоду.
++- Наведение или перемещение указателя выбирает интервал. Клавиши влево/вправо, Home/End работают на фокусированном графике. Значения сайтов и исходные границы интервалов выводятся под ним.
++- В таблице «Сайты в цифрах» видны все четыре показателя, актуальность источника и время его обновления. Название сайта открывает прежний подробный отчёт с передачей выбранного периода. Возврат в общий обзор сохраняет фильтры и режим графика.
++- При открытом активном разделе обновление проверяется каждые 30 секунд, при возвращении в видимую вкладку и по кнопке «Обновить». Запросы отменяются при смене периода/экрана; старый ответ не подменяет новый период.
++
++## Подсчёт и полнота
++
++Обзор использует имеющиеся native-отчёты из админок сайтов и регистрацию источников раздела «Заявки». Не обращается к внешним системам аналитики, не устанавливает новые счётчики и не требует повторного подключения работающих каналов. Новые сайты автоматически появляются в списке; посещаемость доступна после подключения источника статистики. Этот патч не заменяет задачу установки отсутствующих источников.
++
++Каждый KPI показывает, для скольких выбранных сайтов есть данные. Прочерк — отсутствие значения; реальный измеренный ноль остаётся нулём. Неизвестные точки не заполняются нулями и не соединяются через пропуск. Сайт без native-отчёта может показывать заявки, уже полученные в Boykov Services, включая корзину, как в прежнем отчёте. Если native-отчёт есть, заявки берутся только из него: копии заявок в центральной базе повторно не прибавляются.
++
++Устаревшие отчёты и ошибочные источники исключаются из общих сумм и графика с явным предупреждением. Подробный отчёт сохраняет прежнее поведение: последний снимок можно просмотреть с отметкой устаревания. Срок актуальности соответствует существующей логике — 3 минуты; смена московского календарного окна также делает старый дневной отчёт неактуальным. Ошибка одного сохранённого источника изолируется, остальные продолжают отображаться.
++
++Native-сайты передают срезы в разное время. Их исходные значения и интервалы не интерполируются и не пересчитываются пропорционально минутам. Ось объединяет фактические часовые/дневные корзины по времени Москвы. Крайние точки могут быть неполными; точные границы показаны в расшифровке, а время обновления — в таблице. Поэтому общая временная рамка rolling 24h может быть шире ровно 24 часов на разницу свежих срезов, а в часовом графике возможны 25–26 корзин. Каждый сайт при этом отражает собственный полученный 24-часовой отчёт; суммы соответствуют его фактическим точкам. На границе суток старые календарные окна не смешиваются с новыми.
++
++Суммируются визиты сайтов, а не уникальные люди между разными доменами. Сравнение с предыдущим периодом в процентах не вычисляется: текущий протокол хранит последние срезы, которых для такого сравнения недостаточно. В накопительном режиме пробелы остаются пробелами, а сумма растёт по реально доступным точкам.
++
++## Доступ и установка
++
++Новый `GET /api/statistics/overview?period=...` использует существующий вход в рабочее пространство и `private, no-store`. Ключи подключений не включаются в ответ. Роли и аудитория раздела не меняются; установленные коннекторы, данные заявок, native-отчёты и остальные модули сохраняются. Добавляется только таблица закреплённых цветов.
++
++Применить архивный патч PowerShell-установщиком в корне локального проекта. База — main `16063d3` или совместимая версия. Установщик проверяет применимость и уже установленный патч, сохраняет копии затронутых файлов внутри `.git/boykov-patch-backups`, запускает `npm run check`. Коммитов и push не делает.
++
++После успешной проверки выполнить коммит/push обычным способом, затем на VPS Boykov Services:
++
++```bash
++cd /opt/boykov-services
++git pull --ff-only
++bash scripts/deploy-statistics-overview.sh
++```
++
++Скрипт сохраняет согласованный снимок SQLite через `VACUUM INTO` с проверкой целостности, предыдущий образ и команду отката; обновляет только `app`, проверяет healthy, миграцию и закрытость API. Ожидается `STATISTICS_OVERVIEW_DEPLOY=OK`. Сервисы документов и коннекторы не перезапускаются; дополнительных cron, ключей и библиотек нет.
++
++Путь резервной копии выводится как `BACKUP=...`; откат приложения — `bash <BACKUP>/rollback-app.sh`. Таблица цветов совместима со старым приложением. Не заменять всю базу автоматически при откате: после снимка могли поступить новые заявки и другие данные.
++
++## Проверки
++
++`npm run check`: TypeScript/Vite и весь набор тестов. Девять новых проверок охватывают авторизацию, приватность, совпадение сумм с реальными интервалами, отсутствие двойного счёта заявок, разное время срезов и разрывы, nullable/нулевые метрики, stale/error, переход московских суток, постоянство цветов и расчёт выбранного набора. В браузере проверяются теги, режимы/показатели, клавиатура, пустой выбор, переход и возврат из подробного отчёта. `bash -n` проверяет синтаксис скрипта деплоя. Производственный запуск выполняется пользователем после push.
+diff --git a/scripts/deploy-statistics-overview.sh b/scripts/deploy-statistics-overview.sh
+new file mode 100644
+index 0000000..ad9bfd1
+--- /dev/null
++++ b/scripts/deploy-statistics-overview.sh
+@@ -0,0 +1,60 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++umask 022
++cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++[[ "$EUID" == 0 ]] || { echo 'STATISTICS_OVERVIEW_DEPLOY_REQUIRES_ROOT'; exit 1; }
++[[ -f server/modules/statistics/overview.js && -f .env ]] || { echo 'STATISTICS_OVERVIEW_SOURCE_OR_ENV_MISSING'; exit 1; }
++[[ -z "$(git status --porcelain --untracked-files=no)" ]] || { echo 'STATISTICS_OVERVIEW_DEPLOY_STOPPED_TRACKED_LOCAL_CHANGES'; exit 1; }
++mkdir -p /root/boykov-services-backups
++backup=$(mktemp -d /root/boykov-services-backups/pre-statistics-overview-XXXXXXXX)
++chmod 700 "$backup"
++previous=$(docker inspect boykov-services-app-1 --format '{{.Image}}')
++previous_tag="boykov-services-app:pre-statistics-overview-$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
++docker image tag "$previous" "$previous_tag"
++printf '%s\n' "$previous_tag" > "$backup/previous-image.txt"
++git rev-parse HEAD > "$backup/source-commit.txt"
++printf 'BACKUP=%s\n' "$backup"
++trap 'code=$?; if [[ "$code" != 0 ]]; then printf "STATISTICS_OVERVIEW_DEPLOY_FAILED BACKUP=%s\n" "$backup"; fi' EXIT
++docker compose exec -T app node --input-type=module - <<'DOCS_BACKUP' > "$backup/database-backup.json"
++import { DatabaseSync } from 'node:sqlite';
++import { mkdirSync, chmodSync } from 'node:fs';
++import { randomUUID } from 'node:crypto';
++const directory='/app/data/backups/pre-statistics-overview-'+randomUUID();
++mkdirSync(directory,{recursive:true,mode:0o700});
++const db=new DatabaseSync('/app/data/platform.sqlite');
++try {
++ db.exec('PRAGMA busy_timeout=10000');
++ const destination=directory+'/platform.sqlite';
++ db.prepare('VACUUM INTO ?').run(destination);chmodSync(destination,0o600);
++ const snapshot=new DatabaseSync(destination,{readOnly:true});
++ try {if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('BACKUP_INTEGRITY_FAILED');}finally{snapshot.close();}
++ console.log(JSON.stringify({database:destination}));
++}finally{db.close();}
++DOCS_BACKUP
++cat > "$backup/rollback-app.sh" <<ROLLBACK
++#!/usr/bin/env bash
++set -Eeuo pipefail
++cd /opt/boykov-services
++docker image tag '$previous_tag' boykov-services-app:latest
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++ROLLBACK
++chmod 700 "$backup/rollback-app.sh"
++docker compose build app
++docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
++docker compose exec -T app node --input-type=module - <<'VERIFY_STATISTICS_OVERVIEW'
++import { DatabaseSync } from 'node:sqlite';
++const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
++try {
++ if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
++ for(const table of ['statistics_native_reports','statistics_site_colors'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('STATISTICS_OVERVIEW_MIGRATION_MISSING');
++}finally{db.close();}
++const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
++if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
++for(const route of ['/api/statistics/overview?period=7','/api/statistics/sites','/api/statistics/report?site=nwd&period=24h']){
++ const response=await fetch('http://127.0.0.1:8787'+route,{signal:AbortSignal.timeout(10000)});
++ if(response.status!==401)throw Error('STATISTICS_OVERVIEW_AUTH_FAILED');
++}
++console.log('STATISTICS_OVERVIEW_MODULE=OK\nSTATISTICS_OVERVIEW_AUTH=OK\nSTATISTICS_OVERVIEW_DATABASE=OK');
++VERIFY_STATISTICS_OVERVIEW
++docker compose ps
++printf 'STATISTICS_OVERVIEW_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"
+diff --git a/server/modules/statistics/overview.js b/server/modules/statistics/overview.js
+new file mode 100644
+index 0000000..43428d9
+--- /dev/null
++++ b/server/modules/statistics/overview.js
+@@ -0,0 +1,101 @@
++import { reportPeriod } from "../../../shared/statistics.js";
++const HOUR = 3600000,
++  DAY = 86400000,
++  OFFSET = 3 * HOUR;
++const palette = [
++  "#728541",
++  "#b06a89",
++  "#5d7f9c",
++  "#ad8241",
++  "#8673a6",
++  "#4f8981",
++  "#aa6860",
++  "#738098",
++  "#9b7455",
++  "#7d8d68",
++  "#a166a0",
++  "#4e8799",
++];
++export function statisticsColor(index) {
++  return (
++    palette[index] || `hsl(${((index * 137.508) % 360).toFixed(3)} 43% 43%)`
++  );
++}
++// Counters belong to native source intervals. Align calendar buckets, never interpolate or invent zeroes.
++export function buildStatisticsOverview(sites, reports, key, now) {
++  const requested = reportPeriod(key, now),
++    step = requested.group === "hour" ? HOUR : DAY;
++  const bucketKey = (time) =>
++    Math.floor((time + OFFSET) / step) * step - OFFSET;
++  const canonical = new Set(),
++    bounds = [];
++  const rows = sites.map((site, i) => {
++    const report = reports[i];
++    const usable = report && ["ready", "unconfigured"].includes(report.status);
++    const daily = usable ? report.daily : [];
++    if (daily.length) bounds.push(report.period);
++    const points = daily.map((p) => {
++      const at = bucketKey(Date.parse(p.at)),
++        end = Date.parse(p.end);
++      if (!Number.isFinite(at) || !Number.isFinite(end))
++        throw Error("INVALID_STATISTICS_TIME");
++      canonical.add(at);
++      return {
++        at: new Date(at).toISOString(),
++        end: new Date(at + step).toISOString(),
++        from: p.at,
++        to: p.end,
++        partial: Date.parse(p.at) !== at || end !== at + step,
++        visits: p.visits,
++        views: p.views,
++        articles: p.articles,
++        leads: p.leads,
++      };
++    });
++    return {
++      id: site.id,
++      name: site.name,
++      host: site.host,
++      color: site.color,
++      status: report?.status || "error",
++      error: report?.error || null,
++      source: site.source,
++      lastSyncedAt: report?.fetchedAt || null,
++      leadsOrigin: report?.leadsOrigin || "hub",
++      sourcePeriod: usable ? report.period : null,
++      totals: usable
++        ? report.totals
++        : { visits: null, views: null, articles: null, leads: null },
++      points,
++    };
++  });
++  // With no usable source, show an empty axis for the chosen period rather than an old snapshot.
++  if (!canonical.size) for (const b of requested.buckets) canonical.add(b.key);
++  const keys = [...canonical].sort((a, b) => a - b),
++    timeline = [];
++  for (let time = keys[0]; time <= keys.at(-1); time += step)
++    timeline.push({
++      at: new Date(time).toISOString(),
++      end: new Date(time + step).toISOString(),
++    });
++  return {
++    checkedAt: new Date(now).toISOString(),
++    period: {
++      key,
++      group: requested.group,
++      from: bounds.length
++        ? new Date(
++            Math.min(...bounds.map((p) => Date.parse(p.from))),
++          ).toISOString()
++        : requested.from,
++      to: bounds.length
++        ? new Date(
++            Math.max(...bounds.map((p) => Date.parse(p.to))),
++          ).toISOString()
++        : requested.to,
++    },
++    intervalsDiffer: new Set(bounds.map((p) => p.from + "|" + p.to)).size > 1,
++    timeline,
++    sites: rows,
++  };
++}
+diff --git a/src/features/statistics-overview/StatisticsOverview.tsx b/src/features/statistics-overview/StatisticsOverview.tsx
+new file mode 100644
+index 0000000..87e08c1
+--- /dev/null
++++ b/src/features/statistics-overview/StatisticsOverview.tsx
+@@ -0,0 +1,700 @@
++import { useEffect, useMemo, useRef, useState } from "react";
++import {
++  BarChart3,
++  CircleHelp,
++  ChevronDown,
++  Eye,
++  Globe2,
++  Inbox,
++  MousePointer2,
++  Newspaper,
++  RefreshCw,
++} from "lucide-react";
++import { api, dateTime, errorText, number } from "../../api";
++import { Empty, Loading, Notice } from "../../components/Common";
++import { lineSegments, metrics, seriesPoints, totalMetric } from "./model";
++import type { Metric, Overview, OverviewSite, Period } from "./model";
++import "./statistics-overview.css";
++const periods: { key: Period; label: string }[] = [
++  { key: "24h", label: "24 часа" },
++  { key: "7", label: "7 дней" },
++  { key: "30", label: "30 дней" },
++  { key: "90", label: "90 дней" },
++];
++const icons = {
++  visits: MousePointer2,
++  views: Eye,
++  articles: Newspaper,
++  leads: Inbox,
++};
++const amount = (v: number | null | undefined) =>
++  v === null || v === undefined ? "—" : number(v);
++const dateLabel = (at: string, hourly = false) =>
++  new Intl.DateTimeFormat("ru-RU", {
++    day: "2-digit",
++    month: "2-digit",
++    ...(hourly ? { hour: "2-digit", minute: "2-digit" } : {}),
++    timeZone: "Europe/Moscow",
++  }).format(new Date(at));
++const timeLabel = (at: string, hourly: boolean) =>
++  new Intl.DateTimeFormat(
++    "ru-RU",
++    hourly
++      ? { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Moscow" }
++      : { day: "2-digit", month: "2-digit", timeZone: "Europe/Moscow" },
++  ).format(new Date(at));
++function ColorDot({ color }: { color: string }) {
++  return (
++    <svg
++      className="so-color-dot"
++      width="14"
++      height="14"
++      viewBox="0 0 14 14"
++      aria-hidden="true"
++    >
++      <circle cx="7" cy="7" r="5" fill={color} />
++    </svg>
++  );
++}
++const statusText = (site: OverviewSite) =>
++  site.status === "ready"
++    ? "Данные актуальны"
++    : site.status === "unconfigured"
++      ? "Только заявки"
++      : site.status === "stale"
++        ? "Отчёт устарел"
++        : "Ошибка отчёта";
++function ComparisonChart({
++  data,
++  sites,
++  metric,
++  cumulative,
++}: {
++  data: Overview;
++  sites: OverviewSite[];
++  metric: Metric;
++  cumulative: boolean;
++}) {
++  const [chosen, setChosen] = useState<string | null>(null),
++    [highlight, setHighlight] = useState<string | null>(null);
++  const hourly = data.period.group === "hour",
++    timeline = data.timeline;
++  const series = useMemo(
++    () =>
++      sites.map((site) => ({
++        site,
++        points: seriesPoints(site, timeline, metric, cumulative),
++      })),
++    [sites, timeline, metric, cumulative],
++  );
++  const available = series.filter((s) =>
++    s.points.some((p) => p.value !== null),
++  );
++  const found =
++    chosen === null ? -1 : timeline.findIndex((p) => p.at === chosen);
++  const index = found < 0 ? timeline.length - 1 : found;
++  const max = Math.max(
++    1,
++    ...available.flatMap((s) => s.points.map((p) => p.value ?? 0)),
++  );
++  const step = 10 ** Math.floor(Math.log10(max)),
++    ceiling = Math.max(2, Math.ceil((Math.ceil(max / step) * step) / 2) * 2);
++  const width = 1000,
++    height = 300,
++    left = 60,
++    right = 24,
++    top = 20,
++    bottom = 36;
++  const x = (i: number) =>
++      left + ((width - left - right) * i) / Math.max(1, timeline.length - 1),
++    y = (v: number) => top + (height - top - bottom) * (1 - v / ceiling);
++  const metricName = metrics.find((m) => m.key === metric)!;
++  if (!sites.length)
++    return (
++      <div className="so-chart-empty">
++        <Globe2 size={34} strokeWidth={1.2} />
++        <h3>Выберите сайты для сравнения</h3>
++        <p>Нажмите на теги выше или выберите «Показать все».</p>
++      </div>
++    );
++  if (!available.length)
++    return (
++      <div className="so-chart-empty">
++        <BarChart3 size={36} strokeWidth={1.2} />
++        <h3>Для этого показателя пока нет данных</h3>
++        <p>Выберите другой показатель или подключите статистику сайтов.</p>
++      </div>
++    );
++  return (
++    <>
++      <div className="so-chart-date">
++        <span>{dateLabel(timeline[index].at, hourly)} · МСК</span>
++        <span>
++          {cumulative
++            ? "Сумма с начала отчёта каждого сайта"
++            : hourly
++              ? "За выбранный час"
++              : "За выбранный день"}
++        </span>
++      </div>
++      <svg
++        className="so-chart"
++        viewBox={`0 0 ${width} ${height}`}
++        role="img"
++        tabIndex={0}
++        aria-label={`${metricName.label} по сайтам. Стрелки выбирают дату, Home и End — начало и конец графика.`}
++        onKeyDown={(e) => {
++          if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
++            e.preventDefault();
++            const next =
++              e.key === "Home"
++                ? 0
++                : e.key === "End"
++                  ? timeline.length - 1
++                  : Math.min(
++                      timeline.length - 1,
++                      Math.max(0, index + (e.key === "ArrowLeft" ? -1 : 1)),
++                    );
++            setChosen(timeline[next].at);
++          }
++        }}
++        onPointerMove={(e) => {
++          const rect = e.currentTarget.getBoundingClientRect(),
++            position = ((e.clientX - rect.left) / rect.width) * width;
++          const i = Math.max(
++            0,
++            Math.min(
++              timeline.length - 1,
++              Math.round(
++                ((position - left) / (width - left - right)) *
++                  (timeline.length - 1),
++              ),
++            ),
++          );
++          setChosen(timeline[i].at);
++        }}
++        onPointerLeave={() => setChosen(null)}
++      >
++        <title>
++          {metricName.label}:{" "}
++          {cumulative ? "накопительно" : hourly ? "по часам" : "по дням"},
++          отдельная линия для каждого сайта
++        </title>
++        {[0, 0.5, 1].map((r) => (
++          <g key={r}>
++            <line
++              x1={left}
++              x2={width - right}
++              y1={y(ceiling * r)}
++              y2={y(ceiling * r)}
++              className="so-gridline"
++            />
++            <text
++              x={left - 12}
++              y={y(ceiling * r) + 5}
++              textAnchor="end"
++              className="so-axis"
++            >
++              {new Intl.NumberFormat("ru-RU", {
++                notation: ceiling >= 100000 ? "compact" : "standard",
++                maximumFractionDigits: 1,
++              }).format(ceiling * r)}
++            </text>
++          </g>
++        ))}
++        {available.map((s) => (
++          <g
++            key={s.site.id}
++            className={
++              highlight && highlight !== s.site.id ? "so-line-muted" : ""
++            }
++          >
++            {lineSegments(s.points).map((segment, i) =>
++              segment.length === 1 ? (
++                <circle
++                  key={i}
++                  cx={x(segment[0].index)}
++                  cy={y(segment[0].value!)}
++                  r="3"
++                  fill={s.site.color}
++                />
++              ) : (
++                <polyline
++                  key={i}
++                  className="so-line"
++                  stroke={s.site.color}
++                  points={segment
++                    .map((p) => `${x(p.index)},${y(p.value!)}`)
++                    .join(" ")}
++                />
++              ),
++            )}
++          </g>
++        ))}
++        <line
++          className="so-chart-cursor"
++          x1={x(index)}
++          x2={x(index)}
++          y1={top}
++          y2={y(0)}
++        />
++        {available.map((s) => {
++          const p = s.points[index];
++          return p?.value !== null && p?.value !== undefined ? (
++            <circle
++              key={s.site.id}
++              cx={x(index)}
++              cy={y(p.value)}
++              r="4"
++              fill={s.site.color}
++              stroke="#fff"
++              strokeWidth="2"
++            />
++          ) : null;
++        })}
++        {[
++          ...new Set([
++            0,
++            Math.floor((timeline.length - 1) / 3),
++            Math.floor((2 * (timeline.length - 1)) / 3),
++            timeline.length - 1,
++          ]),
++        ].map((i) => (
++          <text
++            key={i}
++            x={x(i)}
++            y={height - 6}
++            textAnchor={
++              i === 0 ? "start" : i === timeline.length - 1 ? "end" : "middle"
++            }
++            className="so-axis"
++          >
++            {timeLabel(timeline[i].at, hourly)}
++          </text>
++        ))}
++      </svg>
++      <div
++        className="so-chart-readout"
++        aria-label="Значения выбранного интервала"
++      >
++        {series.map((s) => {
++          const p = s.points[index];
++          return (
++            <div
++              key={s.site.id}
++              onPointerEnter={() => setHighlight(s.site.id)}
++              onPointerLeave={() => setHighlight(null)}
++            >
++              <ColorDot color={s.site.color} />
++              <span className="so-readout-name" title={s.site.name}>
++                {s.site.name}
++                <small>
++                  {p?.point && p.value !== null
++                    ? `${dateLabel(p.point.from, hourly || p.point.partial)} — ${dateLabel(p.point.to, hourly || p.point.partial)}${p.point.partial ? " · неполный интервал" : ""}`
++                    : "Нет данных за этот интервал"}
++                </small>
++              </span>
++              <strong>{amount(p?.value)}</strong>
++            </div>
++          );
++        })}
++      </div>
++    </>
++  );
++}
++export default function StatisticsOverview({
++  active,
++  revision,
++  onOpenSite,
++}: {
++  active: boolean;
++  revision: number;
++  onOpenSite: (id: string, period: Period) => void;
++}) {
++  const [period, setPeriod] = useState<Period>("7"),
++    [data, setData] = useState<Overview | null>(null),
++    [error, setError] = useState(""),
++    [loading, setLoading] = useState(false);
++  const [hidden, setHidden] = useState<Set<string>>(() => new Set()),
++    [metric, setMetric] = useState<Metric>("visits"),
++    [cumulative, setCumulative] = useState(false);
++  const generation = useRef(0);
++  useEffect(() => {
++    if (!active) return;
++    let disposed = false,
++      controller: AbortController | null = null;
++    const load = async () => {
++      controller?.abort();
++      controller = new AbortController();
++      const own = ++generation.current;
++      setLoading(true);
++      try {
++        const result = await api<Overview>(
++          "/statistics/overview?period=" + period,
++          { signal: controller.signal },
++        );
++        if (!disposed && own === generation.current) {
++          setData(result);
++          setError("");
++        }
++      } catch (e) {
++        if (
++          !disposed &&
++          own === generation.current &&
++          !(e instanceof DOMException && e.name === "AbortError")
++        )
++          setError(errorText(e));
++      } finally {
++        if (!disposed && own === generation.current) setLoading(false);
++      }
++    };
++    void load();
++    const timer = setInterval(() => {
++      if (!document.hidden) void load();
++    }, 30000);
++    const visible = () => {
++      if (!document.hidden) void load();
++    };
++    document.addEventListener("visibilitychange", visible);
++    return () => {
++      disposed = true;
++      generation.current++;
++      controller?.abort();
++      clearInterval(timer);
++      document.removeEventListener("visibilitychange", visible);
++    };
++  }, [active, period, revision]);
++  const visible = data?.period.key === period ? data : null;
++  const selected = useMemo(
++    () => visible?.sites.filter((s) => !hidden.has(s.id)) || [],
++    [visible, hidden],
++  );
++  const toggle = (id: string) =>
++    setHidden((current) => {
++      const next = new Set(current);
++      if (next.has(id)) next.delete(id);
++      else next.add(id);
++      return next;
++    });
++  const unavailable = selected.filter((s) => s.totals.visits === null),
++    stale = selected.filter(
++      (s) => s.status === "stale" || s.status === "error",
++    );
++  const sorted = [...selected].sort(
++    (a, b) =>
++      (b.totals[metric] ?? -1) - (a.totals[metric] ?? -1) ||
++      a.name.localeCompare(b.name, "ru"),
++  );
++  return (
++    <div className="so-overview">
++      <section className="so-scope" aria-label="Период общей статистики">
++        <div>
++          <span className="square-icon pink">
++            <Globe2 size={22} />
++          </span>
++          <div>
++            <strong>Общий обзор</strong>
++            <p>Сравнивайте сайты на одном графике</p>
++          </div>
++        </div>
++        <div className="stats-periods" aria-label="Период общего обзора">
++          {periods.map((p) => (
++            <button
++              type="button"
++              key={p.key}
++              className={period === p.key ? "selected" : ""}
++              aria-pressed={period === p.key}
++              onClick={() => setPeriod(p.key)}
++            >
++              {p.label}
++            </button>
++          ))}
++        </div>
++      </section>
++      {error && (
++        <Notice tone="error">
++          {error}
++          {visible ? " Показан последний полученный обзор." : ""}
++        </Notice>
++      )}
++      {!visible ? (
++        <Loading />
++      ) : !visible.sites.length ? (
++        <Empty
++          title="Добавьте первый сайт"
++          text="Сайты появятся после добавления источников в разделе «Заявки»."
++        />
++      ) : (
++        <>
++          <div className="stats-report-meta so-meta">
++            <span>
++              {dateLabel(visible.period.from, period === "24h")} —{" "}
++              {dateLabel(visible.period.to, period === "24h")} · Москва
++            </span>
++            <span>
++              <RefreshCw size={13} className={loading ? "spin" : ""} />
++              Проверено {dateTime(visible.checkedAt)}
++            </span>
++          </div>
++          <section
++            className="stats-kpis so-metrics"
++            aria-label="Показатели выбранных сайтов"
++          >
++            {metrics.map((m) => {
++              const total = totalMetric(selected, m.key),
++                Icon = icons[m.key];
++              return (
++                <button
++                  type="button"
++                  key={m.key}
++                  className={`stats-kpi ${m.tone} ${metric === m.key ? "so-metric-selected" : ""}`}
++                  aria-pressed={metric === m.key}
++                  onClick={() => setMetric(m.key)}
++                >
++                  <div>
++                    <span>{m.label}</span>
++                    <Icon size={18} strokeWidth={1.6} />
++                  </div>
++                  <strong>{amount(total.value)}</strong>
++                  <p>
++                    {!total.total
++                      ? "Выберите сайты"
++                      : `Данные: ${total.available} из ${total.total} сайтов`}
++                  </p>
++                  <span className="stats-kpi-mark" aria-hidden="true">
++                    +
++                  </span>
++                </button>
++              );
++            })}
++          </section>
++          {!!stale.length && (
++            <Notice tone="warning">
++              Нет свежих данных: {stale.map((s) => s.name).join(", ")}. Эти
++              сайты исключены из сумм и линий графика. Последний сохранённый
++              отчёт доступен отдельно.
++            </Notice>
++          )}
++          <section
++            className="panel so-traffic"
++            aria-labelledby="so-traffic-title"
++          >
++            <div className="so-traffic-heading">
++              <div>
++                <span className="eyebrow">ДИНАМИКА ВЫБРАННЫХ САЙТОВ</span>
++                <h2 id="so-traffic-title">
++                  {metrics.find((m) => m.key === metric)!.label}
++                </h2>
++              </div>
++              <div className="so-chart-modes" aria-label="Отображение динамики">
++                <button
++                  type="button"
++                  aria-pressed={!cumulative}
++                  onClick={() => setCumulative(false)}
++                >
++                  {period === "24h" ? "По часам" : "По дням"}
++                </button>
++                <button
++                  type="button"
++                  aria-pressed={cumulative}
++                  onClick={() => setCumulative(true)}
++                >
++                  Накопительно
++                </button>
++              </div>
++            </div>
++            <section
++              className="so-sites"
++              aria-label="Выбор сайтов для сравнения"
++            >
++              <div className="so-sites-heading">
++                <div>
++                  <strong>Сайты на графике</strong>
++                  <span>
++                    {selected.length} из {visible.sites.length} выбрано
++                  </span>
++                </div>
++                <div>
++                  <button
++                    className="text-button"
++                    onClick={() => setHidden(new Set())}
++                    disabled={selected.length === visible.sites.length}
++                  >
++                    Показать все
++                  </button>
++                  <button
++                    className="text-button"
++                    onClick={() =>
++                      setHidden(new Set(visible.sites.map((s) => s.id)))
++                    }
++                    disabled={!selected.length}
++                  >
++                    Снять выбор
++                  </button>
++                </div>
++              </div>
++              <div className="so-site-tags">
++                {visible.sites.map((site) => (
++                  <button
++                    type="button"
++                    key={site.id}
++                    className="so-site-tag"
++                    aria-pressed={!hidden.has(site.id)}
++                    title={`${site.host} · ${statusText(site)}`}
++                    onClick={() => toggle(site.id)}
++                  >
++                    <ColorDot color={site.color} />
++                    <span>{site.name}</span>
++                    {site.totals[metric] === null && <small>Нет данных</small>}
++                  </button>
++                ))}
++              </div>
++              <p>
++                Нажмите на тег, чтобы показать или скрыть сайт. Цвет тега
++                совпадает с линией графика.
++              </p>
++            </section>
++            <label className="so-metric-picker">
++              <span>Показатель графика</span>
++              <span className="so-select-wrap">
++                <select
++                  aria-label="Показатель графика"
++                  value={metric}
++                  onChange={(e) => setMetric(e.target.value as Metric)}
++                >
++                  {metrics.map((m) => (
++                    <option value={m.key} key={m.key}>
++                      {m.label}
++                    </option>
++                  ))}
++                </select>
++                <ChevronDown size={16} />
++              </span>
++            </label>
++            <ComparisonChart
++              data={visible}
++              sites={selected}
++              metric={metric}
++              cumulative={cumulative}
++            />
++          </section>
++          <div className="so-coverage">
++            <CircleHelp size={18} />
++            <p>
++              {unavailable.length
++                ? `Посещаемость доступна для ${selected.length - unavailable.length} из ${selected.length} выбранных сайтов. Прочерк означает отсутствие данных, а не ноль визитов. `
++                : "Суммируются визиты выбранных сайтов; это не число уникальных людей между сайтами. "}
++              {visible.intervalsDiffer
++                ? "Интервалы свежих отчётов могут немного отличаться по времени. "
++                : ""}
++              Крайние точки могут содержать неполный день или час. Счётчики
++              берутся из админок сайтов.
++            </p>
++          </div>
++          <section
++            className="panel so-comparison"
++            aria-labelledby="so-comparison-title"
++          >
++            <div className="so-traffic-heading">
++              <div>
++                <h2 id="so-comparison-title">Сайты в цифрах</h2>
++                <p>
++                  Выбранные сайты · нажмите на название для подробного отчёта
++                </p>
++              </div>
++              <span>{selected.length} сайтов</span>
++            </div>
++            {!selected.length ? (
++              <p className="so-table-empty">
++                Выберите сайты с помощью тегов выше.
++              </p>
++            ) : (
++              <div
++                className="table-scroll"
++                tabIndex={0}
++                role="region"
++                aria-label="Сравнение показателей сайтов"
++              >
++                <table>
++                  <thead>
++                    <tr>
++                      <th>Сайт</th>
++                      {metrics.map((m) => (
++                        <th key={m.key}>
++                          {m.key === "views"
++                            ? "Просмотры"
++                            : m.key === "articles"
++                              ? "Статьи"
++                              : m.label}
++                        </th>
++                      ))}
++                      <th>Обновление</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {sorted.map((site) => (
++                      <tr key={site.id}>
++                        <th scope="row">
++                          <div className="so-site-cell">
++                            <ColorDot color={site.color} />
++                            <div>
++                              <button
++                                className="so-site-link"
++                                onClick={() => onOpenSite(site.id, period)}
++                              >
++                                {site.name}
++                              </button>
++                              {site.name !== site.host && (
++                                <small>{site.host}</small>
++                              )}
++                              <span
++                                className={`so-status so-status-${site.status}`}
++                              >
++                                {statusText(site)}
++                              </span>
++                            </div>
++                          </div>
++                        </th>
++                        {metrics.map((m) => (
++                          <td
++                            key={m.key}
++                            className={
++                              metric === m.key ? "so-active-value" : ""
++                            }
++                          >
++                            {amount(site.totals[m.key])}
++                          </td>
++                        ))}
++                        <td className="so-updated">
++                          {site.lastSyncedAt
++                            ? dateTime(site.lastSyncedAt)
++                            : "Ожидает подключения"}
++                          {site.leadsOrigin === "hub" && (
++                            <small>Заявки из Boykov Services</small>
++                          )}
++                          {site.sourcePeriod && (
++                            <small
++                              title={`${dateTime(site.sourcePeriod.from, true)} — ${dateTime(site.sourcePeriod.to, true)} МСК`}
++                            >
++                              Интервал отчёта источника
++                            </small>
++                          )}
++                        </td>
++                      </tr>
++                    ))}
++                  </tbody>
++                </table>
++              </div>
++            )}
++          </section>
++          <p className="so-footnote">
++            Цвет сайта сохраняется для всей команды. Обзор проверяет обновления
++            каждые 30 секунд. Накопительный график складывает значения с начала
++            доступного отчёта каждого сайта; пробелы в данных не заполняются
++            нулями.
++          </p>
++        </>
++      )}
++    </div>
++  );
++}
+diff --git a/src/features/statistics-overview/model.ts b/src/features/statistics-overview/model.ts
+new file mode 100644
+index 0000000..a56b689
+--- /dev/null
++++ b/src/features/statistics-overview/model.ts
+@@ -0,0 +1,95 @@
++export type Period = "24h" | "7" | "30" | "90";
++export type Metric = "visits" | "views" | "articles" | "leads";
++export type Values = Record<Metric, number | null>;
++export type Point = Values & {
++  at: string;
++  end: string;
++  from: string;
++  to: string;
++  partial: boolean;
++};
++export type OverviewSite = {
++  id: string;
++  name: string;
++  host: string;
++  color: string;
++  status: "ready" | "unconfigured" | "stale" | "error";
++  error: string | null;
++  source: { kind: string; label: string } | null;
++  lastSyncedAt: string | null;
++  leadsOrigin: "native" | "hub";
++  sourcePeriod: {
++    key: Period;
++    from: string;
++    to: string;
++    group: "hour" | "day";
++  } | null;
++  totals: Values;
++  points: Point[];
++};
++export type Overview = {
++  checkedAt: string;
++  period: { key: Period; from: string; to: string; group: "hour" | "day" };
++  intervalsDiffer: boolean;
++  timeline: { at: string; end: string }[];
++  sites: OverviewSite[];
++};
++export const metrics: {
++  key: Metric;
++  label: string;
++  short: string;
++  tone: string;
++}[] = [
++  { key: "visits", label: "Визиты", short: "визитов", tone: "lime" },
++  {
++    key: "views",
++    label: "Просмотры страниц",
++    short: "просмотров",
++    tone: "white",
++  },
++  {
++    key: "articles",
++    label: "Просмотры статей",
++    short: "просмотров статей",
++    tone: "pink",
++  },
++  { key: "leads", label: "Заявки", short: "заявок", tone: "white" },
++];
++export function totalMetric(sites: OverviewSite[], metric: Metric) {
++  const available = sites.filter((s) => s.totals[metric] !== null);
++  return {
++    value: available.length
++      ? available.reduce((n, s) => n + s.totals[metric]!, 0)
++      : null,
++    available: available.length,
++    total: sites.length,
++  };
++}
++export function seriesPoints(
++  site: OverviewSite,
++  timeline: Overview["timeline"],
++  metric: Metric,
++  cumulative: boolean,
++) {
++  const points = new Map(site.points.map((p) => [p.at, p]));
++  let sum = 0;
++  return timeline.map(({ at }, index) => {
++    const point = points.get(at);
++    const value = point?.[metric] ?? null;
++    if (value === null) return { index, value: null, point: point || null };
++    sum += value;
++    return { index, value: cumulative ? sum : value, point: point! };
++  });
++}
++export function lineSegments<T extends { value: number | null }>(points: T[]) {
++  const segments: T[][] = [];
++  let current: T[] = [];
++  for (const point of points) {
++    if (point.value === null) {
++      if (current.length) segments.push(current);
++      current = [];
++    } else current.push(point);
++  }
++  if (current.length) segments.push(current);
++  return segments;
++}
+diff --git a/src/features/statistics-overview/statistics-overview.css b/src/features/statistics-overview/statistics-overview.css
+new file mode 100644
+index 0000000..8076892
+--- /dev/null
++++ b/src/features/statistics-overview/statistics-overview.css
+@@ -0,0 +1,646 @@
++.so-view-tabs {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  width: fit-content;
++  background: #eaece5;
++  padding: 5px;
++  border-radius: 11px;
++  margin: 0 0 24px;
++}
++.so-view-tabs button {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  border-radius: 8px;
++  padding: 11px 18px;
++  font-size: 14px;
++  color: #757d6a;
++}
++.so-view-tabs button[aria-selected="true"] {
++  background: var(--ink);
++  color: #fff;
++}
++.so-scope {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 20px;
++  background: white;
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 20px 24px;
++  margin-bottom: 24px;
++}
++.so-scope > div:first-child {
++  display: flex;
++  align-items: center;
++  gap: 14px;
++}
++.so-scope strong {
++  font-size: 16px;
++  font-weight: 600;
++}
++.so-scope p {
++  font-size: 13px;
++  color: var(--muted);
++  margin: 5px 0 0;
++  line-height: 1.65;
++}
++.so-sites {
++  margin: 0 0 20px;
++}
++.so-sites-heading {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 15px;
++  margin-bottom: 14px;
++}
++.so-sites-heading > div {
++  display: flex;
++  align-items: center;
++  gap: 17px;
++}
++.so-sites-heading strong {
++  font-size: 15px;
++  font-weight: 600;
++}
++.so-sites-heading span {
++  font-size: 12px;
++  color: #858d7c;
++}
++.so-sites-heading .text-button {
++  font-size: 13px;
++  color: #6b755d;
++}
++.so-site-tags {
++  display: flex;
++  gap: 9px;
++  flex-wrap: wrap;
++}
++.so-site-tag {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  max-width: 100%;
++  padding: 11px 14px;
++  border: 1px solid #d8ddcd;
++  background: #fff;
++  border-radius: 9px;
++  font-size: 14px;
++  line-height: 1.5;
++  transition:
++    border-color 0.15s,
++    background 0.15s;
++}
++.so-site-tag > span {
++  overflow-wrap: anywhere;
++}
++.so-site-tag[aria-pressed="true"] {
++  background: #f0f3e7;
++  border-color: #b8c39f;
++  color: #353e29;
++}
++.so-site-tag[aria-pressed="false"] {
++  color: #929786;
++  background: #f7f7f3;
++  border-color: #e5e7df;
++}
++.so-site-tag[aria-pressed="false"] .so-color-dot {
++  opacity: 0.35;
++}
++.so-site-tag:hover {
++  border-color: #879575;
++}
++.so-site-tag small {
++  font-size: 11px;
++  color: #89917e;
++  white-space: nowrap;
++}
++.so-color-dot {
++  display: inline-block;
++  flex: none;
++  vertical-align: middle;
++}
++.so-sites > p {
++  font-size: 12px;
++  line-height: 1.8;
++  color: #8a927f;
++  margin: 11px 0 0;
++}
++.so-meta {
++  gap: 15px;
++}
++.so-meta > span:last-child {
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  font-size: 12px;
++}
++.so-metrics .stats-kpi {
++  display: block;
++  text-align: left;
++  width: 100%;
++  font-family: inherit;
++  cursor: pointer;
++  transition:
++    border-color 0.15s,
++    box-shadow 0.15s;
++  position: relative;
++}
++.so-metrics .stats-kpi:hover {
++  border-color: #a3b184;
++}
++.so-metrics .stats-kpi.so-metric-selected {
++  border-color: #7b8b5a;
++  box-shadow: inset 0 0 0 1px #7b8b5a;
++}
++.so-metrics .stats-kpi.so-metric-selected::after {
++  content: "На графике";
++  position: absolute;
++  bottom: 17px;
++  right: 17px;
++  font-size: 10px;
++  color: #5d6c44;
++}
++.so-metrics .stats-kpi p {
++  max-width: calc(100% - 60px);
++}
++.so-traffic {
++  padding: 26px;
++  margin-bottom: 0;
++  min-width: 0;
++}
++.so-traffic-heading {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 18px;
++  margin-bottom: 22px;
++}
++.so-traffic-heading h2 {
++  font-size: 23px;
++  line-height: 1.35;
++  font-weight: 600;
++  letter-spacing: -0.035em;
++  margin: 5px 0 0;
++}
++.so-traffic-heading .eyebrow {
++  font-size: 10px;
++  color: #8a927e;
++}
++.so-chart-modes {
++  display: flex;
++  gap: 5px;
++  padding: 4px;
++  background: #f1f3eb;
++  border-radius: 9px;
++  flex: none;
++}
++.so-chart-modes button {
++  font-size: 13px;
++  padding: 9px 13px;
++  border-radius: 6px;
++  color: #7d8671;
++}
++.so-chart-modes button[aria-pressed="true"] {
++  background: #fff;
++  color: #2b3421;
++  box-shadow: 0 1px 4px #1b251214;
++}
++.so-chart-date {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 15px;
++  color: #727d64;
++  font-size: 13px;
++  margin: 0 0 12px;
++}
++.so-chart-date > span + span {
++  font-size: 12px;
++  color: #929a86;
++}
++.so-chart {
++  display: block;
++  width: 100%;
++  height: auto;
++  overflow: visible;
++  border-radius: 8px;
++  touch-action: pan-y;
++}
++.so-chart:focus-visible {
++  outline: 2px solid #a5b37c;
++  outline-offset: 5px;
++}
++.so-gridline {
++  stroke: #e9ece2;
++  stroke-width: 1;
++}
++.so-axis {
++  fill: #8a947b;
++  font-family: inherit;
++  font-size: 12px;
++}
++.so-line {
++  stroke-width: 2.7;
++  fill: none;
++  stroke-linecap: round;
++  stroke-linejoin: round;
++  vector-effect: non-scaling-stroke;
++  animation: so-line-appear 0.25s ease-out;
++}
++.so-line-muted {
++  opacity: 0.22;
++}
++.so-chart-cursor {
++  stroke: #b5bbaa;
++  stroke-dasharray: 3 5;
++  stroke-width: 1;
++  pointer-events: none;
++}
++.so-chart-readout {
++  display: grid;
++  grid-template-columns: repeat(3, minmax(0, 1fr));
++  gap: 0 22px;
++  border-top: 1px solid var(--line);
++  margin-top: 12px;
++  padding-top: 8px;
++}
++.so-chart-readout > div {
++  display: flex;
++  gap: 8px;
++  align-items: flex-start;
++  padding: 13px 0;
++  min-width: 0;
++}
++.so-chart-readout .so-color-dot {
++  margin-top: 3px;
++}
++.so-readout-name {
++  font-size: 13px;
++  line-height: 1.7;
++  overflow-wrap: anywhere;
++  min-width: 0;
++  flex: 1;
++}
++.so-readout-name small {
++  display: block;
++  color: #929b85;
++  font-size: 11px;
++  font-weight: 400;
++  line-height: 1.7;
++  margin-top: 4px;
++}
++.so-chart-readout strong {
++  font-size: 17px;
++  font-weight: 500;
++  line-height: 1.5;
++  color: #3b472c;
++  flex: none;
++  font-variant-numeric: tabular-nums;
++}
++.so-chart-empty {
++  min-height: 280px;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  text-align: center;
++  gap: 12px;
++  padding: 30px;
++  color: #9aa58a;
++  background: #fafbf7;
++  border-radius: 12px;
++}
++.so-chart-empty h3 {
++  font-size: 18px;
++  font-weight: 500;
++  margin: 4px 0 0;
++}
++.so-chart-empty p {
++  font-size: 14px;
++  color: #858e78;
++  margin: 0;
++  line-height: 1.8;
++}
++.so-coverage {
++  display: flex;
++  gap: 11px;
++  align-items: flex-start;
++  color: #8a947d;
++  margin: 18px 0 24px;
++}
++.so-coverage svg {
++  flex: none;
++  margin-top: 3px;
++}
++.so-coverage p {
++  font-size: 12px;
++  line-height: 1.85;
++  margin: 0;
++  max-width: 1100px;
++}
++.so-comparison {
++  padding: 24px 0 0;
++  overflow: hidden;
++}
++.so-comparison > .so-traffic-heading {
++  padding: 0 26px;
++  gap: 15px;
++}
++.so-comparison .so-traffic-heading h2 {
++  font-size: 21px;
++  margin: 0;
++}
++.so-traffic-heading p {
++  font-size: 13px;
++  color: #8a947d;
++  margin: 7px 0 0;
++  line-height: 1.75;
++}
++.so-comparison .so-traffic-heading > span {
++  font-size: 12px;
++  color: #8e9880;
++  white-space: nowrap;
++}
++.so-comparison .table-scroll {
++  padding: 0;
++  overflow: auto;
++}
++.so-comparison table {
++  width: 100%;
++  border-collapse: collapse;
++  min-width: 850px;
++}
++.so-comparison th,
++.so-comparison td {
++  padding: 19px 22px;
++  border-top: 1px solid var(--line);
++  text-align: right;
++  font-size: 15px;
++  white-space: nowrap;
++  font-variant-numeric: tabular-nums;
++}
++.so-comparison thead th {
++  font-size: 12px;
++  color: #8e9682;
++  background: #f8f9f4;
++  font-weight: 500;
++  padding-top: 13px;
++  padding-bottom: 13px;
++}
++.so-comparison th:first-child {
++  text-align: left;
++  min-width: 220px;
++}
++.so-comparison tbody th {
++  white-space: normal;
++  font-weight: 400;
++}
++.so-comparison tbody tr:hover {
++  background: #fbfcf8;
++}
++.so-site-cell {
++  display: flex;
++  align-items: flex-start;
++  gap: 9px;
++}
++.so-site-cell > .so-color-dot {
++  margin-top: 4px;
++}
++.so-site-cell > div {
++  display: flex;
++  align-items: flex-start;
++  flex-direction: column;
++  gap: 6px;
++}
++.so-site-link {
++  font-size: 14px;
++  text-align: left;
++  font-weight: 600;
++  padding: 0;
++  color: #424d34;
++  overflow-wrap: anywhere;
++}
++.so-site-link:hover {
++  text-decoration: underline;
++  text-underline-offset: 4px;
++}
++.so-site-cell small {
++  font-size: 12px;
++  color: #929a87;
++  overflow-wrap: anywhere;
++}
++.so-status {
++  font-size: 11px;
++  line-height: 1.5;
++  color: #939c88;
++}
++.so-status-stale,
++.so-status-error {
++  color: #ab7e61;
++}
++.so-status-ready {
++  color: #83916e;
++}
++.so-comparison td.so-active-value {
++  font-weight: 600;
++  color: #687d3f;
++}
++.so-comparison td.so-updated {
++  font-size: 12px;
++  line-height: 1.8;
++  color: #87917b;
++  white-space: normal;
++  min-width: 160px;
++}
++.so-updated small {
++  display: block;
++  font-size: 11px;
++  line-height: 1.7;
++  color: #a0a992;
++  margin-top: 3px;
++}
++.so-table-empty {
++  padding: 10px 26px 25px;
++  font-size: 14px;
++  color: #89947b;
++}
++.so-footnote {
++  font-size: 12px;
++  line-height: 1.85;
++  color: #969e8b;
++  margin: 17px 0 0;
++  max-width: 1100px;
++}
++@keyframes so-line-appear {
++  from {
++    opacity: 0.25;
++  }
++  to {
++    opacity: 1;
++  }
++}
++@media (max-width: 1100px) {
++  .so-chart-readout {
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++  }
++  .so-traffic {
++    padding: 22px;
++  }
++  .so-metrics .stats-kpi.so-metric-selected::after {
++    bottom: 12px;
++    right: 12px;
++    font-size: 9px;
++  }
++}
++@media (max-width: 760px) {
++  .so-scope {
++    padding: 18px;
++    gap: 18px;
++    flex-wrap: wrap;
++  }
++  .so-scope .stats-periods {
++    width: 100%;
++    order: 0;
++    justify-content: space-between;
++  }
++  .so-scope .stats-periods button {
++    flex: 1;
++  }
++  .so-sites-heading {
++    align-items: flex-start;
++    flex-wrap: wrap;
++  }
++  .so-sites-heading > div {
++    flex-wrap: wrap;
++    gap: 12px;
++  }
++  .so-site-tag {
++    font-size: 13px;
++    padding: 9px 11px;
++  }
++  .so-site-tag small {
++    display: none;
++  }
++  .so-traffic-heading {
++    align-items: flex-start;
++    flex-wrap: wrap;
++  }
++  .so-chart-modes {
++    width: 100%;
++    justify-content: space-between;
++  }
++  .so-chart-modes button {
++    flex: 1;
++  }
++  .so-chart-date {
++    align-items: flex-start;
++    flex-direction: column;
++    gap: 5px;
++  }
++  .so-traffic {
++    padding: 20px 16px;
++  }
++  .so-chart-readout {
++    gap: 0 13px;
++  }
++  .so-readout-name {
++    font-size: 12px;
++  }
++  .so-chart-readout strong {
++    font-size: 15px;
++  }
++  .so-chart-readout > div {
++    gap: 5px;
++  }
++  .so-meta {
++    align-items: flex-start;
++    flex-direction: column;
++  }
++  .so-view-tabs {
++    width: 100%;
++  }
++  .so-view-tabs button {
++    flex: 1;
++    justify-content: center;
++    padding: 10px;
++    font-size: 13px;
++  }
++  .so-traffic-heading .eyebrow {
++    font-size: 9px;
++  }
++  .so-comparison > .so-traffic-heading {
++    padding: 0 20px;
++  }
++  .so-comparison th,
++  .so-comparison td {
++    padding: 17px 18px;
++  }
++  .so-coverage {
++    margin-top: 15px;
++  }
++  .so-metrics .stats-kpi p {
++    max-width: 100%;
++  }
++  .so-metrics .stats-kpi.so-metric-selected::after {
++    display: none;
++  }
++}
++@media (prefers-reduced-motion: reduce) {
++  .so-line {
++    animation: none;
++  }
++  .so-site-tag {
++    transition: none;
++  }
++}
++
++.so-metrics .so-metric-selected .stats-kpi-mark {
++  display: none;
++}
++.so-traffic .so-sites {
++  border-top: 1px solid var(--line);
++  padding-top: 20px;
++  margin-bottom: 18px;
++}
++.so-metric-picker {
++  display: flex;
++  flex-direction: row;
++  align-items: center;
++  justify-content: flex-end;
++  gap: 12px;
++  margin: 0 0 16px;
++  font-size: 12px;
++  font-weight: 400;
++  color: #8a947d;
++}
++.so-select-wrap {
++  display: block;
++  position: relative;
++  width: 205px;
++}
++.so-select-wrap select {
++  appearance: none;
++  padding: 10px 34px 10px 12px;
++  font-size: 13px;
++  min-height: 40px;
++}
++.so-select-wrap > svg {
++  position: absolute;
++  right: 12px;
++  top: 50%;
++  transform: translateY(-50%);
++  pointer-events: none;
++  color: #828f70;
++}
++@media (max-width: 760px) {
++  .so-metric-picker {
++    justify-content: space-between;
++  }
++  .so-select-wrap {
++    width: min(205px, 65%);
++  }
++}
+diff --git a/tests/statistics-overview.test.js b/tests/statistics-overview.test.js
+new file mode 100644
+index 0000000..975aeea
+--- /dev/null
++++ b/tests/statistics-overview.test.js
+@@ -0,0 +1,298 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { createHash } from "node:crypto";
++import { createApp } from "../server/app.js";
++import { hashPassword } from "../server/auth.js";
++import { createStatisticsModule } from "../server/modules/statistics/index.js";
++import { NativeReportBuilder, reportPeriod } from "../shared/statistics.js";
++import {
++  lineSegments,
++  seriesPoints,
++  totalMetric,
++} from "../src/features/statistics-overview/model.ts";
++const password = "overview-test-password",
++  passwordHash = await hashPassword(password),
++  token = "a".repeat(64),
++  NOW = Date.parse("2026-11-20T11:01:30Z");
++async function fixture(t) {
++  const dir = await mkdtemp(join(tmpdir(), "statistics-overview-"));
++  let clock = NOW;
++  const app = await createApp({
++    dataDir: dir,
++    passwordHash,
++    now: () => clock,
++    secureCookies: false,
++    allowedOrigins: [],
++    isConfigured: () => false,
++    statisticsFetch: () => {
++      throw Error("NO_EXTERNAL_COUNTER");
++    },
++    worker: async () => Response.json({ jobs: [], ok: true }),
++  });
++  const db = app.locals.db;
++  db.prepare("UPDATE sales_sites SET token_hash=?").run(
++    createHash("sha256").update(token).digest("hex"),
++  );
++  const server = app.listen(0, "127.0.0.1");
++  await new Promise((r) => server.once("listening", r));
++  const base = "http://127.0.0.1:" + server.address().port;
++  const login = await fetch(base + "/api/auth/login", {
++    method: "POST",
++    headers: { "Content-Type": "application/json", "X-Boykov-Request": "1" },
++    body: JSON.stringify({ password }),
++  });
++  const cookie = login.headers.get("set-cookie").split(";")[0];
++  t.after(async () => {
++    await new Promise((r) => server.close(r));
++    db.close();
++    await rm(dir, { recursive: true, force: true });
++  });
++  const api = (query = "", auth = true) =>
++    fetch(base + "/api/statistics/overview" + (query ? "?" + query : ""), {
++      headers: { Cookie: auth ? cookie : "" },
++    });
++  const overview = async (query = "") => {
++    const r = await api(query);
++    assert.equal(r.status, 200, await r.clone().text());
++    return r.json();
++  };
++  const post = async (id, builder) => {
++    const r = await fetch(base + "/hooks/statistics/" + id, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + token,
++      },
++      body: JSON.stringify(builder.packet()),
++    });
++    assert.equal(r.status, 201, await r.text());
++  };
++  const lead = async (id, eventId) => {
++    const r = await fetch(base + "/hooks/leads/" + id, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        Authorization: "Bearer " + token,
++      },
++      body: JSON.stringify({
++        eventId,
++        createdAt: new Date(clock - 60000).toISOString(),
++        name: "Тест",
++        phone: "+79990000000",
++      }),
++    });
++    assert.equal(r.status, 201, await r.text());
++  };
++  return {
++    db,
++    app,
++    api,
++    overview,
++    post,
++    lead,
++    now: () => clock,
++    setNow: (value) => {
++      clock = value;
++    },
++  };
++}
++const builder = (
++  host = "nwdelectricity.ru",
++  kind = "nwd",
++  now = NOW,
++  options = {},
++) => new NativeReportBuilder({ host, kind, now, ...options });
++test("overview is workspace-private, validates periods and never exposes source keys", async (t) => {
++  const f = await fixture(t);
++  assert.equal((await f.api("", false)).status, 401);
++  assert.equal((await f.api("period=bad")).status, 400);
++  const r = await f.api("period=7");
++  assert.equal(r.headers.get("cache-control"), "private, no-store");
++  const data = await r.json();
++  assert.equal(
++    data.sites.length,
++    f.db.prepare("SELECT count(*) n FROM sales_sites").get().n,
++  );
++  assert.equal(data.period.key, "7");
++  assert.ok(!JSON.stringify(data).includes(token));
++  assert.equal(totalMetric(data.sites, "visits").value, null);
++  assert.equal(totalMetric(data.sites, "leads").value, 0);
++});
++test("overview totals use native counts once, retaining hub-only leads for unconnected sites", async (t) => {
++  const f = await fixture(t),
++    nwd = builder();
++  nwd.record("visits", NOW - 3600000);
++  nwd.record("views", NOW - 3600000, { path: "/" });
++  nwd.record("leads", NOW - 60000);
++  nwd.record("leads", NOW - 120000);
++  await f.post("nwd", nwd);
++  await f.lead("nwd", "native-mirror");
++  await f.lead("accessibility", "hub-only");
++  const data = await f.overview(),
++    n = data.sites.find((s) => s.id === "nwd"),
++    a = data.sites.find((s) => s.id === "accessibility");
++  assert.equal(n.leadsOrigin, "native");
++  assert.equal(n.totals.leads, 2);
++  assert.equal(a.leadsOrigin, "hub");
++  assert.equal(a.totals.leads, 1);
++  assert.equal(totalMetric(data.sites, "leads").value, 3);
++  assert.equal(totalMetric(data.sites, "visits").value, 1);
++  assert.equal(
++    n.points.reduce((sum, p) => sum + p.visits, 0),
++    n.totals.visits,
++  );
++  assert.equal(
++    n.points.reduce((sum, p) => sum + p.leads, 0),
++    n.totals.leads,
++  );
++});
++test("different source minutes align by Moscow hour rather than array position, with real gaps and exact counts", async (t) => {
++  const f = await fixture(t),
++    a = builder(),
++    b = builder("pasport-dostupnosty.ru", "accessibility", NOW - 120000);
++  for (const source of [a, b]) {
++    const r = source.frames[0].range;
++    source.record("visits", r.start + 1000);
++    source.record("visits", r.end - 1000);
++  }
++  await f.post("nwd", a);
++  await f.post("accessibility", b);
++  const data = await f.overview("period=24h"),
++    n = data.sites.find((s) => s.id === "nwd"),
++    other = data.sites.find((s) => s.id === "accessibility");
++  assert.equal(data.intervalsDiffer, true);
++  assert.equal(data.timeline.length, 26);
++  const first = seriesPoints(n, data.timeline, "visits", false),
++    second = seriesPoints(other, data.timeline, "visits", false);
++  assert.equal(first[0].value, null);
++  assert.equal(second[0].value, 1);
++  assert.equal(second.at(-1).value, null);
++  assert.equal(
++    first.filter((p) => p.value !== null).reduce((sum, p) => sum + p.value, 0),
++    2,
++  );
++  const cumulative = seriesPoints(other, data.timeline, "visits", true);
++  assert.equal(cumulative.filter((p) => p.value !== null).at(-1).value, 2);
++  assert.equal(cumulative.at(-1).value, null);
++  assert.ok(n.points[0].partial);
++  assert.equal(n.sourcePeriod.from, a.packet().reports[0].period.from);
++});
++test("stale sources are explicitly excluded from the common totals while the separate report remains available", async (t) => {
++  const f = await fixture(t),
++    a = builder();
++  a.record("visits", NOW - 3600000);
++  await f.post("nwd", a);
++  f.setNow(NOW + 181000);
++  const fresh = builder("pasport-bezopasnosty.ru", "security", f.now(), {
++    views: false,
++    articles: false,
++  });
++  fresh.record("visits", f.now() - 3600000);
++  fresh.record("visits", f.now() - 3600000);
++  await f.post("security", fresh);
++  const data = await f.overview(),
++    stale = data.sites.find((s) => s.id === "nwd");
++  assert.equal(stale.status, "stale");
++  assert.equal(stale.totals.visits, null);
++  assert.deepEqual(stale.points, []);
++  assert.equal(totalMetric(data.sites, "visits").value, 2);
++  assert.equal(f.app.locals.statistics.report("nwd", "24h").totals.visits, 1);
++});
++test("site colors persist after rename, additions and reopening the statistics module", async (t) => {
++  const f = await fixture(t),
++    before = await f.overview();
++  const colors = new Map(before.sites.map((s) => [s.id, s.color]));
++  f.db.prepare("UPDATE sales_sites SET name=? WHERE id=?").run("ААА", "nwd");
++  f.db
++    .prepare("INSERT INTO sales_sites(id,name,host,created_at) VALUES(?,?,?,?)")
++    .run("new-site", "АА", "another.example", new Date(NOW).toISOString());
++  const again = await createStatisticsModule(f.db, { now: f.now });
++  const after = again.overview("7");
++  for (const s of after.sites)
++    if (colors.has(s.id)) assert.equal(s.color, colors.get(s.id));
++  assert.equal(
++    new Set(after.sites.map((s) => s.color)).size,
++    before.sites.length + 1,
++  );
++  assert.equal(
++    f.db.prepare("SELECT count(*) n FROM statistics_site_colors").get().n,
++    before.sites.length + 1,
++  );
++});
++test("Moscow date rollover does not mix yesterday calendar reports into a new seven-day overview", async (t) => {
++  const f = await fixture(t);
++  f.setNow(Date.parse("2026-11-20T20:59:30Z"));
++  const b = builder("nwdelectricity.ru", "nwd", f.now());
++  b.record("visits", f.now() - 10000);
++  await f.post("nwd", b);
++  f.setNow(f.now() + 120000);
++  const data = await f.overview("period=7");
++  const n = data.sites.find((s) => s.id === "nwd");
++  assert.equal(n.status, "stale");
++  assert.equal(n.totals.visits, null);
++  assert.equal(data.period.from, reportPeriod("7", f.now()).from);
++});
++test("unsupported metrics remain unavailable while an observed zero remains a genuine zero", async (t) => {
++  const f = await fixture(t),
++    b = builder("pasport-bezopasnosty.ru", "security", NOW, {
++      views: false,
++      articles: false,
++    });
++  await f.post("security", b);
++  const data = await f.overview(),
++    s = data.sites.find((s) => s.id === "security");
++  assert.equal(s.totals.visits, 0);
++  assert.equal(s.totals.views, null);
++  assert.deepEqual(totalMetric([s], "visits"), {
++    value: 0,
++    available: 1,
++    total: 1,
++  });
++  assert.deepEqual(totalMetric([s], "views"), {
++    value: null,
++    available: 0,
++    total: 1,
++  });
++  assert.equal(
++    seriesPoints(s, data.timeline, "views", false).every(
++      (p) => p.value === null,
++    ),
++    true,
++  );
++  assert.equal(totalMetric([], "visits").value, null);
++});
++test("a corrupted saved source report is isolated and cannot remove other sites from the overview", async (t) => {
++  const f = await fixture(t),
++    a = builder(),
++    b = builder("pasport-dostupnosty.ru", "accessibility");
++  a.record("visits", NOW - 60000);
++  b.record("visits", NOW - 60000);
++  await f.post("nwd", a);
++  await f.post("accessibility", b);
++  f.db
++    .prepare(
++      "UPDATE statistics_native_reports SET report='{' WHERE site_id='nwd'",
++    )
++    .run();
++  const data = await f.overview();
++  assert.equal(data.sites.find((s) => s.id === "nwd").status, "error");
++  assert.equal(totalMetric(data.sites, "visits").value, 1);
++  assert.ok(!JSON.stringify(data).includes("SyntaxError"));
++});
++test("chart gaps split lines and selection totals do not silently include hidden sites", () => {
++  const segments = lineSegments([
++    { value: 2 },
++    { value: null },
++    { value: 0 },
++    { value: 3 },
++    { value: null },
++  ]);
++  assert.deepEqual(segments, [[{ value: 2 }], [{ value: 0 }, { value: 3 }]]);
++  const a = { totals: { visits: 3, views: 5, articles: null, leads: 1 } },
++    b = { totals: { visits: 100, views: 200, articles: 0, leads: 0 } };
++  assert.equal(totalMetric([a], "visits").value, 3);
++  assert.equal(totalMetric([a, b], "visits").value, 103);
++});

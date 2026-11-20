@@ -15,6 +15,7 @@ import {
 import { api, dateTime, errorText, number } from "../api";
 import { Empty, Notice, PageHead } from "../components/Common";
 import "./Statistics.css";
+import StatisticsOverview from "../features/statistics-overview/StatisticsOverview";
 
 type Period = "24h" | "7" | "30" | "90";
 type Site = {
@@ -298,7 +299,15 @@ function ConnectionDialog({
   );
 }
 
-export default function Statistics({ active }: { active: boolean }) {
+function SiteStatistics({
+  active,
+  revision,
+  requested,
+}: {
+  active: boolean;
+  revision: number;
+  requested: { id: string; period: Period } | null;
+}) {
   const [sites, setSites] = useState<Site[]>([]),
     [selected, setSelected] = useState(""),
     [period, setPeriod] = useState<Period>("24h"),
@@ -307,8 +316,13 @@ export default function Statistics({ active }: { active: boolean }) {
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
     [sitesLoading, setSitesLoading] = useState(false),
-    [settingsOpen, setSettingsOpen] = useState(false),
-    [revision, setRevision] = useState(0);
+    [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    if (requested) {
+      setSelected(requested.id);
+      setPeriod(requested.period);
+    }
+  }, [requested]);
   const sequence = useRef(0);
   const loadSites = useCallback(async () => {
     setSitesLoading(true);
@@ -333,7 +347,7 @@ export default function Statistics({ active }: { active: boolean }) {
   }, []);
   useEffect(() => {
     if (active) void loadSites();
-  }, [active, loadSites]);
+  }, [active, loadSites, revision]);
   useEffect(() => {
     if (!active || !selected) return;
     let controller: AbortController | null = null;
@@ -447,29 +461,6 @@ export default function Statistics({ active }: { active: boolean }) {
       : 0;
   return (
     <>
-      <PageHead
-        eyebrow="МАРКЕТИНГ И РЕЗУЛЬТАТЫ"
-        title="Статистика сайтов"
-        description="Посещаемость, популярные материалы и обращения клиентов."
-      >
-        <div className="stats-head-actions">
-          <span className="stats-auto">
-            <RefreshCw size={14} />
-            Автообновление · 30 с
-          </span>
-          <button
-            className="button secondary"
-            onClick={() => {
-              void loadSites();
-              setRevision((r) => r + 1);
-            }}
-            disabled={loading || !site}
-          >
-            <RefreshCw size={16} className={loading ? "spin" : ""} />
-            Обновить
-          </button>
-        </div>
-      </PageHead>
       {error && <Notice tone="error">{error}</Notice>}
       {!sitesLoading && !sites.length ? (
         <Empty
@@ -525,7 +516,7 @@ export default function Statistics({ active }: { active: boolean }) {
               </button>
             )}
           </section>
-          <div className="stats-report-meta">
+          <div className="stats-report-meta" aria-busy={loading}>
             <div>
               <span className="stats-provider">
                 {visible?.provider || site?.source?.label || "Статистика сайта"}
@@ -774,6 +765,113 @@ export default function Statistics({ active }: { active: boolean }) {
       {settingsOpen && site && canConfigure && (
         <ConnectionDialog site={site} onClose={() => setSettingsOpen(false)} />
       )}
+    </>
+  );
+}
+
+export default function Statistics({ active }: { active: boolean }) {
+  const [view, setView] = useState<"overview" | "site">("overview"),
+    [revision, setRevision] = useState(0),
+    [requested, setRequested] = useState<{ id: string; period: Period } | null>(
+      null,
+    );
+  const tabs = useRef<HTMLDivElement>(null);
+  return (
+    <>
+      <PageHead
+        eyebrow="МАРКЕТИНГ И РЕЗУЛЬТАТЫ"
+        title="Статистика сайтов"
+        description="Все сайты в одном обзоре. Посещаемость, динамика и обращения клиентов."
+      >
+        <div className="stats-head-actions">
+          <span className="stats-auto">
+            <RefreshCw size={14} />
+            Автообновление · 30 с
+          </span>
+          <button
+            className="button secondary"
+            onClick={() => setRevision((v) => v + 1)}
+          >
+            <RefreshCw size={16} />
+            Обновить
+          </button>
+        </div>
+      </PageHead>
+      <div
+        className="so-view-tabs"
+        role="tablist"
+        aria-label="Вид статистики"
+        ref={tabs}
+        onKeyDown={(e) => {
+          if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+            e.preventDefault();
+            const next =
+              e.key === "Home"
+                ? "overview"
+                : e.key === "End"
+                  ? "site"
+                  : view === "overview"
+                    ? "site"
+                    : "overview";
+            setView(next);
+            tabs.current
+              ?.querySelector<HTMLButtonElement>(`[id="stats-${next}-tab"]`)
+              ?.focus();
+          }
+        }}
+      >
+        <button
+          type="button"
+          role="tab"
+          id="stats-overview-tab"
+          aria-controls="stats-overview-panel"
+          aria-selected={view === "overview"}
+          tabIndex={view === "overview" ? 0 : -1}
+          onClick={() => setView("overview")}
+        >
+          <BarChart3 size={17} />
+          Все сайты
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="stats-site-tab"
+          aria-controls="stats-site-panel"
+          aria-selected={view === "site"}
+          tabIndex={view === "site" ? 0 : -1}
+          onClick={() => setView("site")}
+        >
+          <Globe2 size={17} />
+          Отчёт по сайту
+        </button>
+      </div>
+      <div
+        role="tabpanel"
+        id="stats-overview-panel"
+        aria-labelledby="stats-overview-tab"
+        hidden={view !== "overview"}
+      >
+        <StatisticsOverview
+          active={active && view === "overview"}
+          revision={revision}
+          onOpenSite={(id, period) => {
+            setRequested({ id, period });
+            setView("site");
+          }}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="stats-site-panel"
+        aria-labelledby="stats-site-tab"
+        hidden={view !== "site"}
+      >
+        <SiteStatistics
+          active={active && view === "site"}
+          revision={revision}
+          requested={requested}
+        />
+      </div>
     </>
   );
 }
