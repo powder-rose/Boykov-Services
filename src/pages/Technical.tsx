@@ -5,7 +5,7 @@ import {
   MessageSquareText, PencilLine, Search, Send, SlidersHorizontal, X, Palette, RotateCcw, Eye, Plus, Trash2, Undo2, Redo2,
 } from "lucide-react";
 import { api, post, dateTime, errorText } from "../api";
-import { Notice } from "../components/Common";
+import { Notice, TitleDot } from "../components/Common";
 import "./technical.css";
 
 type Field = { key: string; label: string; sourceIndex: number; targetIndex: number | null };
@@ -727,7 +727,7 @@ export default function Technical() {
     <div className="tech-heading">
       <div>
         <span className="tech-eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО / ТЕХНИЧЕСКИЙ ОТДЕЛ</span>
-        <h1>Техотдел<span>.</span></h1>
+        <h1>Техотдел<TitleDot /></h1>
         <p>Объекты, дополнительные работы и заметки — всё в одном месте.</p>
       </div>
       <div className="tech-sync-overview">

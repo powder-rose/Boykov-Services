@@ -62,6 +62,13 @@ export function Empty({
     </div>
   );
 }
+export function TitleDot() {
+  return (
+    <span className="section-title-dot" aria-hidden="true">
+      .
+    </span>
+  );
+}
 export function PageHead({
   eyebrow,
   title,
@@ -77,7 +84,10 @@ export function PageHead({
     <header className="page-head">
       <div>
         <div className="eyebrow">{eyebrow}</div>
-        <h1>{title}</h1>
+        <h1>
+          {title}
+          <TitleDot />
+        </h1>
         <p>{description}</p>
       </div>
       {children}

@@ -779,3 +779,275 @@ test("upgrading the pre-trash database keeps customer cards and adds nullable de
   assert.equal(d.customer.deletedAt, null);
   assert.equal((await (await s.api("/docs-customers")).json()).total, 1);
 });
+
+const companyEvent = (company = profile(), overrides = {}) =>
+  event({
+    kind: "company",
+    occurredAt: company.savedAt,
+    observedAt: company.savedAt,
+    company,
+    ...overrides,
+  });
+const changedProfile = (name = "Обновлённая компания", hour = "11") => ({
+  ...profile(name),
+  inn: "7709876543",
+  savedAt: `2026-11-19T${hour}:00:00.000Z`,
+});
+test("company updates flag real field changes, prioritize them over newer registrations and provide an update widget count", async (t) => {
+  const s = await fixture(t),
+    first = companyEvent(),
+    ack = await s.ingest(first);
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.customer.companyUpdate, null);
+  assert.equal(
+    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
+    0,
+  );
+  const newer = event({
+    user: {
+      ...event().user,
+      id: "newer-user",
+      registeredAt: "2026-11-19T12:00:00.000Z",
+    },
+    occurredAt: "2026-11-19T12:00:00.000Z",
+    observedAt: "2026-11-19T12:00:00.000Z",
+  });
+  await s.ingest(newer);
+  const change = companyEvent(changedProfile());
+  await s.ingest(change);
+  const list = await (await s.api("/docs-customers")).json();
+  assert.equal(list.customers[0].id, ack.customerId);
+  assert.equal(list.companyUpdates.pending, 1);
+  assert.equal(list.companyUpdates.lastChangedAt, change.company.savedAt);
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.companyUpdate.unread, true);
+  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
+  assert.deepEqual(
+    d.customer.companyUpdate.fields.map((f) => f.name),
+    ["companyName", "inn"],
+  );
+  const filtered = await (await s.api("/docs-customers?updated=1")).json();
+  assert.equal(filtered.total, 1);
+  assert.equal(filtered.customers[0].externalId, first.user.id);
+  const chronological = await (
+    await s.api("/docs-customers?sort=oldest")
+  ).json();
+  assert.equal(chronological.customers[0].id, ack.customerId);
+});
+test("review belongs to the signed-in employee, is idempotent and cannot clear a newer company revision", async (t) => {
+  const s = await fixture(t),
+    a = await s.make("docs.review.a"),
+    b = await s.make("docs.review.b"),
+    ca = await s.login(a.login),
+    cb = await s.login(b.login),
+    ack = await s.ingest(companyEvent());
+  const change = companyEvent(changedProfile());
+  await s.ingest(change);
+  const path = "/docs-customers/" + ack.customerId + "/company-update/seen";
+  assert.equal(
+    (await s.request(path, "POST", { eventId: change.eventId })).status,
+    401,
+  );
+  const before = (await s.detail(ack.customerId, ca)).customer.version;
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (
+        await s.api(
+          path,
+          "POST",
+          { eventId: change.eventId, actorId: b.id },
+          ca,
+        )
+      ).status,
+      200,
+    );
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, ca)).json())
+      .companyUpdates.pending,
+    0,
+  );
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, cb)).json())
+      .companyUpdates.pending,
+    1,
+  );
+  let d = await s.detail(ack.customerId, ca);
+  assert.equal(d.customer.companyUpdate.unread, false);
+  assert.ok(d.customer.companyUpdate.reviewedAt);
+  assert.equal(d.customer.version, before);
+  const second = companyEvent(changedProfile("Ещё одно изменение", "13"));
+  await s.ingest(second);
+  assert.equal(
+    (await s.api(path, "POST", { eventId: change.eventId }, ca)).status,
+    409,
+  );
+  d = await s.detail(ack.customerId, ca);
+  assert.equal(d.customer.companyUpdate.eventId, second.eventId);
+  assert.equal(d.customer.companyUpdate.unread, true);
+  await s.restart();
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, ca)).json())
+      .companyUpdates.pending,
+    1,
+  );
+});
+test("duplicate delivery, unchanged company values, contact changes and older company snapshots do not create new update alerts", async (t) => {
+  const s = await fixture(t),
+    ack = await s.ingest(companyEvent()),
+    change = companyEvent(changedProfile());
+  await s.ingest(change);
+  const path = "/docs-customers/" + ack.customerId + "/company-update/seen";
+  await s.api(path, "POST", { eventId: change.eventId });
+  assert.equal((await s.hook(change)).status, 200);
+  await s.ingest(
+    companyEvent(
+      { ...change.company, savedAt: "2026-11-19T12:00:00.000Z" },
+      { user: { ...change.user, name: "Новое имя контакта" } },
+    ),
+  );
+  await s.ingest(
+    companyEvent(profile("Старый снимок"), {
+      observedAt: "2026-11-19T09:01:00.000Z",
+    }),
+  );
+  const d = await s.detail(ack.customerId);
+  assert.equal(d.customer.company.companyName, change.company.companyName);
+  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
+  assert.equal(d.customer.companyUpdate.unread, false);
+  assert.equal(d.customer.name, "Новое имя контакта");
+  assert.equal(
+    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
+    0,
+  );
+});
+test("shared review stays separate from personal accounts and trash suppresses update counts without reviving removed cards", async (t) => {
+  const s = await fixture(t),
+    user = await s.make("docs.review.personal"),
+    cookie = await s.login(user.login),
+    shared = await s.login(null),
+    ack = await s.ingest(companyEvent()),
+    change = companyEvent(changedProfile());
+  await s.ingest(change);
+  await s.api(
+    "/docs-customers/" + ack.customerId + "/company-update/seen",
+    "POST",
+    { eventId: change.eventId },
+    shared,
+  );
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, shared)).json())
+      .companyUpdates.pending,
+    0,
+  );
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
+      .companyUpdates.pending,
+    1,
+  );
+  let d = await s.detail(ack.customerId);
+  await s.api("/docs-customers/" + ack.customerId + "/trash", "POST", {
+    requestId: randomUUID(),
+    version: d.customer.version,
+    action: "delete",
+  });
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
+      .companyUpdates.pending,
+    0,
+  );
+  assert.equal(
+    (
+      await s.api(
+        "/docs-customers/" + ack.customerId + "/company-update/seen",
+        "POST",
+        { eventId: change.eventId },
+        cookie,
+      )
+    ).status,
+    409,
+  );
+  await s.ingest(companyEvent(changedProfile("Изменение в корзине", "14")));
+  assert.equal((await (await s.api("/docs-customers")).json()).total, 0);
+  d = await s.detail(ack.customerId);
+  await s.api("/docs-customers/" + ack.customerId + "/trash", "POST", {
+    requestId: randomUUID(),
+    version: d.customer.version,
+    action: "restore",
+  });
+  assert.equal(
+    (await (await s.api("/docs-customers", "GET", undefined, cookie)).json())
+      .companyUpdates.pending,
+    1,
+  );
+});
+test("upgrade detects captured legacy company changes once and preserves reviewed state after restart", async (t) => {
+  const s = await fixture(t),
+    ack = await s.ingest(companyEvent()),
+    change = companyEvent(changedProfile());
+  await s.ingest(change);
+  s.db.exec(
+    "DROP TABLE docs_customer_company_reviews;DROP TABLE docs_customer_company_updates;DROP TABLE docs_customer_module_meta;",
+  );
+  await s.restart();
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.customer.companyUpdate.eventId, change.eventId);
+  assert.equal(d.customer.companyUpdate.unread, true);
+  await s.api(
+    "/docs-customers/" + ack.customerId + "/company-update/seen",
+    "POST",
+    { eventId: change.eventId },
+  );
+  await s.restart();
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.companyUpdate.unread, false);
+  assert.equal(
+    (await (await s.api("/docs-customers")).json()).companyUpdates.pending,
+    0,
+  );
+});
+test("updated customers stay on page one even with a full page of more recent new registrations", async (t) => {
+  const s = await fixture(t),
+    ack = await s.ingest(companyEvent());
+  await s.ingest(companyEvent(changedProfile()));
+  for (let i = 0; i < 26; i++)
+    await s.ingest(
+      event({
+        user: {
+          ...event().user,
+          id: "recent-" + i,
+          registeredAt: "2026-11-19T15:00:00.000Z",
+        },
+        occurredAt: "2026-11-19T15:00:00.000Z",
+        observedAt: "2026-11-19T15:00:00.000Z",
+      }),
+    );
+  const list = await (await s.api("/docs-customers")).json();
+  assert.equal(list.total, 27);
+  assert.equal(list.customers.length, 25);
+  assert.equal(list.customers[0].id, ack.customerId);
+  assert.equal(list.pages, 2);
+});
+test("newest-first outbox delivery still proves a company update when the previous snapshot arrives later", async (t) => {
+  const s = await fixture(t),
+    newest = companyEvent(changedProfile()),
+    ack = await s.ingest(newest);
+  assert.equal((await s.detail(ack.customerId)).customer.companyUpdate, null);
+  await s.ingest(companyEvent());
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.customer.company.companyName, newest.company.companyName);
+  assert.equal(d.customer.companyUpdate.eventId, newest.eventId);
+  assert.equal(d.customer.companyUpdate.unread, true);
+  await s.api(
+    "/docs-customers/" + ack.customerId + "/company-update/seen",
+    "POST",
+    { eventId: newest.eventId },
+  );
+  await s.ingest(
+    companyEvent(profile("Более ранний снимок"), {
+      observedAt: "2026-11-19T09:00:00.000Z",
+    }),
+  );
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.companyUpdate.unread, false);
+  assert.equal(d.customer.companyUpdate.eventId, newest.eventId);
+});

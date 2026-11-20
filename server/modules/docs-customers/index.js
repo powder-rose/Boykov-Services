@@ -46,6 +46,10 @@ const searchText = (row) =>
   ]
     .join(" ")
     .toLowerCase();
+const companyChanges = (before, after) =>
+  DOCS_COMPANY_FIELDS.filter(
+    (f) => (before[f.name] || "") !== (after[f.name] || ""),
+  ).map((f) => f.name);
 export function createDocsCustomersModule(db, { now = Date.now } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS docs_customer_connection(id INTEGER PRIMARY KEY CHECK(id=1),import_since TEXT NOT NULL,token_hash TEXT,token_issued_at TEXT,last_received_at TEXT,last_heartbeat_at TEXT,pending INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,scan_ok INTEGER NOT NULL DEFAULT 0,error_code TEXT NOT NULL DEFAULT '');
  CREATE TABLE IF NOT EXISTS docs_customers(id TEXT PRIMARY KEY,external_id TEXT NOT NULL UNIQUE,name TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',email TEXT NOT NULL DEFAULT '',registered_at TEXT,contact_observed_at TEXT NOT NULL,company TEXT,company_saved_at TEXT,company_observed_at TEXT,created_at TEXT NOT NULL,received_at TEXT NOT NULL,source_updated_at TEXT NOT NULL,search_text TEXT NOT NULL DEFAULT '',call_count INTEGER NOT NULL DEFAULT 0,last_call_id TEXT,version INTEGER NOT NULL DEFAULT 1);
@@ -75,6 +79,71 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
   db.exec(`CREATE INDEX IF NOT EXISTS docs_customers_deleted ON docs_customers(deleted_at,source_updated_at DESC);
     CREATE TABLE IF NOT EXISTS docs_customer_lifecycle(id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,action TEXT NOT NULL,created_at TEXT NOT NULL,actor_id TEXT,actor_name TEXT NOT NULL,actor_kind TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS docs_customer_lifecycle_customer ON docs_customer_lifecycle(customer_id,created_at DESC);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS docs_customer_company_updates(customer_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,changed_at TEXT NOT NULL,fields TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS docs_customer_company_reviews(customer_id TEXT NOT NULL,actor_key TEXT NOT NULL,event_id TEXT NOT NULL,reviewed_at TEXT NOT NULL,PRIMARY KEY(customer_id,actor_key));
+    CREATE TABLE IF NOT EXISTS docs_customer_module_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+  const saveCompanyUpdate = (id, eventId, changedAt, fields) =>
+    db
+      .prepare(
+        "INSERT INTO docs_customer_company_updates VALUES(?,?,?,?) ON CONFLICT(customer_id) DO UPDATE SET event_id=excluded.event_id,changed_at=excluded.changed_at,fields=excluded.fields",
+      )
+      .run(id, eventId, changedAt, JSON.stringify(fields));
+  // Existing captured versions can prove a real change. Initialize this once, never on each restart.
+  if (
+    !db
+      .prepare(
+        "SELECT value FROM docs_customer_module_meta WHERE key='company_updates_v1'",
+      )
+      .get()
+  )
+    transaction(db, () => {
+      for (const row of db
+        .prepare(
+          "SELECT id,company,company_saved_at FROM docs_customers WHERE company IS NOT NULL",
+        )
+        .all()) {
+        let before = null,
+          latest = null;
+        for (const version of db
+          .prepare(
+            "SELECT event_id,saved_at,company FROM docs_customer_company_versions WHERE customer_id=? AND saved_at<=? ORDER BY saved_at,rowid",
+          )
+          .all(row.id, row.company_saved_at)) {
+          const next = JSON.parse(version.company),
+            fields = before ? companyChanges(before, next) : [];
+          if (fields.length)
+            latest = {
+              eventId: version.event_id,
+              changedAt: version.saved_at,
+              fields,
+            };
+          before = next;
+        }
+        if (latest && !companyChanges(before, JSON.parse(row.company)).length)
+          saveCompanyUpdate(
+            row.id,
+            latest.eventId,
+            latest.changedAt,
+            latest.fields,
+          );
+        else {
+          const head = db
+            .prepare(
+              "SELECT event_id FROM docs_customer_company_versions WHERE customer_id=? AND saved_at=? ORDER BY rowid DESC LIMIT 1",
+            )
+            .get(row.id, row.company_saved_at);
+          saveCompanyUpdate(
+            row.id,
+            head?.event_id || "legacy:" + row.id,
+            row.company_saved_at,
+            [],
+          );
+        }
+      }
+      db.prepare(
+        "INSERT INTO docs_customer_module_meta VALUES('company_updates_v1','1')",
+      ).run();
+    });
   db.prepare(
     "INSERT OR IGNORE INTO docs_customer_connection(id,import_since) VALUES(1,?)",
   ).run(DOCS_CUSTOMERS_SINCE);
@@ -148,6 +217,27 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
             : !req.actor?.id)),
     };
   }
+  const reviewActor = (req) => actor(req).id || "shared";
+  function companyUpdate(id, req) {
+    const r = db
+      .prepare(
+        "SELECT u.*,v.event_id reviewed_event,v.reviewed_at FROM docs_customer_company_updates u LEFT JOIN docs_customer_company_reviews v ON v.customer_id=u.customer_id AND v.actor_key=? WHERE u.customer_id=?",
+      )
+      .get(reviewActor(req), id);
+    if (!r) return null;
+    const unread = r.event_id !== r.reviewed_event;
+    const names = JSON.parse(r.fields);
+    if (!names.length) return null;
+    return {
+      eventId: r.event_id,
+      changedAt: r.changed_at,
+      fields: DOCS_COMPANY_FIELDS.filter((f) => names.includes(f.name)).map(
+        (f) => ({ name: f.name, label: f.label }),
+      ),
+      unread,
+      reviewedAt: unread ? null : r.reviewed_at,
+    };
+  }
   function present(r, req) {
     const last = r.last_call_id
       ? db
@@ -166,6 +256,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       company: r.company
         ? { ...JSON.parse(r.company), savedAt: r.company_saved_at }
         : null,
+      companyUpdate: companyUpdate(r.id, req),
       callCount: r.call_count,
       lastCall: last ? callView(last, req, !!r.deleted_at) : null,
       deletedAt: r.deleted_at,
@@ -292,6 +383,16 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         const company = Object.fromEntries(
           DOCS_COMPANY_FIELDS.map((f) => [f.name, input.company[f.name]]),
         );
+        const changed = r.company
+          ? companyChanges(JSON.parse(r.company), company)
+          : [];
+        if (changed.length || !r.company)
+          saveCompanyUpdate(
+            r.id,
+            input.eventId,
+            input.company.savedAt,
+            changed,
+          );
         db.prepare(
           "UPDATE docs_customers SET company=?,company_saved_at=?,company_observed_at=?,version=version+1 WHERE id=?",
         ).run(
@@ -302,6 +403,28 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         );
       }
       r = get(r.id);
+      if (input.company) {
+        const head = db
+          .prepare(
+            "SELECT * FROM docs_customer_company_updates WHERE customer_id=? AND fields='[]'",
+          )
+          .get(r.id);
+        if (head && input.company.savedAt < head.changed_at) {
+          const previous = db
+            .prepare(
+              "SELECT company FROM docs_customer_company_versions WHERE customer_id=? AND saved_at<? ORDER BY saved_at DESC,rowid DESC LIMIT 1",
+            )
+            .get(r.id, head.changed_at);
+          const proven = previous
+            ? companyChanges(
+                JSON.parse(previous.company),
+                JSON.parse(r.company),
+              )
+            : [];
+          if (proven.length)
+            saveCompanyUpdate(r.id, head.event_id, head.changed_at, proven);
+        }
+      }
       db.prepare(
         "UPDATE docs_customers SET received_at=?,source_updated_at=MAX(source_updated_at,?),search_text=? WHERE id=?",
       ).run(stamp, input.occurredAt, searchText(r), r.id);
@@ -387,10 +510,15 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       );
       args.push(req.actor.id);
     }
+    const unread =
+      "(u.event_id IS NOT NULL AND u.fields<>'[]' AND (v.event_id IS NULL OR v.event_id<>u.event_id))";
+    const joined =
+      " FROM docs_customers LEFT JOIN docs_customer_company_updates u ON u.customer_id=docs_customers.id LEFT JOIN docs_customer_company_reviews v ON v.customer_id=docs_customers.id AND v.actor_key=?";
+    if (req.query.updated === "1") where.push(unread);
     const condition = where.length ? " WHERE " + where.join(" AND ") : "",
       total = db
-        .prepare("SELECT count(*) amount FROM docs_customers" + condition)
-        .get(...args).amount;
+        .prepare("SELECT count(*) amount" + joined + condition)
+        .get(reviewActor(req), ...args).amount;
     const stats = db
       .prepare(
         "SELECT count(*) total,COALESCE(SUM(company IS NOT NULL),0) companies,COALESCE(SUM(call_count=0),0) uncalled,COALESCE(SUM(call_count>0),0) called FROM docs_customers WHERE deleted_at IS NULL",
@@ -400,14 +528,28 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       current = Math.min(page, pages);
     const rows = db
       .prepare(
-        "SELECT * FROM docs_customers" +
+        "SELECT docs_customers.*" +
+          joined +
           condition +
-          " ORDER BY source_updated_at " +
-          (sort === "oldest" ? "ASC" : "DESC") +
-          ",id LIMIT 25 OFFSET ?",
+          (sort === "oldest"
+            ? " ORDER BY source_updated_at ASC,id"
+            : " ORDER BY " +
+              unread +
+              " DESC,CASE WHEN " +
+              unread +
+              " THEN u.changed_at ELSE source_updated_at END DESC,id") +
+          " LIMIT 25 OFFSET ?",
       )
-      .all(...args, (current - 1) * 25);
+      .all(reviewActor(req), ...args, (current - 1) * 25);
     return {
+      companyUpdates: db
+        .prepare(
+          "SELECT count(*) pending,MAX(u.changed_at) lastChangedAt" +
+            joined +
+            " WHERE docs_customers.deleted_at IS NULL AND " +
+            unread,
+        )
+        .get(reviewActor(req)),
       customers: rows.map((r) => present(r, req)),
       trashCount: db
         .prepare(
@@ -585,6 +727,29 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       return result;
     });
   }
+  function reviewCompanyUpdate(req) {
+    const eventId = customerText(req.body?.eventId, 160, true),
+      id = req.params.id;
+    return transaction(db, () => {
+      const r = get(id),
+        update = companyUpdate(id, req);
+      if (r.deleted_at)
+        throw bad(
+          "Карточка находится в корзине. Сначала восстановите её.",
+          409,
+        );
+      if (!update || update.eventId !== eventId)
+        throw bad(
+          "Компания снова обновилась. Проверьте новые данные и отметьте их просмотренными.",
+          409,
+        );
+      const stamp = new Date(now()).toISOString();
+      db.prepare(
+        "INSERT INTO docs_customer_company_reviews VALUES(?,?,?,?) ON CONFLICT(customer_id,actor_key) DO UPDATE SET event_id=excluded.event_id,reviewed_at=excluded.reviewed_at WHERE docs_customer_company_reviews.event_id<>excluded.event_id",
+      ).run(id, reviewActor(req), eventId, stamp);
+      return { ok: true, eventId };
+    });
+  }
   const admin = (req) => {
     if (req.actor?.role !== "admin")
       throw bad("Настраивать подключение может администратор.", 403);
@@ -621,6 +786,10 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
     app.get(
       "/api/docs-customers/:id",
       wrap((req, res) => res.json(detail(req.params.id, req))),
+    );
+    app.post(
+      "/api/docs-customers/:id/company-update/seen",
+      wrap((req, res) => res.json(reviewCompanyUpdate(req))),
     );
     app.post(
       "/api/docs-customers/:id/trash",

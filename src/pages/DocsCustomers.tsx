@@ -36,6 +36,13 @@ type Call = {
   voidedBy: { name: string } | null;
   canVoid: boolean;
 };
+type CompanyUpdate = {
+  eventId: string;
+  changedAt: string;
+  fields: { name: CompanyField; label: string }[];
+  unread: boolean;
+  reviewedAt: string | null;
+};
 type Customer = {
   id: string;
   externalId: string;
@@ -45,6 +52,7 @@ type Customer = {
   registeredAt: string | null;
   sourceUpdatedAt: string;
   company: Company | null;
+  companyUpdate: CompanyUpdate | null;
   callCount: number;
   lastCall: Call | null;
   deletedAt: string | null;
@@ -52,6 +60,7 @@ type Customer = {
   version: number;
 };
 type Listing = {
+  companyUpdates: { pending: number; lastChangedAt: string | null };
   customers: Customer[];
   total: number;
   trashCount: number;
@@ -97,12 +106,24 @@ function Person({ call }: { call: Call }) {
     </span>
   );
 }
-function CompanyFields({ company }: { company: Company }) {
+function CompanyFields({
+  company,
+  changed = [],
+}: {
+  company: Company;
+  changed?: CompanyField[];
+}) {
   return (
     <dl className="dc-fields">
       {DOCS_COMPANY_FIELDS.map((f) => (
-        <div key={f.name}>
-          <dt>{f.label}</dt>
+        <div
+          key={f.name}
+          className={changed.includes(f.name) ? "dc-field-updated" : undefined}
+        >
+          <dt>
+            {f.label}
+            {changed.includes(f.name) && <small>Изменено</small>}
+          </dt>
           <dd>{company[f.name] || "Не указано"}</dd>
         </div>
       ))}
@@ -127,6 +148,7 @@ export default function DocsCustomers({
     [sort, setSort] = useState("newest"),
     [page, setPage] = useState(1),
     [view, setView] = useState<"active" | "trash">("active"),
+    [updatedOnly, setUpdatedOnly] = useState(false),
     [success, setSuccess] = useState("");
   const [selected, setSelected] = useState<string | null>(null),
     [settings, setSettings] = useState(false);
@@ -144,6 +166,7 @@ export default function DocsCustomers({
       const params = new URLSearchParams({
         q: debounced,
         view,
+        updated: updatedOnly ? "1" : "0",
         status,
         sort,
         page: String(page),
@@ -161,7 +184,7 @@ export default function DocsCustomers({
     } catch (e) {
       if (n === generation.current) setError(errorText(e));
     }
-  }, [debounced, status, sort, page, company, mine, view]);
+  }, [debounced, status, sort, page, company, mine, view, updatedOnly]);
   useEffect(() => {
     if (!active) return;
     void refresh();
@@ -222,6 +245,43 @@ export default function DocsCustomers({
             );
           })}
         </div>
+      )}
+      {listing && listing.companyUpdates.pending > 0 && (
+        <section
+          className="dc-update-widget"
+          aria-label="Непросмотренные обновления компаний"
+        >
+          <span className="dc-update-symbol">
+            <RefreshCw size={23} />
+          </span>
+          <div>
+            <span className="eyebrow">ИЗМЕНЕНИЯ НА BOYKOVDOCS</span>
+            <h2>
+              Обновлены данные компаний{" "}
+              <strong>{number(listing.companyUpdates.pending)}</strong>
+            </h2>
+            <p>
+              Проверьте изменения реквизитов. Последнее обновление:{" "}
+              {when(listing.companyUpdates.lastChangedAt)} · Москва
+            </p>
+          </div>
+          <button
+            className="button"
+            onClick={() => {
+              setView("active");
+              setUpdatedOnly(true);
+              setPage(1);
+              setStatus("all");
+              setQuery("");
+              setDebounced("");
+              setCompany(false);
+              setMine(false);
+              setSort("newest");
+            }}
+          >
+            Показать обновлённые
+          </button>
+        </section>
       )}
       <div className="dc-connection">
         <span className={"dc-health " + (connection?.status || "")}>
@@ -329,6 +389,19 @@ export default function DocsCustomers({
               Мои звонки
             </label>
           )}
+          {view === "active" && (
+            <label>
+              <input
+                type="checkbox"
+                checked={updatedOnly}
+                onChange={(e) => {
+                  setUpdatedOnly(e.target.checked);
+                  setPage(1);
+                }}
+              />
+              Только обновления
+            </label>
+          )}
           <button
             className={
               "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
@@ -340,6 +413,7 @@ export default function DocsCustomers({
               setQuery("");
               setDebounced("");
               setCompany(false);
+              setUpdatedOnly(false);
               setMine(false);
               setPage(1);
               setSuccess("");
@@ -356,14 +430,14 @@ export default function DocsCustomers({
         ) : !listing.customers.length ? (
           <Empty
             title={
-              query || status !== "all" || company || mine
+              query || status !== "all" || company || mine || updatedOnly
                 ? "Ничего не найдено"
                 : view === "trash"
                   ? "Корзина пуста"
                   : "Здесь появятся клиенты BoykovDocs"
             }
             text={
-              query || status !== "all" || company || mine
+              query || status !== "all" || company || mine || updatedOnly
                 ? "Попробуйте изменить условия поиска."
                 : view === "trash"
                   ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
@@ -402,6 +476,19 @@ export default function DocsCustomers({
                     </div>
                   </div>
                   <div className="dc-company-cell">
+                    {c.companyUpdate && (
+                      <span
+                        className={
+                          "dc-update-badge" +
+                          (c.companyUpdate.unread ? " unread" : "")
+                        }
+                      >
+                        <RefreshCw size={13} />
+                        {c.companyUpdate.unread
+                          ? "Обновлено"
+                          : "Обновление просмотрено"}
+                      </span>
+                    )}
                     {c.company ? (
                       <>
                         <strong>
@@ -600,6 +687,40 @@ function CustomerDialog({
       setBusy(false);
     }
   }
+  async function reviewUpdate() {
+    const update = data?.customer.companyUpdate;
+    if (
+      !update ||
+      !data ||
+      busy ||
+      retry ||
+      confirmDelete ||
+      trashRetry ||
+      data.customer.deletedAt
+    )
+      return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await post("/docs-customers/" + id + "/company-update/seen", {
+        eventId: update.eventId,
+      });
+      await refresh();
+      onChange();
+      setMessage(
+        account?.id
+          ? "Обновление отмечено просмотренным для вашего аккаунта."
+          : "Обновление отмечено просмотренным для общего доступа.",
+      );
+    } catch (e) {
+      setError(errorText(e));
+      if (e instanceof ApiError && e.status === 409)
+        await refresh().catch(() => {});
+    } finally {
+      setBusy(false);
+    }
+  }
   async function changeTrash(action: "delete" | "restore") {
     if (!data || busy || retry) return;
     const body = trashDraft.current || {
@@ -717,6 +838,37 @@ function CustomerDialog({
           </div>
         </div>
       )}
+      {c?.companyUpdate && (
+        <section
+          className={
+            "dc-detail-update" + (c.companyUpdate.unread ? " unread" : "")
+          }
+          aria-label="Обновление данных компании"
+        >
+          <RefreshCw size={19} />
+          <div>
+            <strong>Компания обновлена</strong>
+            <p>{when(c.companyUpdate.changedAt)} · Москва</p>
+            <p>
+              Изменились:{" "}
+              {c.companyUpdate.fields.map((f) => f.label).join(", ")}
+            </p>
+            {!c.companyUpdate.unread && (
+              <small>Просмотрено {when(c.companyUpdate.reviewedAt)}</small>
+            )}
+          </div>
+          {c.companyUpdate.unread && !c.deletedAt && (
+            <button
+              className="button"
+              disabled={busy || retry || confirmDelete || trashRetry}
+              onClick={() => void reviewUpdate()}
+            >
+              <Check size={16} />
+              Просмотрено
+            </button>
+          )}
+        </section>
+      )}
       {c?.deletedAt && (
         <Notice>
           Карточка в корзине с {when(c.deletedAt)} · Москва. Удалил:{" "}
@@ -797,7 +949,10 @@ function CustomerDialog({
                   <p className="dc-saved">
                     Данные сохранены {when(c.company.savedAt)} · Москва
                   </p>
-                  <CompanyFields company={c.company} />
+                  <CompanyFields
+                    company={c.company}
+                    changed={c.companyUpdate?.fields.map((f) => f.name)}
+                  />
                 </>
               ) : (
                 <p className="dc-muted">

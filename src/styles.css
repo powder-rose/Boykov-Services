@@ -2533,4 +2533,12 @@ code {
   }
 }
 
-@media (min-width: 1260px) { .service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1260px) {
+  .service-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.section-title-dot {
+  color: #c77796;
+}
