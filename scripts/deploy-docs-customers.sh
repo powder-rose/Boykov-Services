@@ -46,7 +46,8 @@ import { DatabaseSync } from 'node:sqlite';
 const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
 try {
  if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');
- for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
+ for(const table of ['docs_customers','docs_customer_calls','docs_customer_company_versions','docs_customer_lifecycle'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DOCS_CUSTOMERS_MIGRATION_MISSING');
+ for(const name of ['deleted_at','deleted_by_id','deleted_by_name','deleted_by_kind'])if(!db.prepare('PRAGMA table_info(docs_customers)').all().some(c=>c.name===name))throw Error('DOCS_CUSTOMERS_TRASH_MIGRATION_MISSING');
 }finally{db.close();}
 const health=await fetch('http://127.0.0.1:8787/healthz',{signal:AbortSignal.timeout(10000)});
 if(!health.ok||(await health.json()).ok!==true)throw Error('HEALTH_FAILED');
@@ -56,7 +57,7 @@ for(const route of ['/api/docs-customers','/api/docs-customers/connection']){
 }
 const hook=await fetch('http://127.0.0.1:8787/hooks/docs-customers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
 if(hook.status!==401)throw Error('DOCS_CUSTOMERS_HOOK_AUTH_FAILED');
-console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_AUTH=OK');
+console.log('DOCS_CUSTOMERS_MODULE=OK\nDOCS_CUSTOMERS_TRASH=OK\nDOCS_CUSTOMERS_AUTH=OK');
 VERIFY_DOCS_CUSTOMERS
 docker compose ps
 printf 'DOCS_CUSTOMERS_DEPLOY=OK\nDEPLOY_COMMIT=%s\nBACKUP=%s\n' "$(git rev-parse --short HEAD)" "$backup"

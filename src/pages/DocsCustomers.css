@@ -662,3 +662,77 @@
   background-size: 5px 5px;
   background-repeat: no-repeat;
 }
+.dc-card-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.dc-danger {
+  color: #98485e;
+  border: 1px solid #e6bcc9;
+  background: #fff4f6;
+}
+.dc-danger:hover:not(:disabled) {
+  background: #f7e2e9;
+}
+.dc-delete-confirm {
+  border: 1px solid #e6bcc9;
+  background: #fff7f9;
+  padding: 20px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+}
+.dc-delete-confirm strong {
+  font-size: 17px;
+  font-weight: 600;
+}
+.dc-delete-confirm p {
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.dc-delete-confirm > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.dc-trash-toggle {
+  margin-left: auto;
+  font-size: 14px;
+}
+.dc-trash-toggle.selected {
+  background: var(--ink);
+  color: #fff;
+}
+.dc-trash-caption {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: #fbf2f5;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.dc-trash-caption strong {
+  font-size: 17px;
+  font-weight: 500;
+}
+.dc-trash-caption p {
+  font-size: 14px;
+  line-height: 1.8;
+  margin: 6px 0 0;
+  color: #6e6267;
+}
+@media (max-width: 600px) {
+  .dc-dialog-header {
+    flex-wrap: wrap;
+  }
+  .dc-card-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .dc-trash-toggle {
+    margin-left: 0;
+  }
+}

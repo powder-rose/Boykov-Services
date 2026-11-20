@@ -57,6 +57,24 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
  CREATE TABLE IF NOT EXISTS docs_customer_company_versions(event_id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,saved_at TEXT NOT NULL,company TEXT NOT NULL,user_snapshot TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS docs_customer_company_versions_customer ON docs_customer_company_versions(customer_id,saved_at DESC);
  CREATE TABLE IF NOT EXISTS docs_customer_actions(request_id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,actor_key TEXT NOT NULL,payload_hash TEXT NOT NULL,result TEXT NOT NULL);`);
+  const columns = new Set(
+    db
+      .prepare("PRAGMA table_info(docs_customers)")
+      .all()
+      .map((c) => c.name),
+  );
+  for (const name of [
+    "deleted_at",
+    "deleted_by_id",
+    "deleted_by_name",
+    "deleted_by_kind",
+  ]) {
+    if (!columns.has(name))
+      db.exec(`ALTER TABLE docs_customers ADD COLUMN ${name} TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS docs_customers_deleted ON docs_customers(deleted_at,source_updated_at DESC);
+    CREATE TABLE IF NOT EXISTS docs_customer_lifecycle(id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,action TEXT NOT NULL,created_at TEXT NOT NULL,actor_id TEXT,actor_name TEXT NOT NULL,actor_kind TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS docs_customer_lifecycle_customer ON docs_customer_lifecycle(customer_id,created_at DESC);`);
   db.prepare(
     "INSERT OR IGNORE INTO docs_customer_connection(id,import_since) VALUES(1,?)",
   ).run(DOCS_CUSTOMERS_SINCE);
@@ -109,7 +127,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
     if (!r) throw bad("Клиент не найден.", 404);
     return r;
   }
-  function callView(r, req) {
+  function callView(r, req, deleted = false) {
     return {
       id: r.id,
       createdAt: r.created_at,
@@ -122,6 +140,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         ? { id: r.voided_by_id, name: r.voided_by_name, kind: r.voided_by_kind }
         : null,
       canVoid:
+        !deleted &&
         !r.voided_at &&
         (req.actor?.role === "admin" ||
           (r.actor_kind === "account"
@@ -148,7 +167,15 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         ? { ...JSON.parse(r.company), savedAt: r.company_saved_at }
         : null,
       callCount: r.call_count,
-      lastCall: last ? callView(last, req) : null,
+      lastCall: last ? callView(last, req, !!r.deleted_at) : null,
+      deletedAt: r.deleted_at,
+      deletedBy: r.deleted_at
+        ? {
+            id: r.deleted_by_id,
+            name: r.deleted_by_name,
+            kind: r.deleted_by_kind,
+          }
+        : null,
       version: r.version,
     };
   }
@@ -156,6 +183,17 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
     const r = get(id);
     return {
       customer: present(r, req),
+      lifecycle: db
+        .prepare(
+          "SELECT * FROM docs_customer_lifecycle WHERE customer_id=? ORDER BY rowid DESC",
+        )
+        .all(id)
+        .map((v) => ({
+          id: v.id,
+          action: v.action,
+          createdAt: v.created_at,
+          actor: { id: v.actor_id, name: v.actor_name, kind: v.actor_kind },
+        })),
       companyHistory: db
         .prepare(
           "SELECT * FROM docs_customer_company_versions WHERE customer_id=? ORDER BY saved_at DESC,rowid DESC LIMIT 50",
@@ -172,7 +210,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
           "SELECT * FROM docs_customer_calls WHERE customer_id=? ORDER BY rowid DESC",
         )
         .all(id)
-        .map((c) => callView(c, req)),
+        .map((c) => callView(c, req, !!r.deleted_at)),
     };
   }
   function receive(req, res) {
@@ -319,8 +357,10 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
     const q = customerText(req.query.q, 300).toLowerCase(),
       status = String(req.query.status || "all"),
       sort = String(req.query.sort || "newest"),
-      page = Number(req.query.page || 1);
+      page = Number(req.query.page || 1),
+      view = String(req.query.view || "active");
     if (
+      !["active", "trash"].includes(view) ||
       !["all", "uncalled", "called"].includes(status) ||
       !["newest", "oldest"].includes(sort) ||
       !Number.isSafeInteger(page) ||
@@ -328,7 +368,9 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       page > 100000
     )
       throw bad("Проверьте фильтры клиентов.");
-    const where = [],
+    const where = [
+        view === "trash" ? "deleted_at IS NOT NULL" : "deleted_at IS NULL",
+      ],
       args = [];
     if (q) {
       where.push("search_text LIKE ? ESCAPE '\\'");
@@ -351,7 +393,7 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         .get(...args).amount;
     const stats = db
       .prepare(
-        "SELECT count(*) total,COALESCE(SUM(company IS NOT NULL),0) companies,COALESCE(SUM(call_count=0),0) uncalled,COALESCE(SUM(call_count>0),0) called FROM docs_customers",
+        "SELECT count(*) total,COALESCE(SUM(company IS NOT NULL),0) companies,COALESCE(SUM(call_count=0),0) uncalled,COALESCE(SUM(call_count>0),0) called FROM docs_customers WHERE deleted_at IS NULL",
       )
       .get();
     const pages = Math.max(1, Math.ceil(total / 25)),
@@ -367,6 +409,11 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       .all(...args, (current - 1) * 25);
     return {
       customers: rows.map((r) => present(r, req)),
+      trashCount: db
+        .prepare(
+          "SELECT count(*) amount FROM docs_customers WHERE deleted_at IS NOT NULL",
+        )
+        .get().amount,
       total,
       page: current,
       pages,
@@ -428,6 +475,11 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
         return JSON.parse(repeated.result);
       }
       const r = get(id);
+      if (r.deleted_at)
+        throw bad(
+          "Клиент находится в корзине. Сначала восстановите карточку.",
+          409,
+        );
       if (r.version !== b.version)
         throw bad(
           "Карточка обновилась. Данные обновлены; проверьте их и сохраните звонок ещё раз.",
@@ -455,6 +507,74 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
       }
       updateCallSummary(id);
       const result = { ok: true, customerId: id, callId };
+      db.prepare("INSERT INTO docs_customer_actions VALUES(?,?,?,?,?)").run(
+        b.requestId,
+        id,
+        actorKey,
+        content,
+        JSON.stringify(result),
+      );
+      return result;
+    });
+  }
+  function mutateTrash(req) {
+    const id = req.params.id,
+      b = req.body,
+      a = actor(req);
+    if (
+      !b ||
+      !/^[a-f0-9-]{36}$/.test(b.requestId || "") ||
+      !["delete", "restore"].includes(b.action) ||
+      !Number.isSafeInteger(b.version) ||
+      b.version < 1
+    )
+      throw bad("Обновите карточку клиента и повторите действие.");
+    const content = hash(
+      JSON.stringify({
+        operation: "trash",
+        id,
+        action: b.action,
+        version: b.version,
+      }),
+    );
+    const actorKey = a.id || "shared";
+    return transaction(db, () => {
+      const repeated = db
+        .prepare("SELECT * FROM docs_customer_actions WHERE request_id=?")
+        .get(b.requestId);
+      if (repeated) {
+        if (
+          repeated.customer_id !== id ||
+          repeated.actor_key !== actorKey ||
+          repeated.payload_hash !== content
+        )
+          throw bad("Идентификатор действия уже использован.", 409);
+        return JSON.parse(repeated.result);
+      }
+      const r = get(id);
+      if (
+        r.version !== b.version ||
+        Boolean(r.deleted_at) !== (b.action === "restore")
+      )
+        throw bad(
+          "Карточку уже изменили. Обновите данные, проверьте их и повторите действие.",
+          409,
+        );
+      const stamp = new Date(now()).toISOString(),
+        deleting = b.action === "delete";
+      db.prepare(
+        "UPDATE docs_customers SET deleted_at=?,deleted_by_id=?,deleted_by_name=?,deleted_by_kind=?,version=version+1 WHERE id=?",
+      ).run(
+        deleting ? stamp : null,
+        deleting ? a.id : null,
+        deleting ? a.name : null,
+        deleting ? a.kind : null,
+        id,
+      );
+      db.prepare(
+        "INSERT INTO docs_customer_lifecycle VALUES(?,?,?,?,?,?,?)",
+      ).run(randomUUID(), id, b.action, stamp, a.id, a.name, a.kind);
+      const result = { ok: true, customerId: id, action: b.action };
       db.prepare("INSERT INTO docs_customer_actions VALUES(?,?,?,?,?)").run(
         b.requestId,
         id,
@@ -501,6 +621,10 @@ export function createDocsCustomersModule(db, { now = Date.now } = {}) {
     app.get(
       "/api/docs-customers/:id",
       wrap((req, res) => res.json(detail(req.params.id, req))),
+    );
+    app.post(
+      "/api/docs-customers/:id/trash",
+      wrap((req, res) => res.json(mutateTrash(req))),
     );
     app.post(
       "/api/docs-customers/:id/calls",

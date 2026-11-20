@@ -525,3 +525,257 @@ test("collector validates HTTPS endpoints and pins durable queue to source and c
     /ANOTHER_SOURCE/,
   );
 });
+
+test("customer trash preserves the exact user's company and calls; intake and restart cannot resurrect it", async (t) => {
+  const s = await fixture(t),
+    manager = await s.make("docs.trash", "Менеджер удаления"),
+    cookie = await s.login(manager.login);
+  const first = event({
+      kind: "company",
+      occurredAt: profile().savedAt,
+      company: profile(),
+    }),
+    ack = await s.ingest(first);
+  const other = await s.ingest({
+    ...first,
+    eventId: randomUUID(),
+    user: { ...first.user, id: "another-user" },
+  });
+  let d = await s.detail(ack.customerId);
+  await s.api(
+    "/docs-customers/" + ack.customerId + "/calls",
+    "POST",
+    {
+      requestId: randomUUID(),
+      version: d.customer.version,
+      outcome: "reached",
+      note: "Сохранить историю",
+    },
+    cookie,
+  );
+  d = await s.detail(ack.customerId);
+  assert.equal(
+    (
+      await s.api(
+        "/docs-customers/" + ack.customerId + "/trash",
+        "POST",
+        {
+          requestId: randomUUID(),
+          version: d.customer.version,
+          action: "delete",
+          actor: { name: "Подмена" },
+        },
+        cookie,
+      )
+    ).status,
+    200,
+  );
+  let active = await (await s.api("/docs-customers")).json();
+  assert.equal(active.total, 1);
+  assert.equal(active.customers[0].id, other.customerId);
+  assert.equal(active.trashCount, 1);
+  assert.deepEqual(active.stats, {
+    total: 1,
+    companies: 1,
+    uncalled: 1,
+    called: 0,
+  });
+  let trash = await (await s.api("/docs-customers?view=trash")).json();
+  assert.equal(trash.total, 1);
+  assert.equal(trash.customers[0].deletedBy.name, manager.name);
+  assert.equal((await s.hook(first)).status, 200);
+  await s.restart();
+  const update = {
+    ...first,
+    eventId: randomUUID(),
+    observedAt: "2026-11-19T11:01:00.000Z",
+    occurredAt: "2026-11-19T11:00:00.000Z",
+    company: {
+      ...profile("Обновлённая компания"),
+      savedAt: "2026-11-19T11:00:00.000Z",
+    },
+  };
+  await s.ingest(update);
+  active = await (await s.api("/docs-customers?company=1")).json();
+  assert.equal(active.total, 1);
+  assert.equal(active.trashCount, 1);
+  d = await s.detail(ack.customerId);
+  assert.ok(d.customer.deletedAt);
+  assert.equal(d.customer.company.companyName, "Обновлённая компания");
+  assert.equal(d.customer.externalId, first.user.id);
+  assert.equal(d.calls.length, 1);
+  assert.equal(d.calls[0].actor.name, manager.name);
+  assert.equal(d.calls[0].canVoid, false);
+  assert.equal(
+    (
+      await s.api("/docs-customers/" + ack.customerId + "/calls", "POST", {
+        requestId: randomUUID(),
+        version: d.customer.version,
+        outcome: "reached",
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await s.api(
+        "/docs-customers/" +
+          ack.customerId +
+          "/calls/" +
+          d.calls[0].id +
+          "/void",
+        "POST",
+        { requestId: randomUUID(), version: d.customer.version },
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await s.api(
+        "/docs-customers/" + ack.customerId + "/trash",
+        "POST",
+        {
+          requestId: randomUUID(),
+          version: d.customer.version,
+          action: "restore",
+        },
+        cookie,
+      )
+    ).status,
+    200,
+  );
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedAt, null);
+  assert.equal(d.customer.deletedBy, null);
+  assert.equal(d.calls.length, 1);
+  assert.deepEqual(
+    d.lifecycle.map((v) => v.action),
+    ["restore", "delete"],
+  );
+  assert.ok(d.lifecycle.every((v) => v.actor.id === manager.id));
+  active = await (await s.api("/docs-customers")).json();
+  assert.equal(active.total, 2);
+  assert.equal(active.stats.called, 1);
+  assert.equal(active.trashCount, 0);
+});
+test("trash mutations require a session, validate action and version and remain idempotent after an uncertain response", async (t) => {
+  const s = await fixture(t),
+    a = await s.make("docs.delete.a"),
+    b = await s.make("docs.delete.b"),
+    ca = await s.login(a.login),
+    cb = await s.login(b.login),
+    ack = await s.ingest(event());
+  const path = "/docs-customers/" + ack.customerId + "/trash",
+    body = { requestId: randomUUID(), version: 1, action: "delete" };
+  assert.equal((await s.request(path, "POST", body)).status, 401);
+  for (const bad of [
+    { ...body, version: 0 },
+    { ...body, action: "purge" },
+    { ...body, requestId: "bad" },
+  ])
+    assert.equal((await s.api(path, "POST", bad, ca)).status, 400);
+  assert.equal((await s.api(path, "POST", body, ca)).status, 200);
+  assert.equal((await s.api(path, "POST", body, ca)).status, 200);
+  assert.equal((await s.api(path, "POST", body, cb)).status, 409);
+  assert.equal(
+    (await s.api(path, "POST", { ...body, action: "restore" }, ca)).status,
+    409,
+  );
+  assert.equal(
+    (await s.api(path, "POST", { ...body, requestId: randomUUID() }, ca))
+      .status,
+    409,
+  );
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.lifecycle.length, 1);
+  const restore = {
+    requestId: randomUUID(),
+    version: d.customer.version,
+    action: "restore",
+  };
+  assert.equal((await s.api(path, "POST", restore, cb)).status, 200);
+  assert.equal((await s.api(path, "POST", restore, cb)).status, 200);
+  // Replaying an old delete after a later restore acknowledges the old operation without deleting again.
+  assert.equal((await s.api(path, "POST", body, ca)).status, 200);
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedAt, null);
+  assert.equal(d.lifecycle.length, 2);
+  assert.equal(d.lifecycle[0].actor.id, b.id);
+});
+test("stale removal conflicts with a newer company save and shared access has an honest removal author", async (t) => {
+  const s = await fixture(t),
+    ack = await s.ingest(event()),
+    shared = await s.login(null);
+  await s.ingest(
+    event({
+      kind: "company",
+      occurredAt: profile().savedAt,
+      company: profile(),
+      observedAt: profile().savedAt,
+    }),
+  );
+  const path = "/docs-customers/" + ack.customerId + "/trash";
+  assert.equal(
+    (
+      await s.api(
+        path,
+        "POST",
+        { requestId: randomUUID(), version: 1, action: "delete" },
+        shared,
+      )
+    ).status,
+    409,
+  );
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedAt, null);
+  assert.equal(
+    (
+      await s.api(
+        path,
+        "POST",
+        {
+          requestId: randomUUID(),
+          version: d.customer.version,
+          action: "delete",
+        },
+        shared,
+      )
+    ).status,
+    200,
+  );
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedBy.name, "Общий доступ");
+  assert.equal(d.customer.deletedBy.id, null);
+  assert.equal(d.lifecycle[0].actor.kind, "shared");
+  assert.equal(
+    (await (await s.api("/docs-customers?q=7701234567")).json()).total,
+    0,
+  );
+  assert.equal(
+    (await (await s.api("/docs-customers?view=trash&q=7701234567")).json())
+      .total,
+    1,
+  );
+  assert.equal((await s.api("/docs-customers?view=unknown")).status, 400);
+});
+test("upgrading the pre-trash database keeps customer cards and adds nullable deletion fields exactly once", async (t) => {
+  const s = await fixture(t),
+    ack = await s.ingest(event());
+  s.db.exec("DROP INDEX docs_customers_deleted");
+  for (const name of [
+    "deleted_at",
+    "deleted_by_id",
+    "deleted_by_name",
+    "deleted_by_kind",
+  ])
+    s.db.exec("ALTER TABLE docs_customers DROP COLUMN " + name);
+  await s.restart();
+  let d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedAt, null);
+  assert.equal(d.customer.name, event().user.name);
+  await s.restart();
+  d = await s.detail(ack.customerId);
+  assert.equal(d.customer.deletedAt, null);
+  assert.equal((await (await s.api("/docs-customers")).json()).total, 1);
+});

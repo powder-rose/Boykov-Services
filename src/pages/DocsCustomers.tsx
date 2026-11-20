@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Building2,
+  Trash2,
+  RotateCcw,
   Check,
   ContactRound,
   Copy,
@@ -45,11 +47,14 @@ type Customer = {
   company: Company | null;
   callCount: number;
   lastCall: Call | null;
+  deletedAt: string | null;
+  deletedBy: { name: string } | null;
   version: number;
 };
 type Listing = {
   customers: Customer[];
   total: number;
+  trashCount: number;
   page: number;
   pages: number;
   stats: { total: number; companies: number; uncalled: number; called: number };
@@ -120,7 +125,9 @@ export default function DocsCustomers({
     [company, setCompany] = useState(false),
     [mine, setMine] = useState(false),
     [sort, setSort] = useState("newest"),
-    [page, setPage] = useState(1);
+    [page, setPage] = useState(1),
+    [view, setView] = useState<"active" | "trash">("active"),
+    [success, setSuccess] = useState("");
   const [selected, setSelected] = useState<string | null>(null),
     [settings, setSettings] = useState(false);
   const generation = useRef(0);
@@ -136,6 +143,7 @@ export default function DocsCustomers({
     try {
       const params = new URLSearchParams({
         q: debounced,
+        view,
         status,
         sort,
         page: String(page),
@@ -153,7 +161,7 @@ export default function DocsCustomers({
     } catch (e) {
       if (n === generation.current) setError(errorText(e));
     }
-  }, [debounced, status, sort, page, company, mine]);
+  }, [debounced, status, sort, page, company, mine, view]);
   useEffect(() => {
     if (!active) return;
     void refresh();
@@ -192,6 +200,7 @@ export default function DocsCustomers({
         </button>
       </PageHead>
       {error && <Notice tone="error">{error}</Notice>}
+      {success && <Notice tone="success">{success}</Notice>}
       {listing && (
         <div className="dc-metrics">
           {[
@@ -241,6 +250,18 @@ export default function DocsCustomers({
         </Notice>
       )}
       <section className="dc-directory" aria-label="Пользователи BoykovDocs">
+        {view === "trash" && (
+          <div className="dc-trash-caption">
+            <Trash2 size={18} />
+            <div>
+              <strong>Корзина клиентов</strong>
+              <p>
+                Удалённые карточки не возвращаются в рабочий список при
+                синхронизации. При необходимости их можно восстановить.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="dc-toolbar">
           <label className="dc-search">
             <Search size={19} />
@@ -308,6 +329,27 @@ export default function DocsCustomers({
               Мои звонки
             </label>
           )}
+          <button
+            className={
+              "button dc-trash-toggle" + (view === "trash" ? " selected" : "")
+            }
+            aria-pressed={view === "trash"}
+            onClick={() => {
+              setView(view === "active" ? "trash" : "active");
+              setStatus("all");
+              setQuery("");
+              setDebounced("");
+              setCompany(false);
+              setMine(false);
+              setPage(1);
+              setSuccess("");
+            }}
+          >
+            <Trash2 size={16} />
+            {view === "trash"
+              ? "К рабочему списку"
+              : `Корзина · ${listing?.trashCount || 0}`}
+          </button>
         </div>
         {!listing ? (
           <Loading />
@@ -316,12 +358,16 @@ export default function DocsCustomers({
             title={
               query || status !== "all" || company || mine
                 ? "Ничего не найдено"
-                : "Здесь появятся клиенты BoykovDocs"
+                : view === "trash"
+                  ? "Корзина пуста"
+                  : "Здесь появятся клиенты BoykovDocs"
             }
             text={
               query || status !== "all" || company || mine
                 ? "Попробуйте изменить условия поиска."
-                : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
+                : view === "trash"
+                  ? "Удалённые карточки появятся здесь. Их можно будет восстановить."
+                  : "Новые регистрации и сохранения данных компаний будут приходить автоматически после подключения."
             }
           />
         ) : (
@@ -389,7 +435,7 @@ export default function DocsCustomers({
                     className="button dc-open"
                     onClick={() => setSelected(c.id)}
                   >
-                    Карточка
+                    {c.deletedAt ? "Посмотреть" : "Карточка"}
                   </button>
                 </article>
               ))}
@@ -426,6 +472,15 @@ export default function DocsCustomers({
           account={account}
           onClose={() => setSelected(null)}
           onChange={() => void refresh()}
+          onTrashed={(deleted) => {
+            setSelected(null);
+            setSuccess(
+              deleted
+                ? "Карточка перемещена в корзину. При необходимости её можно восстановить."
+                : "Карточка восстановлена в рабочем списке.",
+            );
+            void refresh();
+          }}
         />
       )}
       {settings && connection && (
@@ -443,11 +498,13 @@ function CustomerDialog({
   account,
   onClose,
   onChange,
+  onTrashed,
 }: {
   id: string;
   account?: AccountIdentity;
   onClose: () => void;
   onChange: () => void;
+  onTrashed: (deleted: boolean) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     alive = useRef(true),
@@ -463,7 +520,14 @@ function CustomerDialog({
     [note, setNote] = useState(""),
     [busy, setBusy] = useState(false),
     [retry, setRetry] = useState(false),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [confirmDelete, setConfirmDelete] = useState(false),
+    [trashRetry, setTrashRetry] = useState(false);
+  const trashDraft = useRef<{
+    requestId: string;
+    version: number;
+    action: "delete" | "restore";
+  } | null>(null);
   const refresh = useCallback(async () => {
     const d = await api<Detail>("/docs-customers/" + id);
     if (alive.current) setData(d);
@@ -478,7 +542,8 @@ function CustomerDialog({
     };
   }, [refresh]);
   async function save() {
-    if (!data || busy) return;
+    if (!data || busy || data.customer.deletedAt || confirmDelete || trashRetry)
+      return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -509,7 +574,15 @@ function CustomerDialog({
     }
   }
   async function voidCall(call: Call) {
-    if (!data || busy || retry) return;
+    if (
+      !data ||
+      busy ||
+      retry ||
+      data.customer.deletedAt ||
+      confirmDelete ||
+      trashRetry
+    )
+      return;
     setBusy(true);
     setError("");
     try {
@@ -523,6 +596,34 @@ function CustomerDialog({
     } catch (e) {
       setError(errorText(e));
       await refresh().catch(() => {});
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function changeTrash(action: "delete" | "restore") {
+    if (!data || busy || retry) return;
+    const body = trashDraft.current || {
+      requestId: crypto.randomUUID(),
+      version: data.customer.version,
+      action,
+    };
+    trashDraft.current = body;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await post("/docs-customers/" + id + "/trash", body);
+      trashDraft.current = null;
+      setTrashRetry(false);
+      onTrashed(action === "delete");
+    } catch (e) {
+      if (e instanceof ApiError && e.status < 500) {
+        trashDraft.current = null;
+        setTrashRetry(false);
+        setConfirmDelete(false);
+        if (e.status === 409) await refresh().catch(() => {});
+      } else setTrashRetry(true);
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -546,15 +647,95 @@ function CustomerDialog({
             ID пользователя: {c?.externalId || "…"}
           </span>
         </div>
-        <button
-          className="icon-button"
-          aria-label="Закрыть карточку"
-          disabled={busy}
-          onClick={onClose}
-        >
-          <X size={22} />
-        </button>
+        <div className="dc-card-actions">
+          {c && (
+            <button
+              className={"button " + (c.deletedAt ? "" : "dc-danger")}
+              disabled={busy || retry || confirmDelete || trashRetry}
+              onClick={() => {
+                if (c.deletedAt) void changeTrash("restore");
+                else {
+                  setConfirmDelete(true);
+                  setError("");
+                  setMessage("");
+                }
+              }}
+            >
+              {c.deletedAt ? <RotateCcw size={16} /> : <Trash2 size={16} />}
+              {c.deletedAt ? "Восстановить" : "Удалить"}
+            </button>
+          )}
+          <button
+            className="icon-button"
+            aria-label="Закрыть карточку"
+            disabled={busy}
+            onClick={onClose}
+          >
+            <X size={22} />
+          </button>
+        </div>
       </div>
+      {confirmDelete && c && (
+        <div
+          className="dc-delete-confirm"
+          role="group"
+          aria-label="Подтверждение удаления клиента"
+        >
+          <strong>Удалить карточку «{c.name || "Без имени"}»?</strong>
+          <p>
+            {c.email || c.phone || "Контакты не указаны"} · ID {c.externalId}
+          </p>
+          <p>
+            Карточка и её данные компании переместятся в корзину Boykov
+            Services. Аккаунт на BoykovDocs останется действующим.
+          </p>
+          {trashRetry && (
+            <p>
+              Ответ сервера не получен. Повторите действие: второй операции не
+              возникнет.
+            </p>
+          )}
+          <div>
+            <button
+              className="button dc-danger"
+              disabled={busy}
+              onClick={() => void changeTrash("delete")}
+            >
+              {busy
+                ? "Перемещаем…"
+                : trashRetry
+                  ? "Повторить удаление"
+                  : "В корзину"}
+            </button>
+            <button
+              className="button"
+              disabled={busy || trashRetry}
+              onClick={() => setConfirmDelete(false)}
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+      {c?.deletedAt && (
+        <Notice>
+          Карточка в корзине с {when(c.deletedAt)} · Москва. Удалил:{" "}
+          {c.deletedBy?.name || "Общий доступ"}. Чтобы продолжить работу,
+          восстановите её.
+        </Notice>
+      )}
+      {trashRetry && !confirmDelete && (
+        <Notice tone="error">
+          Ответ о восстановлении не получен.{" "}
+          <button
+            className="button"
+            disabled={busy}
+            onClick={() => void changeTrash("restore")}
+          >
+            Повторить восстановление
+          </button>
+        </Notice>
+      )}
       {error && <Notice tone="error">{error}</Notice>}
       {message && <Notice tone="success">{message}</Notice>}
       {!c ? (
@@ -663,7 +844,15 @@ function CustomerDialog({
                   void save();
                 }}
               >
-                <fieldset disabled={busy || retry}>
+                <fieldset
+                  disabled={
+                    busy ||
+                    retry ||
+                    !!c.deletedAt ||
+                    confirmDelete ||
+                    trashRetry
+                  }
+                >
                   <legend>Результат звонка</legend>
                   <div className="dc-outcomes">
                     {Object.entries(DOCS_CALL_OUTCOMES).map(([key, label]) => (
@@ -692,7 +881,9 @@ function CustomerDialog({
                 </fieldset>
                 <button
                   className="button primary"
-                  disabled={busy}
+                  disabled={
+                    busy || !!c.deletedAt || confirmDelete || trashRetry
+                  }
                   type="submit"
                 >
                   <Check size={17} />
@@ -737,7 +928,13 @@ function CustomerDialog({
                     ) : (
                       call.canVoid && (
                         <button
-                          disabled={busy || retry}
+                          disabled={
+                            busy ||
+                            retry ||
+                            !!c.deletedAt ||
+                            confirmDelete ||
+                            trashRetry
+                          }
                           onClick={() => void voidCall(call)}
                         >
                           Отменить отметку
