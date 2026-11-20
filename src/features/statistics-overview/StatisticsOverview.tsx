@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   BarChart3,
   CircleHelp,
@@ -77,6 +78,7 @@ function ComparisonChart({
 }) {
   const [chosen, setChosen] = useState<string | null>(null),
     [highlight, setHighlight] = useState<string | null>(null);
+  const tooltipId = useId();
   const hourly = data.period.group === "hour",
     timeline = data.timeline;
   const series = useMemo(
@@ -109,6 +111,20 @@ function ComparisonChart({
       left + ((width - left - right) * i) / Math.max(1, timeline.length - 1),
     y = (v: number) => top + (height - top - bottom) * (1 - v / ceiling);
   const metricName = metrics.find((m) => m.key === metric)!;
+  const choosePoint = (clientX: number, chart: SVGSVGElement) => {
+    const rect = chart.getBoundingClientRect(),
+      position = ((clientX - rect.left) / rect.width) * width;
+    const i = Math.max(
+      0,
+      Math.min(
+        timeline.length - 1,
+        Math.round(
+          ((position - left) / (width - left - right)) * (timeline.length - 1),
+        ),
+      ),
+    );
+    setChosen(timeline[i].at);
+  };
   if (!sites.length)
     return (
       <div className="so-chart-empty">
@@ -137,142 +153,173 @@ function ComparisonChart({
               : "За выбранный день"}
         </span>
       </div>
-      <svg
-        className="so-chart"
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        tabIndex={0}
-        aria-label={`${metricName.label} по сайтам. Стрелки выбирают дату, Home и End — начало и конец графика.`}
-        onKeyDown={(e) => {
-          if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-            e.preventDefault();
-            const next =
-              e.key === "Home"
-                ? 0
-                : e.key === "End"
-                  ? timeline.length - 1
-                  : Math.min(
-                      timeline.length - 1,
-                      Math.max(0, index + (e.key === "ArrowLeft" ? -1 : 1)),
-                    );
-            setChosen(timeline[next].at);
-          }
-        }}
-        onPointerMove={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect(),
-            position = ((e.clientX - rect.left) / rect.width) * width;
-          const i = Math.max(
-            0,
-            Math.min(
+      <div className="so-chart-stage">
+        <svg
+          className="so-chart"
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          tabIndex={0}
+          aria-label={`${metricName.label} по сайтам. Стрелки выбирают дату, Home и End — начало и конец графика.`}
+          aria-describedby={found >= 0 ? tooltipId : undefined}
+          onFocus={(e) => {
+            if (e.currentTarget.matches(":focus-visible"))
+              setChosen(timeline[index].at);
+          }}
+          onBlur={() => setChosen(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setChosen(null);
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+              e.preventDefault();
+              const next =
+                e.key === "Home"
+                  ? 0
+                  : e.key === "End"
+                    ? timeline.length - 1
+                    : Math.min(
+                        timeline.length - 1,
+                        Math.max(0, index + (e.key === "ArrowLeft" ? -1 : 1)),
+                      );
+              setChosen(timeline[next].at);
+            }
+          }}
+          onPointerDown={(e) => choosePoint(e.clientX, e.currentTarget)}
+          onPointerMove={(e) => {
+            if (e.pointerType !== "touch")
+              choosePoint(e.clientX, e.currentTarget);
+          }}
+          onPointerLeave={(e) => {
+            if (e.pointerType !== "touch") setChosen(null);
+          }}
+        >
+          {[0, 0.5, 1].map((r) => (
+            <g key={r}>
+              <line
+                x1={left}
+                x2={width - right}
+                y1={y(ceiling * r)}
+                y2={y(ceiling * r)}
+                className="so-gridline"
+              />
+              <text
+                x={left - 12}
+                y={y(ceiling * r) + 5}
+                textAnchor="end"
+                className="so-axis"
+              >
+                {new Intl.NumberFormat("ru-RU", {
+                  notation: ceiling >= 100000 ? "compact" : "standard",
+                  maximumFractionDigits: 1,
+                }).format(ceiling * r)}
+              </text>
+            </g>
+          ))}
+          {available.map((s) => (
+            <g
+              key={s.site.id}
+              className={
+                highlight && highlight !== s.site.id ? "so-line-muted" : ""
+              }
+            >
+              {lineSegments(s.points).map((segment, i) =>
+                segment.length === 1 ? (
+                  <circle
+                    key={i}
+                    cx={x(segment[0].index)}
+                    cy={y(segment[0].value!)}
+                    r="3"
+                    fill={s.site.color}
+                  />
+                ) : (
+                  <polyline
+                    key={i}
+                    className="so-line"
+                    stroke={s.site.color}
+                    points={segment
+                      .map((p) => `${x(p.index)},${y(p.value!)}`)
+                      .join(" ")}
+                  />
+                ),
+              )}
+            </g>
+          ))}
+          <line
+            className="so-chart-cursor"
+            x1={x(index)}
+            x2={x(index)}
+            y1={top}
+            y2={y(0)}
+          />
+          {available.map((s) => {
+            const p = s.points[index];
+            return p?.value !== null && p?.value !== undefined ? (
+              <circle
+                key={s.site.id}
+                cx={x(index)}
+                cy={y(p.value)}
+                r="4"
+                fill={s.site.color}
+                stroke="#fff"
+                strokeWidth="2"
+              />
+            ) : null;
+          })}
+          {[
+            ...new Set([
+              0,
+              Math.floor((timeline.length - 1) / 3),
+              Math.floor((2 * (timeline.length - 1)) / 3),
               timeline.length - 1,
-              Math.round(
-                ((position - left) / (width - left - right)) *
-                  (timeline.length - 1),
-              ),
-            ),
-          );
-          setChosen(timeline[i].at);
-        }}
-        onPointerLeave={() => setChosen(null)}
-      >
-        <title>
-          {metricName.label}:{" "}
-          {cumulative ? "накопительно" : hourly ? "по часам" : "по дням"},
-          отдельная линия для каждого сайта
-        </title>
-        {[0, 0.5, 1].map((r) => (
-          <g key={r}>
-            <line
-              x1={left}
-              x2={width - right}
-              y1={y(ceiling * r)}
-              y2={y(ceiling * r)}
-              className="so-gridline"
-            />
+            ]),
+          ].map((i) => (
             <text
-              x={left - 12}
-              y={y(ceiling * r) + 5}
-              textAnchor="end"
+              key={i}
+              x={x(i)}
+              y={height - 6}
+              textAnchor={
+                i === 0 ? "start" : i === timeline.length - 1 ? "end" : "middle"
+              }
               className="so-axis"
             >
-              {new Intl.NumberFormat("ru-RU", {
-                notation: ceiling >= 100000 ? "compact" : "standard",
-                maximumFractionDigits: 1,
-              }).format(ceiling * r)}
+              {timeLabel(timeline[i].at, hourly)}
             </text>
-          </g>
-        ))}
-        {available.map((s) => (
-          <g
-            key={s.site.id}
-            className={
-              highlight && highlight !== s.site.id ? "so-line-muted" : ""
+          ))}
+        </svg>
+        {found >= 0 && (
+          <div
+            id={tooltipId}
+            className="so-chart-tooltip"
+            role="tooltip"
+            style={
+              {
+                "--so-point-x": `${(x(index) / width) * 100}%`,
+              } as CSSProperties
             }
           >
-            {lineSegments(s.points).map((segment, i) =>
-              segment.length === 1 ? (
-                <circle
-                  key={i}
-                  cx={x(segment[0].index)}
-                  cy={y(segment[0].value!)}
-                  r="3"
-                  fill={s.site.color}
-                />
-              ) : (
-                <polyline
-                  key={i}
-                  className="so-line"
-                  stroke={s.site.color}
-                  points={segment
-                    .map((p) => `${x(p.index)},${y(p.value!)}`)
-                    .join(" ")}
-                />
-              ),
+            <div className="so-tooltip-heading">
+              <strong>{dateLabel(timeline[index].at, hourly)} · МСК</strong>
+              <span>
+                {metricName.label} ·{" "}
+                {cumulative ? "накопительно" : hourly ? "за час" : "за день"}
+              </span>
+            </div>
+            <div className="so-tooltip-sites">
+              {series.map(({ site, points }) => (
+                <div key={site.id} className="so-tooltip-site">
+                  <ColorDot color={site.color} />
+                  <span>{site.name}</span>
+                  <strong>{amount(points[index]?.value)}</strong>
+                </div>
+              ))}
+            </div>
+            {series.some((s) => s.points[index]?.value == null) && (
+              <p>— нет данных за этот интервал</p>
             )}
-          </g>
-        ))}
-        <line
-          className="so-chart-cursor"
-          x1={x(index)}
-          x2={x(index)}
-          y1={top}
-          y2={y(0)}
-        />
-        {available.map((s) => {
-          const p = s.points[index];
-          return p?.value !== null && p?.value !== undefined ? (
-            <circle
-              key={s.site.id}
-              cx={x(index)}
-              cy={y(p.value)}
-              r="4"
-              fill={s.site.color}
-              stroke="#fff"
-              strokeWidth="2"
-            />
-          ) : null;
-        })}
-        {[
-          ...new Set([
-            0,
-            Math.floor((timeline.length - 1) / 3),
-            Math.floor((2 * (timeline.length - 1)) / 3),
-            timeline.length - 1,
-          ]),
-        ].map((i) => (
-          <text
-            key={i}
-            x={x(i)}
-            y={height - 6}
-            textAnchor={
-              i === 0 ? "start" : i === timeline.length - 1 ? "end" : "middle"
-            }
-            className="so-axis"
-          >
-            {timeLabel(timeline[i].at, hourly)}
-          </text>
-        ))}
-      </svg>
+            {series.some((s) => s.points[index]?.point?.partial) && (
+              <p>Неполные интервалы: точное время указано под графиком.</p>
+            )}
+          </div>
+        )}
+      </div>
       <div
         className="so-chart-readout"
         aria-label="Значения выбранного интервала"

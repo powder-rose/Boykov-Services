@@ -222,6 +222,79 @@
   font-size: 12px;
   color: #929a86;
 }
+.so-chart-stage {
+  position: relative;
+  container-type: inline-size;
+}
+.so-chart-tooltip {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  left: clamp(
+    8px,
+    calc(var(--so-point-x) + 16px),
+    max(8px, calc(100% - 328px))
+  );
+  width: min(320px, calc(100% - 16px));
+  padding: 14px;
+  border: 1px solid #dce2cf;
+  border-radius: 12px;
+  background: #fcfdf8;
+  box-shadow: 0 8px 28px #29321b18;
+  pointer-events: none;
+  color: #313b26;
+}
+.so-tooltip-heading {
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e5e9dc;
+}
+.so-tooltip-heading > strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.so-tooltip-heading > span {
+  display: block;
+  margin-top: 5px;
+  color: #7d876e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.so-tooltip-sites {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+.so-tooltip-site {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.so-tooltip-site > span {
+  overflow-wrap: anywhere;
+}
+.so-tooltip-site > strong {
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.so-chart-tooltip > p {
+  margin: 10px 0 0;
+  color: #828c74;
+  font-size: 11px;
+  line-height: 1.6;
+}
+@container (max-width: 600px) {
+  .so-chart-tooltip {
+    position: static;
+    width: 100%;
+    margin-top: 12px;
+    box-shadow: none;
+  }
+}
 .so-chart {
   display: block;
   width: 100%;
