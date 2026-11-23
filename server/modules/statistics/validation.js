@@ -52,6 +52,19 @@ export function validateNativePacket(input, site, now) {
       throw bad();
     coverageFrom = input.coverageFrom;
   }
+  let filteredSince;
+  if (input.filteredSince !== undefined) {
+    const value = Date.parse(input.filteredSince);
+    if (
+      !docs ||
+      !Number.isFinite(value) ||
+      new Date(value).toISOString() !== input.filteredSince ||
+      value < Date.parse(coverageFrom) ||
+      value >= generated
+    )
+      throw bad();
+    filteredSince = input.filteredSince;
+  }
   const seen = new Set();
   const reports = input.reports.map((report) => {
     if (
@@ -186,6 +199,7 @@ export function validateNativePacket(input, site, now) {
     return {
       key: report.key,
       ...(coverageFrom ? { coverageFrom } : {}),
+      ...(filteredSince ? { filteredSince } : {}),
       period: { from: range.from, to: range.to, group: range.group },
       totals,
       daily,
@@ -197,6 +211,7 @@ export function validateNativePacket(input, site, now) {
   return {
     version: 1,
     ...(coverageFrom ? { coverageFrom } : {}),
+    ...(filteredSince ? { filteredSince } : {}),
     host: site.host,
     source: input.source,
     generatedAt: new Date(generated).toISOString(),
