@@ -13,16 +13,32 @@ final class Boykov_Statistics_Plugin
     public function __construct($file)
     {
         $this->file = $file;
-        add_action("init", [$this, "setup"]);
-        add_action("wp_enqueue_scripts", [$this, "enqueue"]);
-        add_action("wp_ajax_nopriv_boykov_statistics_view", [$this, "receive"]);
-        add_action("wp_ajax_boykov_statistics_view", [$this, "receive"]);
-        add_action(self::HOOK, [$this, "scheduled_run"]);
-        add_action("admin_post_boykov_statistics_run", [$this, "manual_run"]);
+        $this->action("init", "setup");
+        $this->action("wp_enqueue_scripts", "enqueue");
+        $this->action("wp_ajax_nopriv_boykov_statistics_view", "receive");
+        $this->action("wp_ajax_boykov_statistics_view", "receive");
+        $this->action(self::HOOK, "scheduled_run");
+        $this->action("admin_post_boykov_statistics_run", "manual_run");
         add_filter("autoptimize_filter_js_exclude", [
             $this,
             "exclude_optimizer",
         ]);
+    }
+    private function action($hook, $method)
+    {
+        add_action($hook, function () use ($method) {
+            try {
+                $this->$method();
+            } catch (Throwable $error) {
+                Boykov_Leads_Plugin::statistics_failure($error);
+                if ($method === "receive") {
+                    wp_send_json(["ok" => false, "error" => "STATISTICS_NOT_READY"], 503);
+                }
+                if ($method === "manual_run") {
+                    wp_die("Модуль статистики временно недоступен. Проверьте журнал ошибок PHP.");
+                }
+            }
+        });
     }
     public function option($key, $default = [])
     {
@@ -122,7 +138,7 @@ final class Boykov_Statistics_Plugin
     }
     public function exclude_optimizer($list)
     {
-        return $list . ",boykov-statistics.js";
+        return is_string($list) ? $list . ",boykov-statistics.js" : $list;
     }
     public function enqueue()
     {
@@ -167,7 +183,7 @@ final class Boykov_Statistics_Plugin
                 "boykov-statistics",
                 plugins_url("assets/boykov-statistics.js", $this->file),
                 [],
-                "1.2.0",
+                "1.2.1",
                 true,
             );
             wp_add_inline_script(

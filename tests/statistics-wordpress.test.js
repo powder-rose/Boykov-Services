@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { runInNewContext } from "node:vm";
 import { webcrypto, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -22,6 +24,55 @@ const available =
 const sqlite = available && probe.stdout.trim().endsWith(":1");
 const fixture = fileURLToPath(
   new URL("./helpers/wordpress-fixture.php", import.meta.url),
+);
+test(
+  "WordPress keeps lead capture available when the optional statistics module cannot load or initialize",
+  { skip: !available },
+  async (t) => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "boykov-wordpress-isolation-"),
+    );
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await cp(
+      fileURLToPath(
+        new URL(
+          "../integrations/leads/wordpress/boykov-leads",
+          import.meta.url,
+        ),
+      ),
+      root,
+      { recursive: true },
+    );
+    const entry = path.join(root, "boykov-leads.php"),
+      module = path.join(root, "includes/statistics.php");
+    const call = (brokenDatabase = false) => {
+      const r = spawnSync(php, [fixture, "statistics-isolation"], {
+        encoding: "utf8",
+        env: { ...process.env, WP_FIXTURE_PLUGIN_PATH: entry },
+        input: JSON.stringify({ brokenDatabase }),
+      });
+      assert.equal(r.status, 0, r.stderr + r.stdout);
+      return JSON.parse(r.stdout);
+    };
+    assert.deepEqual(call(), { leads: true, statistics: true, error: null });
+    assert.deepEqual(call(true), {
+      leads: true,
+      statistics: true,
+      error: "STATISTICS_MODULE_UNAVAILABLE",
+    });
+    await writeFile(module, "<?php function invalid_fixture( {", "utf8");
+    assert.deepEqual(call(), {
+      leads: true,
+      statistics: false,
+      error: "STATISTICS_MODULE_UNAVAILABLE",
+    });
+    await rm(module);
+    assert.deepEqual(call(), {
+      leads: true,
+      statistics: false,
+      error: "STATISTICS_MODULE_UNAVAILABLE",
+    });
+  },
 );
 function run(mode, extra = {}) {
   const r = spawnSync(php, [fixture, mode], {

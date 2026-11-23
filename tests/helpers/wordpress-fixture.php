@@ -163,7 +163,7 @@ class Fixture_DB {
 }
 
 $wpdb = new Fixture_DB();
-require dirname(__DIR__, 2).'/integrations/leads/wordpress/boykov-leads/boykov-leads.php';
+require getenv('WP_FIXTURE_PLUGIN_PATH') ?: dirname(__DIR__, 2).'/integrations/leads/wordpress/boykov-leads/boykov-leads.php';
 $queue = new Boykov_Leads_Queue($wpdb);
 $mode = isset($argv[1]) ? $argv[1] : '';
 $input = json_decode(stream_get_contents(STDIN), true) ?: array();
@@ -171,7 +171,16 @@ $plugin = $GLOBALS['boykov_leads_plugin'];
 $config = array('endpoint'=>'https://boykov-services.ru/hooks/leads/'.(isset($input['site']) ? $input['site'] : 'fixture'),
     'token'=>isset($input['token']) ? $input['token'] : str_repeat('a',64));
 
-if ($mode === 'map') {
+if ($mode === 'statistics-isolation') {
+    // Exercise the real registered hook; a broken optional module must leave lead capture registered.
+    if (isset($GLOBALS['hooks']['init']) && !empty($input['brokenDatabase'])) {
+        $GLOBALS['wpdb'] = null;
+        call_user_func($GLOBALS['hooks']['init'][0]);
+    }
+    echo wp_json_encode(array('leads'=>isset($GLOBALS['hooks']['wpcf7_before_send_mail']),
+        'statistics'=>isset($GLOBALS['boykov_statistics_plugin']),
+        'error'=>isset($GLOBALS['boykov_statistics_boot_error']) ? $GLOBALS['boykov_statistics_boot_error'] : null));
+} elseif ($mode === 'map') {
     echo wp_json_encode(Boykov_Leads_Payload::make(new Fixture_Form(), new Fixture_Submission(), 'cf7:fixture', 1795082400));
 } elseif ($mode === 'ack') {
     echo wp_json_encode(Boykov_Leads_Payload::acknowledgement($input['response'], 'fixture', isset($input['event']) ? $input['event'] : null));

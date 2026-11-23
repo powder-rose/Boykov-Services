@@ -2,14 +2,13 @@
 /**
  * Plugin Name: Boykov Services — заявки
  * Description: Доставка заявок и собственной статистики energo-365.ru и его поддоменов в Boykov Services.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Requires at least: 5.8
  * Requires PHP: 7.3
  * License: GPL-2.0-or-later
  */
 if (!defined('ABSPATH')) { exit; }
 require_once __DIR__.'/includes/core.php';
-require_once __DIR__.'/includes/statistics.php';
 
 final class Boykov_Leads_Plugin {
     const CONFIG = 'boykov_leads_connection_v1';
@@ -19,6 +18,16 @@ final class Boykov_Leads_Plugin {
     const INITIALIZED = 'boykov_leads_queue_initialized_v1';
     private $queue;
     private $seen = array();
+
+    public static function statistics_failure($error) {
+        $code = 'STATISTICS_MODULE_UNAVAILABLE';
+        $GLOBALS['boykov_statistics_boot_error'] = $code;
+        // Keep diagnostics useful without exposing database errors or connection keys.
+        if (function_exists('error_log')) {
+            try { error_log('Boykov Services: '.$code.' '.get_class($error).' '.basename($error->getFile()).':'.$error->getLine()); }
+            catch (Throwable $ignored) { /* Diagnostics are optional too. */ }
+        }
+    }
 
     public function __construct($queue = null) {
         $this->queue = $queue;
@@ -145,7 +154,10 @@ final class Boykov_Leads_Plugin {
                 try { wp_clear_scheduled_hook(self::HOOK); } finally { restore_current_blog(); }
             }
         } elseif (self::correct_host()) { wp_clear_scheduled_hook(self::HOOK); }
-        if (isset($GLOBALS['boykov_statistics_plugin'])) $GLOBALS['boykov_statistics_plugin']->deactivate();
+        if (isset($GLOBALS['boykov_statistics_plugin'])) {
+            try { $GLOBALS['boykov_statistics_plugin']->deactivate(); }
+            catch (Throwable $error) { self::statistics_failure($error); }
+        }
         // Configuration and all snapshots survive deactivation, deletion and reinstall.
     }
 
@@ -400,7 +412,13 @@ final class Boykov_Leads_Plugin {
         echo '<p><code>'.esc_html("wget -q -O /dev/null --timeout=30 '".$cron_url."?doing_wp_cron'").'</code></p>';
         echo '<p>После настройки оставьте страницу на 2–3 минуты, обновите её и проверьте время отчёта. Без посещений сайта отчёты должны продолжать обновляться.</p>';
         echo '<p>Проверка связи не заменяет контрольную отправку из каждой формы. Копии остаются в базе сайта после доставки; деактивация и удаление плагина их не стирают.</p>';
-        if (isset($GLOBALS['boykov_statistics_plugin'])) $GLOBALS['boykov_statistics_plugin']->render_page();
+        if (isset($GLOBALS['boykov_statistics_plugin'])) {
+            try { $GLOBALS['boykov_statistics_plugin']->render_page(); }
+            catch (Throwable $error) { self::statistics_failure($error); }
+        }
+        if (!empty($GLOBALS['boykov_statistics_boot_error'])) {
+            echo '<hr><h2>Посещаемость</h2><p>Модуль статистики временно недоступен. Модуль заявок загружен отдельно. Код: '.esc_html($GLOBALS['boykov_statistics_boot_error']).'. PHP: '.esc_html(PHP_VERSION).'. Проверьте журнал ошибок PHP.</p>';
+        }
         echo '</div>';
     }
 }
@@ -410,4 +428,15 @@ $GLOBALS['boykov_leads_plugin'] = new Boykov_Leads_Plugin();
 register_activation_hook(__FILE__, array($GLOBALS['boykov_leads_plugin'], 'activate'));
 register_deactivation_hook(__FILE__, array($GLOBALS['boykov_leads_plugin'], 'deactivate'));
 
-$GLOBALS['boykov_statistics_plugin'] = new Boykov_Statistics_Plugin(__FILE__);
+// The optional analytics module must not prevent WordPress and the existing lead receiver from starting.
+if (PHP_VERSION_ID < 70300) {
+    $GLOBALS['boykov_statistics_boot_error'] = 'STATISTICS_PHP_VERSION';
+} else {
+    try {
+        if (!is_readable(__DIR__.'/includes/statistics.php') || !is_readable(__DIR__.'/includes/statistics-core.php')) {
+            throw new RuntimeException('STATISTICS_FILES_MISSING');
+        }
+        require_once __DIR__.'/includes/statistics.php';
+        $GLOBALS['boykov_statistics_plugin'] = new Boykov_Statistics_Plugin(__FILE__);
+    } catch (Throwable $error) { Boykov_Leads_Plugin::statistics_failure($error); }
+}
