@@ -50,6 +50,7 @@ type Report = {
   receivedAt?: string | null;
   checkedAt: string;
   coverageFrom?: string;
+  filteredSince?: string;
   provider: string;
   leadsOrigin: "native" | "hub" | "unavailable";
   totals: {
@@ -810,7 +811,7 @@ function SiteStatistics({
               </p>
               <p>
                 {site?.source?.kind === "boykovdocs"
-                  ? "Визиты рассчитаны по журналу просмотров: после 30 минут без активности начинается новый визит. Регистрации и продажи доступны в разделе «Клиенты BoykovDocs»."
+                  ? `Визиты рассчитаны по журналу просмотров: после 30 минут без активности начинается новый визит. 24 часа — скользящий интервал, а не «Сегодня». ${visible?.filteredSince ? `Обновлённая фильтрация с ${dateTime(visible.filteredSince, true)}. Более ранние записи сохранены по прежним правилам.` : "История собрана по прежним правилам фильтрации."} Собственный счётчик может отличаться от Яндекс Метрики. Регистрации и продажи — в разделе «Клиенты BoykovDocs».`
                   : visible?.leadsOrigin === "native"
                     ? "Заявки и посещаемость берутся из админки сайта с её правилами подсчёта. История ограничена сохранёнными на сайте данными."
                     : site?.source?.kind === "tilda" && visible?.coverageFrom

@@ -182,6 +182,9 @@ export async function createStatisticsModule(db, options) {
         provider: nativeSources[s.host]?.label || "Статистика сайта",
         leadsOrigin: docs ? "unavailable" : "native",
         ...(value.coverageFrom ? { coverageFrom: value.coverageFrom } : {}),
+        ...(docs && value.filteredSince
+          ? { filteredSince: value.filteredSince }
+          : {}),
         ...Object.fromEntries(
           ["totals", "daily", "sources", "pages", "articles"].map((k) => [
             k,

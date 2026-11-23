@@ -235,3 +235,38 @@ test("BoykovDocs statistics are private, cover four periods and never create a s
     "stale",
   );
 });
+
+test("v2 page receipts deduplicate replays, preserve legacy history and advertise the filtering boundary", async (t) => {
+  const makeV2 = (at, id) =>
+    JSON.stringify({
+      ...JSON.parse(event(at)),
+      schema: 2,
+      eventId: id.repeat(64),
+    }) + "\n";
+  const original =
+    event(END - 10 * MIN) +
+    makeV2(END - 3 * MIN, "d") +
+    makeV2(END - 3 * MIN, "d") +
+    makeV2(END - 2 * MIN, "e");
+  const { file } = await journal(t, original);
+  const { packet, count } = await collectBoykovDocs(file, NOW);
+  assert.equal(
+    count,
+    4,
+    "history guard counts original source lines, including repeats",
+  );
+  assert.equal(getReport(packet, "24h").totals.views, 3);
+  assert.equal(getReport(packet, "24h").totals.visits, 1);
+  assert.equal(packet.filteredSince, new Date(END - 3 * MIN).toISOString());
+  const { validateNativePacket } =
+    await import("../server/modules/statistics/validation.js");
+  const normalized = validateNativePacket(packet, docsStatisticsSite, NOW);
+  assert.equal(normalized.reports[0].filteredSince, packet.filteredSince);
+  assert.equal(await readFile(file, "utf8"), original);
+  assert.ok(!JSON.stringify(normalized).includes("d".repeat(64)));
+  const bad = structuredClone(packet);
+  bad.filteredSince = packet.generatedAt;
+  assert.throws(() => validateNativePacket(bad, docsStatisticsSite, NOW));
+  await writeFile(file, makeV2(END - MIN, "z"));
+  await assert.rejects(collectBoykovDocs(file, NOW), /SOURCE_INVALID_RECORD/);
+});

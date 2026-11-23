@@ -21,7 +21,8 @@ export async function collectBoykovDocs(file, now = Date.now()) {
   const range = reportPeriod("90", now);
   const events = [];
   let coverage = Infinity,
-    count = 0;
+    count = 0,
+    filteredSince = Infinity;
   const source = await open(file, "r");
   try {
     const { size } = await source.stat();
@@ -65,12 +66,21 @@ export async function collectBoykovDocs(file, now = Date.now()) {
         )
           throw fail("SOURCE_INVALID_RECORD");
         count++;
+        if (row.schema !== undefined && row.schema !== 2)
+          throw fail("SOURCE_INVALID_RECORD");
+        if (row.schema === 2 && !/^[a-f0-9]{64}$/.test(row.eventId || ""))
+          throw fail("SOURCE_INVALID_RECORD");
         if (at >= range.end) continue;
+        if (row.schema === 2) filteredSince = Math.min(filteredSince, at);
         coverage = Math.min(coverage, at);
         if (at >= range.start - SESSION_GAP) {
           if (events.length >= MAX_WINDOW_EVENTS)
             throw fail("SOURCE_WINDOW_TOO_LARGE");
-          events.push({ at, visitor: row.visitor });
+          events.push({
+            at,
+            visitor: row.visitor,
+            eventId: row.schema === 2 ? row.eventId : null,
+          });
         }
       }
       remainder = Buffer.from(data.subarray(start));
@@ -92,7 +102,10 @@ export async function collectBoykovDocs(file, now = Date.now()) {
   });
   const lastSeen = new Map();
   events.sort((a, b) => a.at - b.at);
-  for (const { at, visitor } of events) {
+  const seenEvents = new Set();
+  for (const { at, visitor, eventId } of events) {
+    if (eventId && seenEvents.has(eventId)) continue;
+    if (eventId) seenEvents.add(eventId);
     const previous = lastSeen.get(visitor);
     if (previous === undefined || at - previous >= SESSION_GAP)
       builder.record("visits", at);
@@ -101,6 +114,8 @@ export async function collectBoykovDocs(file, now = Date.now()) {
   }
   const packet = builder.packet();
   packet.coverageFrom = new Date(coverage).toISOString();
+  if (Number.isFinite(filteredSince))
+    packet.filteredSince = new Date(filteredSince).toISOString();
   return { count, packet };
 }
 
