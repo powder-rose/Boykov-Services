@@ -34,7 +34,13 @@ type Point = {
   articles: number | null;
   leads: number;
 };
-type PageRow = { path: string; url: string; title: string; views: number };
+type PageRow = {
+  path: string;
+  url: string;
+  title: string;
+  views: number;
+  host?: string;
+};
 type Report = {
   site: { id: string; name: string; host: string };
   period: { key: Period; from: string; to: string; group: "hour" | "day" };
@@ -42,6 +48,7 @@ type Report = {
   error: string | null;
   fetchedAt: string | null;
   checkedAt: string;
+  coverageFrom?: string;
   provider: string;
   leadsOrigin: "native" | "hub";
   totals: {
@@ -86,8 +93,8 @@ function TrafficChart({
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   useEffect(() => setSelected(null), [points]);
-  const hasViews = points.length > 0 && points[0].views !== null;
-  const hasVisits = points.length > 0 && points[0].visits !== null;
+  const hasViews = points.some((p) => p.views !== null);
+  const hasVisits = points.some((p) => p.visits !== null);
   const available = hasViews || hasVisits;
   if (!available)
     return (
@@ -113,8 +120,11 @@ function TrafficChart({
   const x = (i: number) =>
       left + ((width - left - right) * i) / Math.max(1, points.length - 1),
     y = (n: number) => top + (height - top - bottom) * (1 - n / ceiling);
+  const known = points
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => p.views !== null || p.visits !== null);
   const line = (key: "views" | "visits") =>
-    points.map((p, i) => `${x(i)},${y(p[key] || 0)}`).join(" ");
+    known.map(({ p, i }) => `${x(i)},${y(p[key] || 0)}`).join(" ");
   const index =
       selected === null
         ? points.length - 1
@@ -191,7 +201,7 @@ function TrafficChart({
         {hasViews && (
           <polygon
             className="stats-chart-area"
-            points={`${x(0)},${y(0)} ${line("views")} ${x(points.length - 1)},${y(0)}`}
+            points={`${x(known[0].i)},${y(0)} ${line("views")} ${x(known[known.length - 1].i)},${y(0)}`}
           />
         )}
         {hasViews && (
@@ -200,23 +210,24 @@ function TrafficChart({
         {hasVisits && (
           <polyline className="stats-chart-visits" points={line("visits")} />
         )}
-        {selected !== null && (
-          <g>
-            <line
-              className="stats-chart-cursor"
-              x1={x(index)}
-              x2={x(index)}
-              y1={top}
-              y2={y(0)}
-            />
-            <circle
-              className="stats-chart-point"
-              cx={x(index)}
-              cy={y(point.views ?? point.visits ?? 0)}
-              r={4}
-            />
-          </g>
-        )}
+        {selected !== null &&
+          (point.views !== null || point.visits !== null) && (
+            <g>
+              <line
+                className="stats-chart-cursor"
+                x1={x(index)}
+                x2={x(index)}
+                y1={top}
+                y2={y(0)}
+              />
+              <circle
+                className="stats-chart-point"
+                cx={x(index)}
+                cy={y(point.views ?? point.visits ?? 0)}
+                r={4}
+              />
+            </g>
+          )}
         {ticks.map((i) => (
           <text
             key={i}
@@ -271,10 +282,10 @@ function ConnectionDialog({
       <div className="stats-token-form">
         <h3>{site.source?.label || "Источник ещё не подключён"}</h3>
         <p>
-          {site.source
-            ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
-            : site.host === "energo-365.ru"
-              ? "Нужно определить плагин статистики WordPress, чтобы подключить его данные вместе с поддоменами."
+          {site.source?.kind === "wordpress"
+            ? "Собственный счётчик учитывает посещения основного сайта и поддоменов. История начинается с установки. Состояние отправки видно в настройках Boykov Services в WordPress."
+            : site.source
+              ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
               : "Для этого сайта пока нет подключённой выгрузки статистики. Недоступные показатели отмечены прочерком."}
         </p>
         <p>
@@ -521,6 +532,11 @@ function SiteStatistics({
               <span className="stats-provider">
                 {visible?.provider || site?.source?.label || "Статистика сайта"}
               </span>
+              {visible?.coverageFrom && (
+                <span>
+                  Учёт посещений с {dateTime(visible.coverageFrom, true)}
+                </span>
+              )}
               <span>
                 {visible
                   ? `${labelDate(visible.period.from, hourly)} — ${labelDate(visible.period.to, hourly)}`
@@ -721,7 +737,11 @@ function SiteStatistics({
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
-                                {section.articles ? row.title : row.path}
+                                {section.articles
+                                  ? row.title
+                                  : (row.host && row.host !== visible?.site.host
+                                      ? row.host
+                                      : "") + row.path}
                               </a>
                             </th>
                             <td>{number(row.views)}</td>

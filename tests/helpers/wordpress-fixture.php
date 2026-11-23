@@ -77,6 +77,7 @@ function wp_schedule_event($timestamp, $interval, $hook, $args, $error) {
 function wp_clear_scheduled_hook($hook) { $GLOBALS['cleared'] = $hook; unset($GLOBALS['cron'][get_current_blog_id()][$hook]); }
 function wp_safe_remote_post($url, $args) {
     $GLOBALS['request'] = array($url, $args);
+    if (isset($GLOBALS['statistics_transport'])) { return call_user_func($GLOBALS['statistics_transport'], $url, $args); }
     if (!empty($GLOBALS['network_transport'])) {
         $body = json_decode($args['body'], true);
         $GLOBALS['network_tokens'][] = $args['headers']['Authorization'];
@@ -231,4 +232,6 @@ if ($mode === 'map') {
 } elseif ($mode === 'raw-sql') {
     foreach ($input['sql'] as $sql) { if ($wpdb->query($sql) === false) { throw new RuntimeException('FIXTURE_SQL_FAILED:'.$wpdb->last_error); } }
     echo 'true';
+} elseif (strpos($mode, 'statistics-') === 0) {
+    require __DIR__.'/wordpress-statistics.php';
 } else { throw new RuntimeException('UNKNOWN_MODE'); }

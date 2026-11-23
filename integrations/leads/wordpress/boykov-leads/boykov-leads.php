@@ -1,14 +1,15 @@
 <?php
 /**
  * Plugin Name: Boykov Services — заявки
- * Description: Очередь доставки форм energo-365.ru и его поддоменов в Boykov Services.
- * Version: 1.1.0
+ * Description: Доставка заявок и собственной статистики energo-365.ru и его поддоменов в Boykov Services.
+ * Version: 1.2.0
  * Requires at least: 5.8
  * Requires PHP: 7.3
  * License: GPL-2.0-or-later
  */
 if (!defined('ABSPATH')) { exit; }
 require_once __DIR__.'/includes/core.php';
+require_once __DIR__.'/includes/statistics.php';
 
 final class Boykov_Leads_Plugin {
     const CONFIG = 'boykov_leads_connection_v1';
@@ -144,6 +145,7 @@ final class Boykov_Leads_Plugin {
                 try { wp_clear_scheduled_hook(self::HOOK); } finally { restore_current_blog(); }
             }
         } elseif (self::correct_host()) { wp_clear_scheduled_hook(self::HOOK); }
+        if (isset($GLOBALS['boykov_statistics_plugin'])) $GLOBALS['boykov_statistics_plugin']->deactivate();
         // Configuration and all snapshots survive deactivation, deletion and reinstall.
     }
 
@@ -397,7 +399,9 @@ final class Boykov_Leads_Plugin {
         $cron_url = self::network_mode() ? get_site_url((int) get_site_option(self::COORDINATOR, get_current_blog_id()), 'wp-cron.php') : site_url('wp-cron.php');
         echo '<p><code>'.esc_html("wget -q -O /dev/null --timeout=30 '".$cron_url."?doing_wp_cron'").'</code></p>';
         echo '<p>После настройки оставьте страницу на 2–3 минуты, обновите её и проверьте время отчёта. Без посещений сайта отчёты должны продолжать обновляться.</p>';
-        echo '<p>Проверка связи не заменяет контрольную отправку из каждой формы. Копии остаются в базе сайта после доставки; деактивация и удаление плагина их не стирают.</p></div>';
+        echo '<p>Проверка связи не заменяет контрольную отправку из каждой формы. Копии остаются в базе сайта после доставки; деактивация и удаление плагина их не стирают.</p>';
+        if (isset($GLOBALS['boykov_statistics_plugin'])) $GLOBALS['boykov_statistics_plugin']->render_page();
+        echo '</div>';
     }
 }
 
@@ -405,3 +409,5 @@ global $wpdb;
 $GLOBALS['boykov_leads_plugin'] = new Boykov_Leads_Plugin();
 register_activation_hook(__FILE__, array($GLOBALS['boykov_leads_plugin'], 'activate'));
 register_deactivation_hook(__FILE__, array($GLOBALS['boykov_leads_plugin'], 'deactivate'));
+
+$GLOBALS['boykov_statistics_plugin'] = new Boykov_Statistics_Plugin(__FILE__);

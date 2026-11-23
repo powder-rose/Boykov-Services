@@ -3,6 +3,10 @@ const DAY = 86400000,
   OFFSET = 3 * HOUR;
 export const statisticsPeriods = ["24h", "7", "30", "90"];
 export const nativeSources = {
+  "energo-365.ru": {
+    kind: "wordpress",
+    label: "WordPress · Энерго 365 и поддомены",
+  },
   "nwdelectricity.ru": { kind: "nwd", label: "Редакция NWD" },
   "pasport-dostupnosty.ru": {
     kind: "accessibility",

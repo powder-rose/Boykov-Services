@@ -133,10 +133,17 @@ export async function createStatisticsModule(db, options) {
         checkedAt: new Date(clock).toISOString(),
         provider: nativeSources[s.host]?.label || "Статистика сайта",
         leadsOrigin: "native",
+        ...(value.coverageFrom ? { coverageFrom: value.coverageFrom } : {}),
         ...Object.fromEntries(
           ["totals", "daily", "sources", "pages", "articles"].map((k) => [
             k,
-            value[k],
+            k === "daily" && value.coverageFrom
+              ? value.daily.map((p) =>
+                  Date.parse(p.end) <= Date.parse(value.coverageFrom)
+                    ? { ...p, visits: null, views: null, articles: null }
+                    : p,
+                )
+              : value[k],
           ]),
         ),
       };

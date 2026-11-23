@@ -38,6 +38,18 @@ export function validateNativePacket(input, site, now) {
     input.reports.length !== 4
   )
     throw bad();
+  let coverageFrom;
+  if (input.source === "wordpress") {
+    const since = Date.parse(input.coverageFrom);
+    if (
+      !Number.isFinite(since) ||
+      input.coverageFrom !== new Date(since).toISOString() ||
+      since > now + 120000 ||
+      since <= 0
+    )
+      throw bad();
+    coverageFrom = input.coverageFrom;
+  }
   const seen = new Set();
   const reports = input.reports.map((report) => {
     if (
@@ -86,6 +98,17 @@ export function validateNativePacket(input, site, now) {
         ),
       };
     });
+    if (
+      coverageFrom &&
+      daily.some(
+        (p) =>
+          Date.parse(p.end) <= Date.parse(coverageFrom) &&
+          ["visits", "views", "articles"].some(
+            (k) => p[k] !== null && p[k] !== 0,
+          ),
+      )
+    )
+      throw bad();
     for (const key of Object.keys(totals))
       if (
         totals[key] !== null &&
@@ -114,15 +137,29 @@ export function validateNativePacket(input, site, now) {
         if (!p) throw bad();
         const path = cleanPath(p.path);
         if (!path || path !== p.path) throw bad();
+        let host = site.host;
+        if (p.host !== undefined) {
+          if (
+            input.source !== "wordpress" ||
+            typeof p.host !== "string" ||
+            p.host.length > 253 ||
+            !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*energo-365\.ru$/.test(
+              p.host,
+            )
+          )
+            throw bad();
+          host = p.host;
+        }
         return {
           path,
-          url: "https://" + site.host + path,
+          ...(p.host === undefined ? {} : { host }),
+          url: "https://" + host + path,
           title: text(p.title, 500),
           views: count(p.views),
         };
       });
       if (
-        new Set(result.map((p) => p.path)).size !== result.length ||
+        new Set(result.map((p) => p.url)).size !== result.length ||
         (totals[metric] === null && result.length) ||
         (totals[metric] !== null &&
           result.reduce((n, p) => n + p.views, 0) > totals[metric])
@@ -132,6 +169,7 @@ export function validateNativePacket(input, site, now) {
     }
     return {
       key: report.key,
+      ...(coverageFrom ? { coverageFrom } : {}),
       period: { from: range.from, to: range.to, group: range.group },
       totals,
       daily,
@@ -142,6 +180,7 @@ export function validateNativePacket(input, site, now) {
   });
   return {
     version: 1,
+    ...(coverageFrom ? { coverageFrom } : {}),
     host: site.host,
     source: input.source,
     generatedAt: new Date(generated).toISOString(),
