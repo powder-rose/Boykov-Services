@@ -39,13 +39,15 @@ export function validateNativePacket(input, site, now) {
   )
     throw bad();
   let coverageFrom;
-  if (input.source === "wordpress") {
+  const docs = input.source === "boykovdocs";
+  if (input.source === "wordpress" || docs) {
     const since = Date.parse(input.coverageFrom);
     if (
       !Number.isFinite(since) ||
       input.coverageFrom !== new Date(since).toISOString() ||
       since > now + 120000 ||
-      since <= 0
+      since <= 0 ||
+      (docs && since >= generated)
     )
       throw bad();
     coverageFrom = input.coverageFrom;
@@ -71,12 +73,26 @@ export function validateNativePacket(input, site, now) {
     const totals = Object.fromEntries(
       ["visits", "views", "articles", "leads"].map((k) => [
         k,
-        report.totals?.[k] === null && k !== "leads"
+        report.totals?.[k] === null && (k !== "leads" || docs)
           ? null
           : count(report.totals?.[k]),
       ]),
     );
     if (totals.visits === null) throw bad();
+    if (
+      docs &&
+      (totals.views === null ||
+        totals.visits > totals.views ||
+        totals.articles !== null ||
+        totals.leads !== null ||
+        !Array.isArray(report.sources) ||
+        report.sources.length ||
+        !Array.isArray(report.pages) ||
+        report.pages.length ||
+        !Array.isArray(report.articles) ||
+        report.articles.length)
+    )
+      throw bad();
     const daily = report.daily.map((point, i) => {
       if (
         !point ||

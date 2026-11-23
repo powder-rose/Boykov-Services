@@ -1,5 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { nativeSources, reportPeriod } from "../../../shared/statistics.js";
+import {
+  docsStatisticsSite,
+  nativeSources,
+  reportPeriod,
+} from "../../../shared/statistics.js";
 import { validateNativePacket } from "./validation.js";
 import { buildStatisticsOverview, statisticsColor } from "./overview.js";
 import { createTildaStatistics, isTildaStatisticsHost } from "./tilda.js";
@@ -20,6 +24,7 @@ export async function createStatisticsModule(db, options) {
   const now = options.now || Date.now;
   const tilda = createTildaStatistics(db, now);
   const getSite = (id) => {
+    if (id === docsStatisticsSite.id) return docsStatisticsSite;
     const s = db
       .prepare("SELECT id,name,host,created_at FROM sales_sites WHERE id=?")
       .get(id);
@@ -27,29 +32,33 @@ export async function createStatisticsModule(db, options) {
     return s;
   };
   function list() {
-    return db
-      .prepare("SELECT id FROM sales_sites ORDER BY name COLLATE NOCASE,host")
-      .all()
-      .map(({ id }) => {
-        const s = getSite(id),
-          latest = db
-            .prepare(
-              "SELECT MAX(generated_at) generated_at,MAX(received_at) received_at FROM statistics_native_reports WHERE site_id=? AND source_host=?",
-            )
-            .get(id, s.host);
-        const live = isTildaStatisticsHost(s.host) ? tilda.state(s) : null;
-        return {
-          ...s,
-          connected: !!latest.generated_at || !!live,
-          source: nativeSources[s.host] || null,
-          lastSyncedAt: live
-            ? new Date(live.last_at).toISOString()
-            : latest.generated_at || null,
-          lastReceivedAt: live
-            ? new Date(live.last_at).toISOString()
-            : latest.received_at || null,
-        };
-      });
+    return [
+      ...db
+        .prepare(
+          "SELECT id FROM sales_sites WHERE host<>? ORDER BY name COLLATE NOCASE,host",
+        )
+        .all(docsStatisticsSite.host),
+      docsStatisticsSite,
+    ].map(({ id }) => {
+      const s = getSite(id),
+        latest = db
+          .prepare(
+            "SELECT MAX(generated_at) generated_at,MAX(received_at) received_at FROM statistics_native_reports WHERE site_id=? AND source_host=?",
+          )
+          .get(id, s.host);
+      const live = isTildaStatisticsHost(s.host) ? tilda.state(s) : null;
+      return {
+        ...s,
+        connected: !!latest.generated_at || !!live,
+        source: nativeSources[s.host] || null,
+        lastSyncedAt: live
+          ? new Date(live.last_at).toISOString()
+          : latest.generated_at || null,
+        lastReceivedAt: live
+          ? new Date(live.last_at).toISOString()
+          : latest.received_at || null,
+      };
+    });
   }
   function receive(req, res) {
     const site = db
@@ -69,7 +78,15 @@ export async function createStatisticsModule(db, options) {
       throw bad("Нет доступа к приёму статистики.", 401);
     if (isTildaStatisticsHost(site.host))
       throw bad("Для Tilda используется собственный счётчик.");
-    const packet = validateNativePacket(req.body, site, now()),
+    if (
+      site.host === docsStatisticsSite.host ||
+      site.id === docsStatisticsSite.id
+    )
+      throw bad("Для BoykovDocs используется отдельное подключение.");
+    return savePacket(site, req.body, res);
+  }
+  function savePacket(site, input, res) {
+    const packet = validateNativePacket(input, site, now()),
       hash = digest(JSON.stringify(packet));
     const saved = db
       .prepare(
@@ -117,9 +134,31 @@ export async function createStatisticsModule(db, options) {
       .status(201)
       .json({ ok: true, siteId: site.id, generatedAt: packet.generatedAt });
   }
+  function registerBoykovDocs(app, authorize) {
+    app.post(
+      "/hooks/docs-customers/statistics/handshake",
+      wrap((req, res) => {
+        authorize(req);
+        res.json({
+          ok: true,
+          source: docsStatisticsSite.id,
+          protocol: 1,
+          scope: "traffic",
+        });
+      }),
+    );
+    app.post(
+      "/hooks/docs-customers/statistics",
+      wrap((req, res) => {
+        authorize(req);
+        return savePacket(docsStatisticsSite, req.body, res);
+      }),
+    );
+  }
   function report(id, key, clock = now()) {
     const s = getSite(id),
-      range = reportPeriod(key, clock);
+      range = reportPeriod(key, clock),
+      docs = s.id === docsStatisticsSite.id;
     const saved = db
       .prepare(
         "SELECT * FROM statistics_native_reports WHERE site_id=? AND period=? AND source_host=?",
@@ -141,7 +180,7 @@ export async function createStatisticsModule(db, options) {
         receivedAt: saved.received_at,
         checkedAt: new Date(clock).toISOString(),
         provider: nativeSources[s.host]?.label || "Статистика сайта",
-        leadsOrigin: "native",
+        leadsOrigin: docs ? "unavailable" : "native",
         ...(value.coverageFrom ? { coverageFrom: value.coverageFrom } : {}),
         ...Object.fromEntries(
           ["totals", "daily", "sources", "pages", "articles"].map((k) => [
@@ -159,11 +198,13 @@ export async function createStatisticsModule(db, options) {
     }
     const step = range.group === "hour" ? 3600000 : 86400000;
     const first = range.buckets[0]?.key ?? range.start;
-    const counts = db
-      .prepare(
-        "SELECT CAST((unixepoch(created_at)*1000-?)/? AS INTEGER) slot,count(*) amount FROM sales_leads WHERE site_id=? AND created_at>=? AND created_at<? GROUP BY slot",
-      )
-      .all(first, step, id, range.from, range.to);
+    const counts = docs
+      ? []
+      : db
+          .prepare(
+            "SELECT CAST((unixepoch(created_at)*1000-?)/? AS INTEGER) slot,count(*) amount FROM sales_leads WHERE site_id=? AND created_at>=? AND created_at<? GROUP BY slot",
+          )
+          .all(first, step, id, range.from, range.to);
     const slots = new Map(counts.map((r) => [r.slot, r.amount]));
     const daily = range.buckets.map((b, i) => ({
       at: new Date(b.from).toISOString(),
@@ -171,7 +212,7 @@ export async function createStatisticsModule(db, options) {
       visits: null,
       views: null,
       articles: null,
-      leads: slots.get(i) || 0,
+      leads: docs ? null : slots.get(i) || 0,
     }));
     const live = isTildaStatisticsHost(s.host)
       ? tilda.report(s, range, daily)
@@ -185,12 +226,12 @@ export async function createStatisticsModule(db, options) {
       receivedAt: null,
       checkedAt: new Date(clock).toISOString(),
       provider: nativeSources[s.host]?.label || "Статистика сайта",
-      leadsOrigin: "hub",
+      leadsOrigin: docs ? "unavailable" : "hub",
       totals: {
         visits: null,
         views: null,
         articles: null,
-        leads: daily.reduce((n, p) => n + p.leads, 0),
+        leads: docs ? null : daily.reduce((n, p) => n + p.leads, 0),
       },
       daily,
       sources: [],
@@ -299,6 +340,7 @@ export async function createStatisticsModule(db, options) {
   return {
     register,
     registerTilda: tilda.register,
+    registerBoykovDocs,
     receive: wrap(receive),
     report,
     list,

@@ -77,6 +77,7 @@ export async function createApp(options) {
   app.post("/hooks/docs-customers", docsCustomers.receive);
   app.post("/hooks/docs-customers/heartbeat", docsCustomers.heartbeat);
   app.post("/hooks/docs-customers/handshake", docsCustomers.handshake);
+  statistics.registerBoykovDocs(app, docsCustomers.authorize);
   const docsSales = createDocsSalesModule(db, {
     ...options,
     authorize: docsCustomers.authorize,

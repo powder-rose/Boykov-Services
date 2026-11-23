@@ -32,7 +32,7 @@ type Point = {
   visits: number | null;
   views: number | null;
   articles: number | null;
-  leads: number;
+  leads: number | null;
 };
 type PageRow = {
   path: string;
@@ -51,12 +51,12 @@ type Report = {
   checkedAt: string;
   coverageFrom?: string;
   provider: string;
-  leadsOrigin: "native" | "hub";
+  leadsOrigin: "native" | "hub" | "unavailable";
   totals: {
     visits: number | null;
     views: number | null;
     articles: number | null;
-    leads: number;
+    leads: number | null;
   };
   daily: Point[];
   sources: { name: string; visits: number }[];
@@ -283,13 +283,15 @@ function ConnectionDialog({
       <div className="stats-token-form">
         <h3>{site.source?.label || "Источник ещё не подключён"}</h3>
         <p>
-          {site.source?.kind === "wordpress"
-            ? "Собственный счётчик учитывает посещения основного сайта и поддоменов. История начинается с установки. Состояние отправки видно в настройках Boykov Services в WordPress."
-            : site.source?.kind === "tilda"
-              ? "Собственный счётчик Boykov Services. Визиты, просмотры и источники появятся после публикации кода на всех страницах Tilda. История начинается с первого принятого события."
-              : site.source
-                ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
-                : "Для этого сайта пока нет подключённой выгрузки статистики. Недоступные показатели отмечены прочерком."}
+          {site.source?.kind === "boykovdocs"
+            ? "Отчёт строится из существующего журнала просмотров BoykovDocs. Визиты разделяются после 30 минут без просмотров. История доступна с первой сохранённой записи."
+            : site.source?.kind === "wordpress"
+              ? "Собственный счётчик учитывает посещения основного сайта и поддоменов. История начинается с установки. Состояние отправки видно в настройках Boykov Services в WordPress."
+              : site.source?.kind === "tilda"
+                ? "Собственный счётчик Boykov Services. Визиты, просмотры и источники появятся после публикации кода на всех страницах Tilda. История начинается с первого принятого события."
+                : site.source
+                  ? "Сервис получает готовые отчёты из существующей системы статистики сайта. История остаётся на сайте и доступна в его админке."
+                  : "Для этого сайта пока нет подключённой выгрузки статистики. Недоступные показатели отмечены прочерком."}
         </p>
         <p>
           {site.lastSyncedAt
@@ -304,7 +306,9 @@ function ConnectionDialog({
           Инструкции установки находятся в архиве обновления.{" "}
           {site.source.kind === "tilda"
             ? "Ключ заявок не нужно добавлять в публичный код сайта."
-            : "Используется существующее защищённое подключение сайта к разделу «Заявки»."}
+            : site.source.kind === "boykovdocs"
+              ? "Используется существующее защищённое подключение клиентов BoykovDocs."
+              : "Используется существующее защищённое подключение сайта к разделу «Заявки»."}
         </p>
       )}
       <div className="stats-dialog-actions">
@@ -435,7 +439,12 @@ function SiteStatistics({
       label: "Визиты",
       icon: MousePointer2,
       tone: "lime",
-      note: hourly ? "За последние 24 часа" : "За выбранный период",
+      note:
+        site?.source?.kind === "boykovdocs"
+          ? "Сессии с интервалом 30 минут"
+          : hourly
+            ? "За последние 24 часа"
+            : "За выбранный период",
     },
     {
       key: "views" as const,
@@ -465,19 +474,22 @@ function SiteStatistics({
       icon: Inbox,
       tone: "white",
       note:
-        visible?.leadsOrigin === "native"
-          ? "По данным админки сайта"
-          : "Получены в Boykov Services",
+        visible?.leadsOrigin === "unavailable"
+          ? "Клиенты и продажи — в BoykovDocs"
+          : visible?.leadsOrigin === "native"
+            ? "По данным админки сайта"
+            : "Получены в Boykov Services",
     },
   ];
   const shownSources = visible?.sources.slice(0, 6) || [],
-    otherSources = connected
-      ? Math.max(
-          0,
-          (visible?.totals.visits || 0) -
-            shownSources.reduce((n, s) => n + s.visits, 0),
-        )
-      : 0;
+    otherSources =
+      connected && site?.source?.kind !== "boykovdocs"
+        ? Math.max(
+            0,
+            (visible?.totals.visits || 0) -
+              shownSources.reduce((n, s) => n + s.visits, 0),
+          )
+        : 0;
   return (
     <>
       {error && <Notice tone="error">{error}</Notice>}
@@ -573,7 +585,9 @@ function SiteStatistics({
                   {site?.source?.kind === "tilda"
                     ? "Посещаемость появится после первого принятого просмотра сайта."
                     : "Посещаемость появится после первого отчёта из админки сайта."}{" "}
-                  Пока отображаются заявки, поступившие в Boykov Services.
+                  {site?.source?.kind === "boykovdocs"
+                    ? "Регистрации и продажи доступны в разделе «Клиенты BoykovDocs»."
+                    : "Пока отображаются заявки, поступившие в Boykov Services."}
                 </p>
               </div>
               {canConfigure ? (
@@ -650,7 +664,7 @@ function SiteStatistics({
                             <td>{metric(d.visits)}</td>
                             <td>{metric(d.views)}</td>
                             <td>{metric(d.articles)}</td>
-                            <td>{number(d.leads)}</td>
+                            <td>{metric(d.leads)}</td>
                           </tr>
                         ))}
                     </tbody>
@@ -704,9 +718,11 @@ function SiteStatistics({
                 <div className="stats-list-empty">
                   <Globe2 size={25} strokeWidth={1.3} />
                   <p>
-                    {connected
-                      ? "За этот период переходов пока нет."
-                      : "Источники появятся вместе с данными посещаемости."}
+                    {site?.source?.kind === "boykovdocs"
+                      ? "Журнал BoykovDocs не сохраняет источники переходов."
+                      : connected
+                        ? "За этот период переходов пока нет."
+                        : "Источники появятся вместе с данными посещаемости."}
                   </p>
                 </div>
               )}
@@ -767,13 +783,15 @@ function SiteStatistics({
                   </div>
                 ) : (
                   <p className="stats-table-empty">
-                    {section.articles && visible?.totals.articles === null
-                      ? "В источнике пока нет отдельного учёта просмотров статей."
-                      : !section.articles && visible?.totals.views === null
-                        ? "Источник не ведёт отдельный учёт просмотров страниц."
-                        : connected
-                          ? "За выбранный период просмотров пока нет."
-                          : "Данные появятся после подключения статистики сайта."}
+                    {site?.source?.kind === "boykovdocs" && !section.articles
+                      ? "Журнал BoykovDocs не сохраняет адреса просмотренных страниц."
+                      : section.articles && visible?.totals.articles === null
+                        ? "В источнике пока нет отдельного учёта просмотров статей."
+                        : !section.articles && visible?.totals.views === null
+                          ? "Источник не ведёт отдельный учёт просмотров страниц."
+                          : connected
+                            ? "За выбранный период просмотров пока нет."
+                            : "Данные появятся после подключения статистики сайта."}
                   </p>
                 )}
               </section>
@@ -791,11 +809,13 @@ function SiteStatistics({
                 времени.
               </p>
               <p>
-                {visible?.leadsOrigin === "native"
-                  ? "Заявки и посещаемость берутся из админки сайта с её правилами подсчёта. История ограничена сохранёнными на сайте данными."
-                  : site?.source?.kind === "tilda" && visible?.coverageFrom
-                    ? "Посещаемость учитывается собственным счётчиком с момента подключения. Заявки — по данным центрального сервиса, включая корзину."
-                    : "До подключения статистики учитываются только заявки центрального сервиса, включая корзину."}{" "}
+                {site?.source?.kind === "boykovdocs"
+                  ? "Визиты рассчитаны по журналу просмотров: после 30 минут без активности начинается новый визит. Регистрации и продажи доступны в разделе «Клиенты BoykovDocs»."
+                  : visible?.leadsOrigin === "native"
+                    ? "Заявки и посещаемость берутся из админки сайта с её правилами подсчёта. История ограничена сохранёнными на сайте данными."
+                    : site?.source?.kind === "tilda" && visible?.coverageFrom
+                      ? "Посещаемость учитывается собственным счётчиком с момента подключения. Заявки — по данным центрального сервиса, включая корзину."
+                      : "До подключения статистики учитываются только заявки центрального сервиса, включая корзину."}{" "}
                 Прочерк означает, что источник не передаёт показатель.
               </p>
             </div>

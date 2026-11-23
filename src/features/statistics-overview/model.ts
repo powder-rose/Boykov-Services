@@ -17,7 +17,7 @@ export type OverviewSite = {
   error: string | null;
   source: { kind: string; label: string } | null;
   lastSyncedAt: string | null;
-  leadsOrigin: "native" | "hub";
+  leadsOrigin: "native" | "hub" | "unavailable";
   sourcePeriod: {
     key: Period;
     from: string;

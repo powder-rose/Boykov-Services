@@ -2,7 +2,16 @@ const DAY = 86400000,
   HOUR = 3600000,
   OFFSET = 3 * HOUR;
 export const statisticsPeriods = ["24h", "7", "30", "90"];
+export const docsStatisticsSite = Object.freeze({
+  id: "boykovdocs-statistics",
+  name: "BoykovDocs",
+  host: "boykovdocs.ru",
+});
 export const nativeSources = {
+  "boykovdocs.ru": {
+    kind: "boykovdocs",
+    label: "BoykovDocs · собственная статистика",
+  },
   "boykovgroup.ru": { kind: "tilda", label: "Tilda · счётчик Boykov Services" },
   "elektrolaboratoriya-techotchet.ru": {
     kind: "tilda",
@@ -76,11 +85,20 @@ export function sourceLabel(value) {
 }
 // The adapters feed native records into the same four half-open time windows.
 export class NativeReportBuilder {
-  constructor({ host, kind, now = Date.now(), views = true, articles = true }) {
+  constructor({
+    host,
+    kind,
+    now = Date.now(),
+    views = true,
+    articles = true,
+    leads = true,
+    sources = true,
+  }) {
     if (nativeSources[host]?.kind !== kind)
       throw new Error("UNKNOWN_NATIVE_SOURCE");
     this.host = host;
     this.kind = kind;
+    this.includeSources = sources;
     this.generatedAt = new Date(Math.floor(now / 60000) * 60000).toISOString();
     this.frames = statisticsPeriods.map((key) => {
       const range = reportPeriod(key, now);
@@ -93,7 +111,7 @@ export class NativeReportBuilder {
           visits: 0,
           views: views ? 0 : null,
           articles: articles ? 0 : null,
-          leads: 0,
+          leads: leads ? 0 : null,
         })),
         sources: new Map(),
         pages: new Map(),
@@ -114,7 +132,7 @@ export class NativeReportBuilder {
       const point = frame.daily[slot];
       if (point[metric] === null) throw new Error("UNAVAILABLE_NATIVE_METRIC");
       point[metric]++;
-      if (metric === "visits") {
+      if (metric === "visits" && this.includeSources) {
         const label = sourceLabel(source);
         frame.sources.set(label, (frame.sources.get(label) || 0) + 1);
       }

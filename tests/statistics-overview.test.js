@@ -114,7 +114,7 @@ test("overview is workspace-private, validates periods and never exposes source 
   const data = await r.json();
   assert.equal(
     data.sites.length,
-    f.db.prepare("SELECT count(*) n FROM sales_sites").get().n,
+    f.db.prepare("SELECT count(*) n FROM sales_sites").get().n + 1,
   );
   assert.equal(data.period.key, "7");
   assert.ok(!JSON.stringify(data).includes(token));
