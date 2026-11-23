@@ -16,8 +16,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY shared ./shared
 COPY --from=frontend /app/dist ./dist
-RUN mkdir -p /app/data && chown node:node /app/data
+RUN chgrp -R node /app/package.json /app/package-lock.json /app/server /app/shared /app/dist \
+    && chmod -R g=rX,o-w /app/package.json /app/package-lock.json /app/server /app/shared /app/dist \
+    && mkdir -p /app/data && chown node:node /app/data
 USER node
+RUN node --input-type=module -e "await import('./server/app.js'); console.log('API_RUNTIME_PERMISSIONS=OK')"
 EXPOSE 8787
 CMD ["node", "server/index.js"]
 
@@ -29,6 +32,9 @@ COPY worker/requirements.txt ./worker/requirements.txt
 RUN pip install --no-cache-dir -r worker/requirements.txt
 COPY worker ./worker
 COPY shared ./shared
-RUN useradd --uid 1000 --create-home app && mkdir -p /app/data && chown app:app /app/data
+RUN useradd --uid 1000 --create-home app \
+    && chgrp -R app /app/worker /app/shared \
+    && chmod -R g=rX,o-w /app/worker /app/shared \
+    && mkdir -p /app/data && chown app:app /app/data
 USER app
 CMD ["python", "-m", "uvicorn", "worker.service:app", "--host", "0.0.0.0", "--port", "8790", "--workers", "1"]
