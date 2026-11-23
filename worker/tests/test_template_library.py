@@ -10,9 +10,9 @@ from zipfile import ZipFile
 from docx import Document
 from lxml import etree
 
-from worker.template_documents import (DOC, NS, FILES, W, TemplateError,
+from worker.template_documents import (DOC, DOC_RELS, CONTENT, CT, REL, NS, FILES, W, TemplateError,
     TemplateDocuments, unpack, pack, xml, text, service_tables, macro_parts,
-    check_package)
+    check_package, serialize)
 from worker.template_library import TemplateLibrary, TemplateConflict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -105,12 +105,75 @@ class TemplateLibraryTests(unittest.TestCase):
         self.assertFalse(self.library.documents.inspect(key, self.library.snapshot(key)[1])['problems'])
         self.assertEqual(self.library.history(key)['versions'][0]['source'], 'upload')
 
-    def test_rejects_unknown_macro_invalid_word_and_missing_fields(self):
+    def test_legacy_docm_upload_replaces_active_parts_for_each_template(self):
+        for key in FILES:
+            with self.subTest(key=key):
+                _, raw = self.library.snapshot(key)
+                trusted = unpack(raw)
+                clean = unpack(self.library.documents.clean(key, raw))
+                legacy = trusted.copy()
+                # Inert binary fixtures: the importer must discard the bytes,
+                # not parse or run any uploaded VBA or control binary.
+                for name in macro_parts(legacy):
+                    if name.endswith('.bin'):
+                        legacy[name] = b'replaced legacy component'
+                signature = 'word/vbaProjectSignature.bin'
+                legacy[signature] = b'old signature fixture'
+                content = xml(legacy[CONTENT])
+                etree.SubElement(content, CT + 'Override', PartName='/' + signature,
+                    ContentType='application/vnd.ms-office.vbaProjectSignature')
+                legacy[CONTENT] = serialize(content)
+                signature_rels = xml(legacy['word/_rels/vbaProject.bin.rels'])
+                etree.SubElement(signature_rels, REL + 'Relationship', Id='rIdOldSignature',
+                    Type='http://schemas.microsoft.com/office/2006/relationships/vbaProjectSignature',
+                    Target='vbaProjectSignature.bin')
+                legacy['word/_rels/vbaProject.bin.rels'] = serialize(signature_rels)
+                uploaded = self.library.upload(key, 1, OWNER, 'старый договор.docm', pack(legacy))
+                self.assertFalse(uploaded['problems'])
+                self.assertEqual(self.library.snapshot(key)[1], raw)
+                self.library.publish(key, 1, OWNER, 'Анна', '', [], uploaded['draft']['id'])
+                meta, prepared = self.library.snapshot(key)
+                self.assertEqual(meta['version'], 2)
+                result = unpack(prepared)
+                self.assertEqual(macro_parts(result), macro_parts(trusted))
+                self.assertNotIn(signature, result)
+                self.assertNotIn(b'vbaProjectSignature', result[CONTENT])
+                self.assertEqual(len(xml(result[DOC]).xpath('.//w:control', namespaces=NS)), 1)
+                new_clean = unpack(self.library.documents.clean(key, prepared))
+                self.assertEqual(text(xml(new_clean[DOC])), text(xml(clean[DOC])))
+                for name in clean:
+                    if name.startswith('word/') and name not in (DOC, DOC_RELS):
+                        self.assertEqual(clean[name], new_clean[name], name)
+
+    def test_legacy_docm_with_button_without_service_table_is_accepted(self):
+        key = 'specons'
+        _, raw = self.library.snapshot(key)
+        legacy = unpack(raw)
+        root = xml(legacy[DOC])
+        table = service_tables(root)[0]
+        table.getparent().remove(table)
+        legacy[DOC] = serialize(root)
+        prepared = self.library.documents.prepare(key, pack(legacy), '.docm')
+        result = unpack(prepared)
+        self.assertEqual(macro_parts(result), macro_parts(unpack(raw)))
+        self.assertEqual(len(xml(result[DOC]).xpath('.//w:control', namespaces=NS)), 1)
+        self.assertEqual(len(service_tables(xml(result[DOC]))), 1)
+        self.assertEqual(text(xml(unpack(self.library.documents.clean(key, prepared))[DOC])), text(root))
+
+    def test_rejects_unsupported_attachments_invalid_word_and_missing_fields(self):
         key = 'passport_security'
         _, raw = self.library.snapshot(key)
         invalid = unpack(raw)
         invalid['word/vbaProject.bin'] = b'not the trusted project'
-        for upload, suffix in ((pack(invalid), '.docm'), (b'not a ZIP', '.docx')):
+        # A DOCM renamed to DOCX is not admitted through the passive import.
+        external = unpack(raw)
+        relations = xml(external[DOC_RELS])
+        etree.SubElement(relations, REL + 'Relationship', Id='rIdExternalTemplate',
+            Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate',
+            Target='https://example.invalid/template.dotx', TargetMode='External')
+        external[DOC_RELS] = serialize(relations)
+        for upload, suffix in ((pack(invalid), '.docx'), (pack(external), '.docm'),
+                               (b'not a ZIP', '.docx')):
             with self.assertRaises(TemplateError):
                 self.library.upload(key, 1, OWNER, 'bad' + suffix, upload)
         data = self.library.editor(key, OWNER)

@@ -39,7 +39,10 @@ PASSIVE_EXTENSIONS = {
     '.xml', '.rels', '.jpeg', '.jpg', '.png', '.gif', '.bmp', '.tif', '.tiff',
     '.wmf', '.emf', '.odttf', '.svg',
 }
-ACTIVE_RELATIONS = {'vbaProject', 'wordVbaData', 'control', 'activeXControlBinary'}
+ACTIVE_RELATIONS = {
+    'vbaProject', 'wordVbaData', 'control', 'activeXControlBinary',
+    'vbaProjectSignature', 'vbaProjectSignatureAgile', 'vbaProjectSignatureV3',
+}
 
 
 class TemplateError(ValueError):
@@ -159,21 +162,19 @@ def resolve_target(rels_name, target):
 
 
 def check_package(files, *, trusted=None):
-    """Reject uploaded executable parts and unsupported external content.
-
-    For an existing DOCM, active parts must exactly match a shipped macro
-    bundle. No uploaded VBA or controls are executed or copied into output.
-    """
+    """Validate a passive package or a package rebuilt with the trusted bundle."""
     trusted = trusted or {}
     for name, raw in files.items():
+        if name.lower().startswith('customui/'):
+            raise TemplateError('Сторонние надстройки интерфейса Word не поддерживаются.')
         if active_part(name):
             if trusted.get(name) != raw:
-                raise TemplateError('Загруженный макрос отличается от встроенного. Сохраните документ как DOCX и загрузите его без макросов.')
+                raise TemplateError('В документе остались неподдерживаемые компоненты макроса.')
         elif name != '_rels/.rels' and PurePosixPath(name).suffix.lower() not in PASSIVE_EXTENSIONS:
             raise TemplateError('В файле есть неподдерживаемые вложения. Используйте обычный документ Word.')
         if name.lower().endswith(('.xml', '.rels')):
             root = xml(raw)
-            if name.endswith('.rels'):
+            if name.lower().endswith('.rels'):
                 ids = set()
                 for node in root:
                     target = node.get('Target') or ''
@@ -193,19 +194,19 @@ def check_package(files, *, trusted=None):
                             raise TemplateError('Разрешён только встроенный макрос автозамены.')
                         if kind.lower() in {'oleobject', 'package', 'attachedtemplate', 'afchunk', 'subdocument'}:
                             raise TemplateError('Встроенные документы и внешние шаблоны не поддерживаются.')
-            elif name.startswith('word/') and not active_part(name):
+            elif name.lower().startswith('word/') and not active_part(name):
                 if root.xpath('//*[local-name()="altChunk" or local-name()="subDoc" or local-name()="attachedTemplate" or local-name()="OLEObject"]'):
                     raise TemplateError('Удалите встроенные объекты или внешние шаблоны.')
+                if root.xpath('.//w:control|.//w:object', namespaces=NS) and (
+                        not trusted or name != DOC):
+                    raise TemplateError('Удалите сторонние элементы управления Word.')
                 if root.xpath('.//w:ins|.//w:del|.//w:moveFrom|.//w:moveTo', namespaces=NS):
                     raise TemplateError('Примите или отклоните исправления Word перед загрузкой.')
                 instructions = root.xpath('.//w:instrText/text()|.//w:fldSimple/@w:instr', namespaces=NS)
                 if instructions and re.search(r'\b(?:DDEAUTO|DDE|INCLUDETEXT|INCLUDEPICTURE|LINK|IMPORT|DATABASE|MACROBUTTON)\b',
                                               ''.join(instructions), re.I):
                     raise TemplateError('Внешние поля и запуск команд в полях Word не поддерживаются.')
-    content = xml(files[CONTENT])
-    main = [n for n in content if n.get('PartName') == '/' + DOC]
-    if len(main) != 1 or main[0].get('ContentType') not in {DOCX_TYPE, DOCM_TYPE}:
-        raise TemplateError('Нужен документ DOCX или DOCM.')
+    content, _ = document_content_type(files)
     for node in content:
         mime = node.get('ContentType', '').lower()
         name = node.get('PartName', '').lstrip('/')
@@ -220,8 +221,68 @@ def macro_parts(files):
     return {name: raw for name, raw in files.items() if active_part(name)}
 
 
-def remove_macro(files, root, *, strip_table=True):
-    """Remove only the service prefix and trusted active parts for a clean source."""
+def document_content_type(files):
+    content = xml(files[CONTENT])
+    main = [n for n in content if n.get('PartName') == '/' + DOC]
+    if len(main) != 1 or main[0].get('ContentType') not in {DOCX_TYPE, DOCM_TYPE}:
+        raise TemplateError('Нужен документ DOCX или DOCM.')
+    return content, main[0].get('ContentType')
+
+
+def discard_legacy_controls(root):
+    """Discard old launch controls without touching surrounding contract text."""
+    changed = False
+    for control in list(root.xpath('.//w:control', namespaces=NS)):
+        wrapper = next((ancestor for ancestor in control.iterancestors()
+                        if ancestor.tag in {W + 'object', W + 'pict'}), control)
+        if (len(wrapper.xpath('descendant-or-self::w:control', namespaces=NS)) != 1
+                or wrapper.xpath('.//w:t|.//*[local-name()="OLEObject"]', namespaces=NS)):
+            raise TemplateError('Старый элемент управления содержит другие данные. Удалите его в Word и повторите загрузку.')
+        wrapper.getparent().remove(wrapper)
+        changed = True
+    return changed
+
+
+def relationship_owner(name):
+    if name == '_rels/.rels':
+        return None
+    return posixpath.join(posixpath.dirname(posixpath.dirname(name)),
+                          posixpath.basename(name)[:-5])
+
+
+def strip_macro_parts(files, roots):
+    """Drop old VBA/ActiveX parts and their relationships without interpreting VBA."""
+    discarded = {name for name in files if active_part(name)}
+    for name, data in list(files.items()):
+        if name in discarded or not name.lower().endswith('.rels'):
+            continue
+        relations = xml(data)
+        removed_ids = set()
+        for node in list(relations):
+            if rel_type(node) not in ACTIVE_RELATIONS:
+                continue
+            if node.get('TargetMode') == 'External':
+                raise TemplateError('Внешние компоненты макроса не поддерживаются.')
+            target = resolve_target(name, node.get('Target') or '')
+            if target not in discarded:
+                raise TemplateError('Нестандартная структура старого макроса не поддерживается.')
+            removed_ids.add(node.get('Id'))
+            relations.remove(node)
+        if not removed_ids:
+            continue
+        owner = relationship_owner(name)
+        if owner in files and owner.lower().endswith('.xml'):
+            owner_root = roots[owner] if owner in roots else xml(files[owner])
+            if any(value in removed_ids for element in owner_root.iter()
+                   for key, value in element.attrib.items() if key.startswith(R)):
+                raise TemplateError('Не удалось удалить все ссылки на старый макрос.')
+        files[name] = serialize(relations)
+    for name in discarded:
+        del files[name]
+
+
+def remove_macro(files, root, *, strip_table=True, replace_legacy=False):
+    """Remove the service prefix and active parts before rebuilding a template."""
     b = body(root)
     tables = service_tables(root)
     if len(tables) > 1:
@@ -252,19 +313,19 @@ def remove_macro(files, root, *, strip_table=True):
         for element in list(b):
             if element.xpath('.//w:control', namespaces=NS):
                 b.remove(element)
-    # An unexpected ActiveX control outside the service prefix must never
-    # survive an upload, even if its original binary was trusted.
+    roots = {DOC: root}
+    if replace_legacy:
+        for name in list(files):
+            if name != DOC and STORY.fullmatch(name):
+                roots[name] = xml(files[name])
+        for name, doc in roots.items():
+            if discard_legacy_controls(doc) and name != DOC:
+                files[name] = serialize(doc)
+    # OLE objects and unrecognized controls must never survive an upload.
     if root.xpath('.//w:control|.//w:object', namespaces=NS):
         raise TemplateError('Удалите сторонние элементы управления Word.')
-    relations = xml(files[DOC_RELS])
-    for node in list(relations):
-        if rel_type(node) in ACTIVE_RELATIONS:
-            relations.remove(node)
-    files[DOC_RELS] = serialize(relations)
-    for name in list(files):
-        if active_part(name):
-            del files[name]
-    content = xml(files[CONTENT])
+    strip_macro_parts(files, roots)
+    content, _ = document_content_type(files)
     for node in list(content):
         name = (node.get('PartName') or '').lstrip('/')
         if active_part(name) or node.get('Extension', '').lower() == 'bin':
@@ -466,17 +527,17 @@ class TemplateDocuments:
 
     def prepare(self, key, raw, suffix):
         files = unpack(raw)
-        expected = macro_parts(self.donors[key])
-        old = macro_parts(self.originals[key])
-        supplied = macro_parts(files)
-        if supplied and (suffix != '.docm' or supplied not in (expected, old)):
-            raise TemplateError('Загрузите DOCX без сторонних макросов. Встроенный макрос добавится автоматически.')
-        check_package(files, trusted=supplied)
+        _, kind = document_content_type(files)
+        replace_legacy = suffix == '.docm' and kind == DOCM_TYPE
+        if not replace_legacy:
+            check_package(files)
         root = xml(files[DOC])
         tables = service_tables(root)
         if tables and table_fields(tables[0]) != table_fields(service_tables(xml(self.originals[key][DOC]))[0]):
             raise TemplateError('Таблица автозамен не соответствует выбранному типу договора.')
-        remove_macro(files, root)
+        # The uploaded project is never trusted, even temporarily. Validate
+        # the passive remainder, then attach only the stored donor bundle.
+        remove_macro(files, root, replace_legacy=replace_legacy)
         check_package(files)
         add_macro(files, self.donors[key], self.originals[key])
         check_package(files, trusted=macro_parts(self.donors[key]))

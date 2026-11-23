@@ -14,6 +14,7 @@ WORKSPACE = tempfile.TemporaryDirectory(prefix='boykov-worker-test-')
 os.environ['CONTRACTS_DATA_DIR'] = WORKSPACE.name
 os.environ['WORKER_TOKEN'] = 'test-worker-token-' + 'x' * 32
 from worker import service
+from worker.template_documents import unpack, pack
 from fastapi.testclient import TestClient
 
 COMPANY = ['ООО', 'генерального директора', 'генеральный директор', 'Иванова Ивана Ивановича', 'Иванов Иван Иванович',
@@ -272,6 +273,17 @@ class WorkerTests(unittest.TestCase):
                             'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
                     self.assertEqual(draft.status_code, 200, draft.text)
                     editor = draft.json()
+                elif key == 'specons':
+                    original = self.client.get(base + f'/files/{current}?format=docm')
+                    self.assertEqual(original.status_code, 200)
+                    legacy = unpack(original.content)
+                    legacy['word/vbaProject.bin'] = b'legacy project fixture'
+                    draft = self.client.post(base + '/draft',
+                        data={'expectedVersion': current, 'actorId': actor['actorId']},
+                        files={'file': ('updated.docm', pack(legacy),
+                            'application/vnd.ms-word.document.macroEnabled.12')})
+                    self.assertEqual(draft.status_code, 200, draft.text)
+                    editor = draft.json()
                 block = next(b for b in editor['blocks'] if b['editable'] and len(b['text']) > 100
                     and 'autozamena' not in b['text'])
                 marker = f'Условие новой версии {key}.'
@@ -294,6 +306,9 @@ class WorkerTests(unittest.TestCase):
                     self.assertIn(marker, text)
                     self.assertIn('ТЕСТОВАЯ КОМПАНИЯ', text)
                     self.assertIn('word/vbaProject.bin', archive.namelist())
+                    if key == 'specons':
+                        self.assertEqual(archive.read('word/vbaProject.bin'),
+                                         unpack(original.content)['word/vbaProject.bin'])
                     self.assertEqual(archive.testzip(), None)
 
     def test_z_queued_generation_keeps_the_revision_reserved_at_submission(self):
