@@ -59,7 +59,9 @@ function ColorDot({ color }: { color: string }) {
 }
 const statusText = (site: OverviewSite) =>
   site.status === "ready"
-    ? "Данные актуальны"
+    ? site.source?.kind === "tilda"
+      ? "Счётчик подключён"
+      : "Данные актуальны"
     : site.status === "unconfigured"
       ? "Только заявки"
       : site.status === "stale"
@@ -634,8 +636,8 @@ export default function StatisticsOverview({
               {visible.intervalsDiffer
                 ? "Интервалы свежих отчётов могут немного отличаться по времени. "
                 : ""}
-              Крайние точки могут содержать неполный день или час. Счётчики
-              берутся из админок сайтов.
+              Крайние точки могут содержать неполный день или час. Источники —
+              отчёты сайтов и собственные счётчики.
             </p>
           </div>
           <section
@@ -716,6 +718,10 @@ export default function StatisticsOverview({
                           {site.lastSyncedAt
                             ? dateTime(site.lastSyncedAt)
                             : "Ожидает подключения"}
+                          {site.source?.kind === "tilda" &&
+                            site.lastSyncedAt && (
+                              <small>Последний просмотр</small>
+                            )}
                           {site.leadsOrigin === "hub" && (
                             <small>Заявки из Boykov Services</small>
                           )}

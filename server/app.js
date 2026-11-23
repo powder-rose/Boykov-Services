@@ -70,6 +70,7 @@ export async function createApp(options) {
   technical.registerPushHooks(app);
   const statistics = await createStatisticsModule(db, options);
   app.locals.statistics = statistics;
+  statistics.registerTilda(app);
   app.post("/hooks/statistics/:siteId", statistics.receive);
   const docsCustomers = createDocsCustomersModule(db, options);
   app.locals.docsCustomers = docsCustomers;

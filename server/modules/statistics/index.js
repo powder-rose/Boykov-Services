@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { nativeSources, reportPeriod } from "../../../shared/statistics.js";
 import { validateNativePacket } from "./validation.js";
 import { buildStatisticsOverview, statisticsColor } from "./overview.js";
+import { createTildaStatistics, isTildaStatisticsHost } from "./tilda.js";
 const bad = (message, status = 400) =>
   Object.assign(new Error(message), { status });
 const digest = (text) => createHash("sha256").update(text).digest("hex");
@@ -17,6 +18,7 @@ export async function createStatisticsModule(db, options) {
   db.exec(`CREATE TABLE IF NOT EXISTS statistics_site_colors (
     site_id TEXT PRIMARY KEY, color_index INTEGER NOT NULL UNIQUE CHECK(color_index>=0));`);
   const now = options.now || Date.now;
+  const tilda = createTildaStatistics(db, now);
   const getSite = (id) => {
     const s = db
       .prepare("SELECT id,name,host,created_at FROM sales_sites WHERE id=?")
@@ -35,12 +37,17 @@ export async function createStatisticsModule(db, options) {
               "SELECT MAX(generated_at) generated_at,MAX(received_at) received_at FROM statistics_native_reports WHERE site_id=? AND source_host=?",
             )
             .get(id, s.host);
+        const live = isTildaStatisticsHost(s.host) ? tilda.state(s) : null;
         return {
           ...s,
-          connected: !!latest.generated_at,
+          connected: !!latest.generated_at || !!live,
           source: nativeSources[s.host] || null,
-          lastSyncedAt: latest.generated_at || null,
-          lastReceivedAt: latest.received_at || null,
+          lastSyncedAt: live
+            ? new Date(live.last_at).toISOString()
+            : latest.generated_at || null,
+          lastReceivedAt: live
+            ? new Date(live.last_at).toISOString()
+            : latest.received_at || null,
         };
       });
   }
@@ -60,6 +67,8 @@ export async function createStatisticsModule(db, options) {
       !timingSafeEqual(actual, expected)
     )
       throw bad("Нет доступа к приёму статистики.", 401);
+    if (isTildaStatisticsHost(site.host))
+      throw bad("Для Tilda используется собственный счётчик.");
     const packet = validateNativePacket(req.body, site, now()),
       hash = digest(JSON.stringify(packet));
     const saved = db
@@ -116,7 +125,7 @@ export async function createStatisticsModule(db, options) {
         "SELECT * FROM statistics_native_reports WHERE site_id=? AND period=? AND source_host=?",
       )
       .get(id, key, s.host);
-    if (saved) {
+    if (saved && !isTildaStatisticsHost(s.host)) {
       const value = JSON.parse(saved.report),
         stale =
           clock - Date.parse(saved.generated_at) > 180000 ||
@@ -164,6 +173,9 @@ export async function createStatisticsModule(db, options) {
       articles: null,
       leads: slots.get(i) || 0,
     }));
+    const live = isTildaStatisticsHost(s.host)
+      ? tilda.report(s, range, daily)
+      : null;
     return {
       site: s,
       period: { key, from: range.from, to: range.to, group: range.group },
@@ -184,6 +196,7 @@ export async function createStatisticsModule(db, options) {
       sources: [],
       pages: [],
       articles: [],
+      ...(live || {}),
     };
   }
   function overview(key) {
@@ -283,5 +296,12 @@ export async function createStatisticsModule(db, options) {
       ),
     );
   }
-  return { register, receive: wrap(receive), report, list, overview };
+  return {
+    register,
+    registerTilda: tilda.register,
+    receive: wrap(receive),
+    report,
+    list,
+    overview,
+  };
 }

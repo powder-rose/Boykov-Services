@@ -60,7 +60,10 @@ export function buildStatisticsOverview(sites, reports, key, now) {
       status: report?.status || "error",
       error: report?.error || null,
       source: site.source,
-      lastSyncedAt: report?.fetchedAt || null,
+      lastSyncedAt:
+        (site.source?.kind === "tilda"
+          ? report?.receivedAt
+          : report?.fetchedAt) || null,
       leadsOrigin: report?.leadsOrigin || "hub",
       sourcePeriod: usable ? report.period : null,
       totals: usable

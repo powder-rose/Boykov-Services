@@ -3,6 +3,11 @@ const DAY = 86400000,
   OFFSET = 3 * HOUR;
 export const statisticsPeriods = ["24h", "7", "30", "90"];
 export const nativeSources = {
+  "boykovgroup.ru": { kind: "tilda", label: "Tilda · счётчик Boykov Services" },
+  "elektrolaboratoriya-techotchet.ru": {
+    kind: "tilda",
+    label: "Tilda · счётчик Boykov Services",
+  },
   "energo-365.ru": {
     kind: "wordpress",
     label: "WordPress · Энерго 365 и поддомены",
