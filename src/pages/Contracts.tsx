@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,11 +18,17 @@ import {
   Plus,
   PencilLine,
   X,
+  Layers3,
 } from "lucide-react";
 import templates from "../../shared/templates.json";
 import { api, post, errorText } from "../api";
-import { Notice, PageHead, Status } from "../components/Common";
+import { Loading, Notice, PageHead, Status } from "../components/Common";
 import type { Job, System } from "../types";
+import type { TemplateCatalog } from "../features/contract-templates/TemplateLibrary";
+import "../features/contract-templates/TemplateLibrary.css";
+const TemplateLibrary = lazy(
+  () => import("../features/contract-templates/TemplateLibrary"),
+);
 
 export const COMPANY_LABELS = [
   "Организационно-правовая форма",
@@ -79,9 +92,85 @@ function missingCompany(company: string[]) {
 export default function Contracts({
   system,
   onChange,
+  active = true,
 }: {
   system: System | null;
   onChange: () => void;
+  active?: boolean;
+}) {
+  const [section, setSection] = useState<"create" | "templates">("create");
+  const [libraryVisited, setLibraryVisited] = useState(false);
+  const [catalog, setCatalog] = useState<TemplateCatalog | null>(null);
+  const refreshTemplates = useCallback(async () => {
+    try {
+      const value = await api<TemplateCatalog>("/contracts/templates");
+      if (!Array.isArray(value.templates) || typeof value.canEdit !== "boolean")
+        throw new Error("Библиотека недоступна.");
+      setCatalog(value);
+    } catch {
+      // The worker reports errors when generation or the editor is opened.
+    }
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    void refreshTemplates();
+    const timer = setInterval(refreshTemplates, 30000);
+    return () => clearInterval(timer);
+  }, [active, section, refreshTemplates]);
+  return (
+    <>
+      <PageHead
+        eyebrow="ДОКУМЕНТЫ / 01"
+        title={
+          section === "create" ? "Договоры без рутины" : "Библиотека шаблонов"
+        }
+        description={
+          section === "create"
+            ? "От реквизитов до готового документа — за несколько шагов."
+            : "Управляйте актуальными версиями договоров из одного пространства."
+        }
+      />
+      <div className="tl-tabs tl-main-tabs" aria-label="Разделы договоров">
+        <button
+          aria-pressed={section === "create"}
+          className={section === "create" ? "selected" : ""}
+          onClick={() => setSection("create")}
+        >
+          <FileText size={17} /> Создание договора
+        </button>
+        <button
+          aria-pressed={section === "templates"}
+          className={section === "templates" ? "selected" : ""}
+          onClick={() => {
+            setLibraryVisited(true);
+            setSection("templates");
+          }}
+        >
+          <Layers3 size={17} /> Шаблоны
+        </button>
+      </div>
+      <div hidden={section !== "templates"}>
+        {libraryVisited && (
+          <Suspense fallback={<Loading />}>
+            <TemplateLibrary catalog={catalog} reload={refreshTemplates} />
+          </Suspense>
+        )}
+      </div>
+      <div hidden={section !== "create"}>
+        <ContractForm system={system} onChange={onChange} catalog={catalog} />
+      </div>
+    </>
+  );
+}
+
+function ContractForm({
+  system,
+  onChange,
+  catalog,
+}: {
+  system: System | null;
+  onChange: () => void;
+  catalog: TemplateCatalog | null;
 }) {
   const [step, setStep] = useState(0);
   const [template, setTemplate] = useState("passport_security");
@@ -285,11 +374,6 @@ export default function Contracts({
   }
   return (
     <>
-      <PageHead
-        eyebrow="ДОКУМЕНТЫ / 01"
-        title="Договоры без рутины"
-        description="От реквизитов до готового документа — за несколько шагов."
-      />
       <div className="steps" aria-label="Этапы подготовки">
         {["Условия договора", "Реквизиты клиента", "Проверка и результат"].map(
           (label, i) => (
@@ -324,6 +408,9 @@ export default function Contracts({
               ? `№ ${generation.result.number} · `
               : ""}
             {templateInfo.label}
+            {generation.result?.templateVersion
+              ? ` · версия v${generation.result.templateVersion}`
+              : ""}
           </p>
           <p className="muted">
             Скачайте файл Word с заполненной таблицей автозамен.
@@ -369,7 +456,13 @@ export default function Contracts({
                     >
                       <FileText size={19} />
                       <strong>{item.label}</strong>
-                      <span>{item.company}</span>
+                      <span>
+                        {item.company}
+                        {catalog?.templates.find((t) => t.id === item.id)
+                          ?.active.version
+                          ? ` · v${catalog.templates.find((t) => t.id === item.id)!.active.version}`
+                          : ""}
+                      </span>
                       {template === item.id && (
                         <Check size={15} className="template-check" />
                       )}

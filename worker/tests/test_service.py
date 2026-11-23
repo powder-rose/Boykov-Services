@@ -251,6 +251,73 @@ class WorkerTests(unittest.TestCase):
         payload['ser_fields']['email'] = 'invalid'
         self.assertEqual(self.client.post('/generate', json=payload).status_code, 422)
 
+    def test_z_all_generators_use_newly_published_templates(self):
+        actor = {'actorId': str(uuid4()), 'actorName': 'Тестовый редактор'}
+        self.assertEqual(TestClient(service.app).get('/templates').status_code, 401)
+        response = self.client.get('/templates')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()['templates']), 6)
+        for key in sorted(service.TEMPLATE_IDS):
+            with self.subTest(key=key):
+                base = '/templates/' + key
+                editor = self.client.get(base + '/editor', params={'owner': actor['actorId']}).json()
+                current = editor['active']['version']
+                # Exercise the Word upload path as well as the browser editor.
+                if key == 'ser_one_time':
+                    clean = self.client.get(base + f'/files/{current}?format=docx')
+                    self.assertEqual(clean.status_code, 200)
+                    draft = self.client.post(base + '/draft',
+                        data={'expectedVersion': current, 'actorId': actor['actorId']},
+                        files={'file': ('updated.docx', clean.content,
+                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+                    self.assertEqual(draft.status_code, 200, draft.text)
+                    editor = draft.json()
+                block = next(b for b in editor['blocks'] if b['editable'] and len(b['text']) > 100
+                    and 'autozamena' not in b['text'])
+                marker = f'Условие новой версии {key}.'
+                publication = self.client.post(base + '/publish', json={
+                    **actor, 'expectedVersion': current,
+                    'draftId': editor['draft']['id'] if editor['draft'] else None,
+                    'changes': [{'id': block['id'], 'text': block['text'] + ' ' + marker}],
+                    'note': 'Проверка связи с генератором',
+                })
+                self.assertEqual(publication.status_code, 200, publication.text)
+                payload = self.payload(key)
+                self.assertEqual(self.client.post('/generate', json=payload).status_code, 202)
+                job = self.await_job(payload['requestId'])
+                self.assertEqual(job['status'], 'completed', job)
+                self.assertEqual(job['result']['templateVersion'], current + 1)
+                self.assertEqual(job['result']['templateSha256'], publication.json()['active']['sha256'])
+                with ZipFile(io.BytesIO(self.client.get('/files/' + job['id']).content)) as archive:
+                    text = ''.join(etree.fromstring(archive.read('word/document.xml')).xpath(
+                        './/w:t/text()', namespaces={'w': service.core.WORD_NS}))
+                    self.assertIn(marker, text)
+                    self.assertIn('ТЕСТОВАЯ КОМПАНИЯ', text)
+                    self.assertIn('word/vbaProject.bin', archive.namelist())
+                    self.assertEqual(archive.testzip(), None)
+
+    def test_z_queued_generation_keeps_the_revision_reserved_at_submission(self):
+        key = 'specons'
+        actor = {'actorId': str(uuid4()), 'actorName': 'Тестовый редактор'}
+        base = '/templates/' + key
+        current = self.client.get(base + '/editor', params={'owner': actor['actorId']}).json()
+        version = current['active']['version']
+        payload = self.payload(key)
+        with patch.object(service.pool, 'submit') as submit:
+            queued = self.client.post('/generate', json=payload)
+            self.assertEqual(queued.status_code, 202)
+            args = submit.call_args.args
+        block = next(b for b in current['blocks'] if b['editable'] and len(b['text']) > 100
+                     and 'autozamena' not in b['text'])
+        publication = self.client.post(base + '/publish', json={**actor,
+            'expectedVersion': version, 'changes': [
+                {'id': block['id'], 'text': block['text'] + ' Проверка фиксации версии.'}]})
+        self.assertEqual(publication.status_code, 200, publication.text)
+        args[0](*args[1:])
+        job = self.await_job(payload['requestId'])
+        self.assertEqual(job['result']['templateVersion'], version)
+        self.assertEqual(self.client.post('/generate', json=payload).json()['id'], job['id'])
+
     @classmethod
     def tearDownClass(cls):
         service.pool.shutdown(wait=True)

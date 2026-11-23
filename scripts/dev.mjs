@@ -94,7 +94,11 @@ start(
   "Документы",
 );
 start(process.execPath, ["--watch", "server/index.js"], "API");
-start(process.execPath, ["node_modules/vite/bin/vite.js"], "Vite");
+start(
+  process.execPath,
+  ["node_modules/vite/bin/vite.js", ...process.argv.slice(2)],
+  "Vite",
+);
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop());
 console.log(
   "boykov-services: http://localhost:5173 · Ctrl+C завершит все процессы",

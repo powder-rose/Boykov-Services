@@ -387,7 +387,11 @@ export default function App() {
             />
           </div>
           <div hidden={page !== "contracts"} className="page">
-            <Contracts system={system} onChange={refresh} />
+            <Contracts
+              system={system}
+              onChange={refresh}
+              active={page === "contracts"}
+            />
           </div>
           <div hidden={page !== "technical"} className="page">
             <Technical />
@@ -475,6 +479,11 @@ export default function App() {
           )}
           {selectedJob.result?.number && (
             <p>Документ № {selectedJob.result.number}</p>
+          )}
+          {selectedJob.result?.templateVersion && (
+            <p className="small muted">
+              Версия шаблона: v{selectedJob.result.templateVersion}
+            </p>
           )}
           {selectedJob.result?.draft && (
             <Notice>

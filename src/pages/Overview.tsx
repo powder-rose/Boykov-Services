@@ -11,6 +11,7 @@ import {
 import { Empty, EventList, PageHead } from "../components/Common";
 import { number } from "../api";
 import type { Dashboard, System, Page, Job } from "../types";
+import templates from "../../shared/templates.json";
 export default function Overview({
   dashboard,
   system,
@@ -88,8 +89,8 @@ export default function Overview({
               <i className={system?.documents.available ? "good" : ""} />
               {system?.documents.available
                 ? system.documents.aiConfigured
-                  ? "5 шаблонов · ИИ подключён"
-                  : "5 шаблонов · ИИ не подключён"
+                  ? `${system.documents.templates ?? templates.length} шаблонов · ИИ подключён`
+                  : `${system.documents.templates ?? templates.length} шаблонов · ИИ не подключён`
                 : "Сервис недоступен"}
             </span>
             <ArrowRight size={20} />

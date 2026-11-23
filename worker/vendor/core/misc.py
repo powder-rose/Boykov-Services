@@ -1937,6 +1937,7 @@ class Miscellaneous:
             way: str | Path | None = None,
             *,
             allow_incomplete: bool = False,
+            template_path: Path | None = None,
     ) -> Path:
         """Формирует договор ООО СПЕЦКОНС на паспорт безопасности."""
         self.validate_company_data(
@@ -2029,7 +2030,7 @@ class Miscellaneous:
         if not banco.strip():
             highlight_keys.add('autozamena_020')
 
-        template_path = (
+        template_path = template_path or (
             self.CORE_DIR / 'ООО СПЕЦКОНС_ПАСПОРТ БЕЗОПАСНОСТИ.docm'
         )
         if not template_path.is_file():
@@ -2139,6 +2140,7 @@ class Miscellaneous:
             way: str | Path | None = None,
             *,
             allow_incomplete: bool = False,
+            template_path: Path | None = None,
     ) -> Path:
         """
         Формирует договор ООО СПЕЦКОНС на проведение специальной оценки
@@ -2246,7 +2248,7 @@ class Miscellaneous:
         if not field(10):
             highlight_keys.add('autozamena_021')
 
-        template_path = self.CORE_DIR / 'ООО СПЕЦКОНС_СОУТ.docm'
+        template_path = template_path or self.CORE_DIR / 'ООО СПЕЦКОНС_СОУТ.docm'
         if not template_path.is_file():
             raise FileNotFoundError(
                 f'Не найден шаблон СОУТ: {template_path}'
@@ -2335,6 +2337,7 @@ class Miscellaneous:
             way: str | Path | None = None,
             *,
             allow_incomplete: bool = False,
+            template_path: Path | None = None,
     ) -> Path:
         """
         Формирует договор ООО СПЕЦКОНС на паспорт безопасности с
@@ -2437,7 +2440,7 @@ class Miscellaneous:
         if not banco.strip():
             highlight_keys.add('autozamena_016')
 
-        template_path = (
+        template_path = template_path or (
             self.CORE_DIR
             / 'ООО СПЕЦКОНС_ПАСПОРТ БЕЗОПАСНОСТИ С СОГЛАСОВАНИЕМ.docm'
         )
@@ -2606,6 +2609,7 @@ class Miscellaneous:
             way: str | Path | None = None,
             *,
             allow_incomplete: bool = False,
+            template_path: Path | None = None,
     ) -> Path:
         """
         Формирует таблицу автозамен для договора ООО СПЕЦЭНЕРГОРАЗВИТИЕ.
@@ -2732,7 +2736,7 @@ class Miscellaneous:
         if not banco.strip():
             highlight_keys.add('autozamena_027')
 
-        template_path = self.CORE_DIR / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ.docm'
+        template_path = template_path or self.CORE_DIR / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ.docm'
         if not template_path.is_file():
             raise FileNotFoundError(
                 f'Не найден шаблон таблицы: {template_path}'

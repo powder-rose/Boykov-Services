@@ -14,6 +14,7 @@ import { createDocsCustomersModule } from "./modules/docs-customers/index.js";
 import { createStatisticsModule } from "./modules/statistics/index.js";
 import { createPersonalModule } from "./personal.js";
 import { workerClient } from "./worker-client.js";
+import { registerTemplateRoutes } from "./modules/contracts/templates.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
 import {
   requestWordstatTop,
@@ -192,6 +193,7 @@ export async function createApp(options) {
       fieldSize: 400000,
     },
   });
+  registerTemplateRoutes(app, worker, upload);
   app.post(
     "/api/contracts/extract",
     upload.single("file"),

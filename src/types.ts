@@ -40,6 +40,9 @@ export interface Job {
     missing?: string[];
     number?: string;
     draft?: boolean;
+    templateVersion?: number;
+    templateId?: string;
+    templateSha256?: string;
   };
 }
 export interface Dashboard {

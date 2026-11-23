@@ -10,7 +10,7 @@ export const sharedPassword = "fixture-shared-password",
 const passwordHash = await hashPassword(sharedPassword);
 const failure = (status) =>
   Object.assign(new Error("fixture worker unavailable"), { status });
-export async function accountFixture(t) {
+export async function accountFixture(t, templateWorker) {
   const directory = await mkdtemp(join(tmpdir(), "boykov-accounts-"));
   const jobs = new Map();
   let app,
@@ -22,6 +22,8 @@ export async function accountFixture(t) {
     generateCalls = 0;
   const worker = async (route, options = {}) => {
     if (workerUnavailable) throw failure(503);
+    if (templateWorker && route.startsWith("/templates"))
+      return templateWorker(route, options);
     if (route === "/jobs") return Response.json({ jobs: [...jobs.values()] });
     if (route.startsWith("/jobs/")) {
       const job = jobs.get(route.slice(6));

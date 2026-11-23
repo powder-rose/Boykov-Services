@@ -1,5 +1,6 @@
 """Private HTTP adapter for the original document core. No messenger imports."""
 from __future__ import annotations
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import json
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+from tempfile import TemporaryDirectory
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Literal
@@ -26,6 +28,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image
 from .vendor.core.misc import Miscellaneous, DocumentExtractionError, AIServiceError, MissingCompanyDetailsError
 from .ser_one_time import fill_service_specification
+from .template_library import TemplateLibrary
+from .template_documents import TemplateError
+from .template_routes import register_template_routes
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
@@ -37,17 +42,18 @@ DATA.mkdir(parents=True, exist_ok=True)
 TOKEN = os.getenv('WORKER_TOKEN', '')
 DB = DATA / 'jobs.sqlite'
 Image.MAX_IMAGE_PIXELS = 12_000_000
-TEMPLATES = json.loads((ROOT / 'shared/templates.json').read_text())
+TEMPLATES = json.loads((ROOT / 'shared/templates.json').read_text(encoding='utf-8'))
 TEMPLATE_IDS = {t['id'] for t in TEMPLATES}
 MAX_FILE = 20 * 1024 * 1024
 pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='contracts')
 creation_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
+@contextmanager
 def connect():
-    db = sqlite3.connect(DB, timeout=10)
-    db.row_factory = sqlite3.Row
-    return db
+    with closing(sqlite3.connect(DB, timeout=10)) as db, db:
+        db.row_factory = sqlite3.Row
+        yield db
 
 with connect() as db:
     db.executescript('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT, title TEXT, status TEXT, created TEXT, result TEXT, error TEXT, input_hash TEXT);')
@@ -67,6 +73,7 @@ class WebCore(Miscellaneous):
             raise DocumentExtractionError('Не удалось прочитать DOC. Сохраните его как DOCX и загрузите снова.') from exc
 
 core = WebCore(bot_dir=DATA, state_dir=DATA, require_ai=False)
+template_library = TemplateLibrary(DATA, core.CORE_DIR, TEMPLATES)
 ai_configured = lambda: bool(core.YANDEX_FOLDER_ID and core.YANDEX_API_KEY)
 
 class Terms(BaseModel):
@@ -174,11 +181,14 @@ def run_job(job_id, action):
         update(job_id, 'failed', error=str(exc))
     except AIServiceError:
         update(job_id, 'failed', error='Не удалось получить ответ Yandex AI. Проверьте ключи, квоту и соединение с Yandex Cloud.')
+    except TemplateError as exc:
+        update(job_id, 'failed', error=str(exc))
     except Exception as exc:
         logger.error('Document task failed: %s', type(exc).__name__)
         update(job_id, 'failed', error='Не удалось подготовить документ. Проверьте данные и доступность диска.')
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+register_template_routes(app, template_library)
 
 @app.middleware('http')
 async def authorize(request: Request, call_next):
@@ -191,7 +201,10 @@ async def authorize(request: Request, call_next):
 def health():
     usage = core.get_ai_usage_stats(recent_limit=1)
     usage.pop('recent', None)
-    return {'aiConfigured': ai_configured(), 'templates': len(TEMPLATES), 'usage': usage}
+    with template_library.connection() as catalog:
+        if catalog.execute('SELECT count(*) FROM template_active').fetchone()[0] != len(TEMPLATES):
+            raise HTTPException(503, 'Библиотека шаблонов недоступна')
+    return {'aiConfigured': ai_configured(), 'templates': len(TEMPLATES), 'templateLibrary': True, 'usage': usage}
 
 @app.get('/jobs')
 def jobs():
@@ -266,7 +279,17 @@ async def extract(requestId: str = Form(...), mode: str = Form('text'), text: st
             source.unlink(missing_ok=True)
         raise
 
-def generate_document(data: Generation, job_id: str):
+def generate_document(data: Generation, job_id: str, version: int | None = None):
+    # Resolve the exact immutable revision reserved when the job was queued.
+    # Never fall back to a file baked into the Docker image.
+    meta, raw = template_library.snapshot(data.template, version)
+    with TemporaryDirectory(prefix='template-', dir=DATA) as directory:
+        template_path = Path(directory) / 'template.docm'
+        template_path.write_bytes(raw)
+        return generate_from_template(data, job_id, template_path, meta)
+
+
+def generate_from_template(data: Generation, job_id: str, template_path: Path, meta):
     now = datetime.now()
     ending = now + relativedelta(years=1)
     fields = data.ser_fields.model_dump()
@@ -276,15 +299,13 @@ def generate_document(data: Generation, job_id: str):
             'ending': f'{ending.day} {core.GENITIVUS[ending.month]} {ending.year} года', 'ser_fields': fields}
     users = {1: user}
     contract_number = core.get_bot_doc_num(users, 1)
-    kwargs = {'allow_incomplete': data.allowIncomplete}
+    kwargs = {'allow_incomplete': data.allowIncomplete, 'template_path': template_path}
     if data.template == 'ser':
         output = core.bot_insert_req_ser(users, 1, data.company, contract_number, core.integer_texted(data.ser_fields.cost_month * data.ser_fields.months_count), **kwargs)
     else:
         invoice = core.get_bot_count_num(users, 1)
         args = [users, 1, data.company, contract_number, invoice, core.integer_texted(data.cost)]
         if data.template in {'specons', 'ser_one_time'}:
-            if data.template == 'ser_one_time':
-                kwargs['template_path'] = core.CORE_DIR / 'ООО СПЕЦЭНЕРГОРАЗВИТИЕ_РАЗОВЫЕ.docm'
             output = core.bot_insert_req(*args, core.integer_texted(user['count_sending']), **kwargs)
             if data.template == 'ser_one_time':
                 fill_service_specification(output, [item.model_dump() for item in data.one_time_services])
@@ -298,6 +319,7 @@ def generate_document(data: Generation, job_id: str):
     final.parent.mkdir(exist_ok=True)
     shutil.move(output, final)
     return {'number': contract_number, 'fileName': final.name, 'draft': data.allowIncomplete,
+            'templateId': data.template, 'templateVersion': meta['version'], 'templateSha256': meta['sha256'],
             'missing': core.validate_company_data(data.company, raise_on_missing=False)}
 
 @app.post('/generate', status_code=202)
@@ -312,7 +334,8 @@ def generate(data: Generation):
     job_id = data.requestId
     signature = hashlib.sha256(data.model_dump_json().encode()).hexdigest()
     title = data.company[13] or data.company[4] or 'Черновик документа'
-    return create_job(job_id, 'generate', title, signature, lambda: generate_document(data, job_id))
+    version = template_library.active_version(data.template)
+    return create_job(job_id, 'generate', title, signature, lambda: generate_document(data, job_id, version))
 
 @app.get('/files/{job_id}')
 def download(job_id: str):
