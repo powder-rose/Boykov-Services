@@ -287,10 +287,21 @@ class WorkerTests(unittest.TestCase):
                 block = next(b for b in editor['blocks'] if b['editable'] and len(b['text']) > 100
                     and 'autozamena' not in b['text'])
                 marker = f'Условие новой версии {key}.'
+                changes = [{'id': block['id'], 'text': block['text'] + ' ' + marker}]
+                if key == 'specons':
+                    changes[0]['format'] = {'align': 'center', 'fontSize': 15, 'bold': True}
+                    preview = self.client.post(base + '/preview', json={
+                        **actor, 'expectedVersion': current, 'draftId': editor['draft']['id'], 'changes': changes,
+                    })
+                    self.assertEqual(preview.status_code, 200, preview.text[:1000])
+                    self.assertTrue(preview.json()['layout']['sections'])
+                    self.assertIn(marker, next(b['text'] for b in preview.json()['blocks'] if b['id'] == block['id']))
+                    self.assertEqual(self.client.get(base + '/preview').json()['active']['version'], current)
+                    self.assertIsNone(self.client.get(base + '/preview').json()['draft'])
                 publication = self.client.post(base + '/publish', json={
                     **actor, 'expectedVersion': current,
                     'draftId': editor['draft']['id'] if editor['draft'] else None,
-                    'changes': [{'id': block['id'], 'text': block['text'] + ' ' + marker}],
+                    'changes': changes,
                     'note': 'Проверка связи с генератором',
                 })
                 self.assertEqual(publication.status_code, 200, publication.text)
@@ -309,6 +320,11 @@ class WorkerTests(unittest.TestCase):
                     if key == 'specons':
                         self.assertEqual(archive.read('word/vbaProject.bin'),
                                          unpack(original.content)['word/vbaProject.bin'])
+                        ns = {'w': service.core.WORD_NS}
+                        formatted = next(p for p in etree.fromstring(archive.read('word/document.xml')).xpath('.//w:p', namespaces=ns)
+                                         if marker in ''.join(p.xpath('.//w:t/text()', namespaces=ns)))
+                        self.assertEqual(formatted.xpath('./w:pPr/w:jc/@w:val', namespaces=ns), ['center'])
+                        self.assertIn('30', formatted.xpath('.//w:rPr/w:sz/@w:val', namespaces=ns))
                     self.assertEqual(archive.testzip(), None)
 
     def test_z_queued_generation_keeps_the_revision_reserved_at_submission(self):

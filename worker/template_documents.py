@@ -499,6 +499,51 @@ def replace_text(p, value):
             node.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
 
 
+def format_paragraph(p, formatting):
+    """Apply only explicitly selected paragraph-wide attributes to Word XML."""
+    if not formatting:
+        return
+    allowed = {'align', 'fontSize', 'bold', 'italic', 'underline'}
+    if (not isinstance(formatting, dict) or formatting.keys() - allowed or
+            any(type(formatting[k]) is not bool for k in ('bold', 'italic', 'underline') if k in formatting) or
+            ('fontSize' in formatting and (type(formatting['fontSize']) is not int or not 8 <= formatting['fontSize'] <= 36)) or
+            ('align' in formatting and formatting['align'] not in ('left', 'center', 'right', 'justify'))):
+        raise TemplateError('Неподдерживаемое форматирование абзаца.')
+
+    def property_node(parent, name):
+        node = parent.find(W + name)
+        if node is None:
+            node = etree.Element(W + name)
+            parent.insert(0, node)
+        return node
+
+    def set_value(parent, name, value):
+        node = parent.find(W + name)
+        if node is None:
+            node = etree.SubElement(parent, W + name)
+        node.set(W + 'val', value)
+
+    if 'align' in formatting:
+        props = property_node(p, 'pPr')
+        jc = props.find(W + 'jc')
+        if jc is None:
+            jc = etree.Element(W + 'jc')
+            after = {'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle', 'rPr', 'sectPr', 'pPrChange'}
+            index = next((i for i, node in enumerate(props) if etree.QName(node).localname in after), len(props))
+            props.insert(index, jc)
+        jc.set(W + 'val', 'both' if formatting['align'] == 'justify' else formatting['align'])
+    targets = {'bold': ('b', 'bCs'), 'italic': ('i', 'iCs'), 'underline': ('u',), 'fontSize': ('sz', 'szCs')}
+    for run in p.xpath('.//w:r[w:t]', namespaces=NS):
+        for field, names in targets.items():
+            if field not in formatting:
+                continue
+            props = property_node(run, 'rPr')
+            value = formatting[field]
+            for name in names:
+                val = str(value * 2) if field == 'fontSize' else ('single' if value else 'none') if field == 'underline' else ('1' if value else '0')
+                set_value(props, name, val)
+
+
 class TemplateDocuments:
     def __init__(self, directory: Path | None = None, originals=None):
         self.originals = {key: unpack(originals[key] if originals is not None else
@@ -595,19 +640,20 @@ class TemplateDocuments:
         return {'blocks': blocks, 'fields': [dict(f, present=f['key'] in present) for f in self.fields[key]],
                 'problems': problems}
 
-    def edit(self, key, raw, changes):
+    def edit(self, key, raw, changes, *, validate=True):
         files = unpack(raw)
-        pending = dict(changes)
+        pending = {change[0]: (change[1], change[2] if len(change) > 2 else None) for change in changes}
         if len(pending) != len(changes):
             raise TemplateError('Повторяющееся изменение абзаца.')
         modified = {}
         for name, root, node, block in paragraphs(files):
             if block['id'] not in pending:
                 continue
-            value = pending.pop(block['id'])
+            value, formatting = pending.pop(block['id'])
             if not block['editable'] or not isinstance(value, str) or len(value) > 8000 or re.search(r'[\x00-\x1f]', value):
                 raise TemplateError('Этот абзац нельзя изменить таким способом.')
             replace_text(node, value)
+            format_paragraph(node, formatting)
             modified[name] = root
         if pending:
             raise TemplateError('Изменяемый абзац не найден. Откройте шаблон заново.')
@@ -615,6 +661,11 @@ class TemplateDocuments:
             files[name] = serialize(root)
         updated = pack(files) if modified else raw
         info = self.inspect(key, updated)
-        if info['problems']:
+        if validate and info['problems']:
             raise TemplateError('; '.join(info['problems']))
         return updated
+
+    def preview(self, key, raw):
+        from .template_preview import build_layout
+        info = self.inspect(key, raw)
+        return {**info, 'layout': build_layout(unpack(raw), info['blocks'])}

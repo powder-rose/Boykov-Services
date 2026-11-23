@@ -189,7 +189,20 @@ class TemplateLibrary:
             raw = self._content(draft if draft and not stale else row)
             details = {'id': draft['id'], 'filename': draft['filename'], 'createdAt': draft['created_at']} if draft else None
         return {'template': self.catalog[key], 'active': meta, 'draft': details,
-                'staleDraft': stale, **self.documents.inspect(key, raw)}
+                'staleDraft': stale, **self.documents.preview(key, raw)}
+
+    def preview(self, key, expected, owner, changes, draft_id=None):
+        """Apply pending changes in memory only, without changing any revision."""
+        with self.connection() as db:
+            row = self._expected(db, key, expected)
+            if draft_id:
+                row = db.execute('SELECT * FROM template_drafts WHERE id=? AND template_id=? AND owner_id=?',
+                                 (draft_id, key, owner)).fetchone()
+                if not row or row['base_version'] != expected:
+                    raise TemplateConflict('Черновик устарел. Откройте шаблон заново.')
+            raw = self._content(row)
+        content = self.documents.edit(key, raw, changes, validate=False)
+        return self.documents.preview(key, content)
 
     def upload(self, key, expected, owner, filename, raw):
         self._key(key)

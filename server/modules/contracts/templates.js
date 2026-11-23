@@ -41,6 +41,53 @@ const fileName = (value) => {
   return value;
 };
 
+const validFormat = (format) =>
+  format === undefined ||
+  (format !== null &&
+    typeof format === "object" &&
+    !Array.isArray(format) &&
+    Object.entries(format).every(([key, value]) => {
+      if (key === "align")
+        return ["left", "center", "right", "justify"].includes(value);
+      if (key === "fontSize")
+        return Number.isInteger(value) && value >= 8 && value <= 36;
+      return (
+        ["bold", "italic", "underline"].includes(key) &&
+        typeof value === "boolean"
+      );
+    }));
+
+function templateChanges(req) {
+  const input = req.body || {};
+  if (
+    !Array.isArray(input.changes) ||
+    input.changes.length > 1000 ||
+    input.changes.some(
+      (c) =>
+        !c ||
+        typeof c.id !== "string" ||
+        c.id.length > 100 ||
+        typeof c.text !== "string" ||
+        c.text.length > 8000 ||
+        !validFormat(c.format),
+    ) ||
+    (input.note !== undefined &&
+      (typeof input.note !== "string" || input.note.length > 300))
+  )
+    throw fail("Проверьте изменения шаблона.");
+  return {
+    expectedVersion: version(input.expectedVersion),
+    draftId: input.draftId || null,
+    changes: input.changes.map(({ id, text, format }) => ({
+      id,
+      text,
+      ...(format ? { format } : {}),
+    })),
+    note: input.note || "",
+    ...actor(req),
+  };
+}
+
 export function registerTemplateRoutes(app, worker, upload) {
   const prefix = "/api/contracts/templates";
   const json = async (url, body) =>
@@ -73,6 +120,12 @@ export function registerTemplateRoutes(app, worker, upload) {
       ),
     ),
   );
+  app.get(prefix + "/:id/preview", async (req, res) =>
+    res.json(await json(route(req, "/preview"))),
+  );
+  app.post(prefix + "/:id/preview", checkEditor, async (req, res) =>
+    res.json(await json(route(req, "/preview"), templateChanges(req))),
+  );
   app.post(
     prefix + "/:id/draft",
     checkEditor,
@@ -98,33 +151,9 @@ export function registerTemplateRoutes(app, worker, upload) {
   app.post(prefix + "/:id/discard", checkEditor, async (req, res) =>
     res.json(await json(route(req, "/discard"), actor(req))),
   );
-  app.post(prefix + "/:id/publish", checkEditor, async (req, res) => {
-    const input = req.body || {};
-    if (
-      !Array.isArray(input.changes) ||
-      input.changes.length > 1000 ||
-      input.changes.some(
-        (c) =>
-          !c ||
-          typeof c.id !== "string" ||
-          c.id.length > 100 ||
-          typeof c.text !== "string" ||
-          c.text.length > 8000,
-      ) ||
-      (input.note !== undefined &&
-        (typeof input.note !== "string" || input.note.length > 300))
-    )
-      throw fail("Проверьте изменения шаблона.");
-    res.json(
-      await json(route(req, "/publish"), {
-        expectedVersion: version(input.expectedVersion),
-        draftId: input.draftId || null,
-        changes: input.changes.map(({ id, text }) => ({ id, text })),
-        note: input.note || "",
-        ...actor(req),
-      }),
-    );
-  });
+  app.post(prefix + "/:id/publish", checkEditor, async (req, res) =>
+    res.json(await json(route(req, "/publish"), templateChanges(req))),
+  );
   app.post(prefix + "/:id/restore", checkEditor, async (req, res) =>
     res.json(
       await json(route(req, "/restore"), {

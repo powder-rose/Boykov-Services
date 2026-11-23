@@ -5,22 +5,28 @@ import {
   Check,
   CheckCircle2,
   ChevronLeft,
-  ChevronRight,
   FilePenLine,
   FileText,
   History,
   Layers3,
-  LockKeyhole,
   Plus,
   RotateCcw,
   Search,
   ShieldCheck,
   Upload,
   X,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { api, dateTime, errorText, post } from "../../api";
 import { Loading, Notice, TitleDot } from "../../components/Common";
 import "./TemplateLibrary.css";
+import WordEditor, {
+  type Block,
+  type Changes,
+  type ParagraphFormat,
+  type WordLayout,
+} from "./WordEditor";
 
 export type TemplateVersion = {
   version: number;
@@ -43,13 +49,6 @@ export type TemplateCatalog = {
   templates: TemplateSummary[];
   canEdit: boolean;
 };
-type Block = {
-  id: string;
-  text: string;
-  editable: boolean;
-  location: string;
-  fieldsAllowed: boolean;
-};
 type Field = {
   key: string;
   label: string;
@@ -64,10 +63,10 @@ type Editor = {
   blocks: Block[];
   fields: Field[];
   problems: string[];
+  layout: WordLayout;
 };
 type HistoryData = { activeVersion: number; versions: TemplateVersion[] };
 const base = "/contracts/templates";
-const PAGE_SIZE = 18;
 const sources: Record<TemplateVersion["source"], string> = {
   initial: "Исходная версия",
   edit: "Редактирование на сайте",
@@ -197,9 +196,9 @@ export default function TemplateLibrary({
                     {catalog.canEdit ? (
                       <FilePenLine size={16} />
                     ) : (
-                      <History size={16} />
+                      <BookOpen size={16} />
                     )}
-                    {catalog.canEdit ? "Редактировать" : "История версий"}
+                    {catalog.canEdit ? "Редактировать" : "Просмотреть"}
                   </button>
                   <a
                     className="button secondary tl-download-icon"
@@ -224,22 +223,6 @@ export default function TemplateLibrary({
   );
 }
 
-function Highlighted({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/(autozamena_\d{3})/gi).map((part, i) =>
-        /^autozamena_\d{3}$/i.test(part) ? (
-          <mark key={i} className="tl-field-mark">
-            {part}
-          </mark>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
-      )}
-    </>
-  );
-}
-
 function EditorWorkspace({
   item,
   canEdit,
@@ -253,14 +236,21 @@ function EditorWorkspace({
 }) {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [history, setHistory] = useState<HistoryData | null>(null);
-  const [tab, setTab] = useState<"text" | "history">(
-    canEdit ? "text" : "history",
-  );
-  const [changes, setChanges] = useState<Record<string, string>>({});
+  const [tab, setTab] = useState<"text" | "history">("text");
+  const [edits, setEdits] = useState<{
+    current: Changes;
+    undo: Changes[];
+    redo: Changes[];
+  }>({ current: {}, undo: [], redo: [] });
+  const changes = edits.current;
   const [selected, setSelected] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
   const [fieldQuery, setFieldQuery] = useState("");
-  const [page, setPage] = useState(0);
+  const [preview, setPreview] = useState(!canEdit);
+  const [previewData, setPreviewData] = useState<Pick<
+    Editor,
+    "layout" | "blocks" | "problems"
+  > | null>(null);
+  const [showFields, setShowFields] = useState(true);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -281,17 +271,89 @@ function EditorWorkspace({
   const changedCount = Object.keys(changes).length;
   const draft = editor?.draft && !editor.staleDraft ? editor.draft : null;
 
+  function resetChanges() {
+    setEdits({ current: {}, undo: [], redo: [] });
+    setPreviewData(null);
+    setPreview(!canEdit);
+  }
+  function record(next: (previous: Changes) => Changes) {
+    setEdits((previous) => {
+      const current = next(previous.current);
+      if (JSON.stringify(current) === JSON.stringify(previous.current))
+        return previous;
+      return {
+        current,
+        undo: [...previous.undo.slice(-79), previous.current],
+        redo: [],
+      };
+    });
+  }
+  function undo() {
+    setEdits((previous) =>
+      previous.undo.length
+        ? {
+            current: previous.undo.at(-1)!,
+            undo: previous.undo.slice(0, -1),
+            redo: [previous.current, ...previous.redo],
+          }
+        : previous,
+    );
+  }
+  function redo() {
+    setEdits((previous) =>
+      previous.redo.length
+        ? {
+            current: previous.redo[0],
+            undo: [...previous.undo.slice(-79), previous.current],
+            redo: previous.redo.slice(1),
+          }
+        : previous,
+    );
+  }
+  function payload() {
+    return {
+      expectedVersion: active.version,
+      draftId: draft?.id ?? null,
+      changes: Object.entries(changes).map(([id, change]) => ({
+        id,
+        ...change,
+      })),
+    };
+  }
+  async function openPreview() {
+    if (preview || busy || !editor) return;
+    setSelected(null);
+    setError("");
+    if (!changedCount) {
+      setPreviewData(null);
+      setPreview(true);
+      return;
+    }
+    setBusy(true);
+    try {
+      setPreviewData(
+        await post<Pick<Editor, "layout" | "blocks" | "problems">>(
+          endpoint + "/preview",
+          payload(),
+        ),
+      );
+      setPreview(true);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function fetchState() {
     const [newHistory, newEditor] = await Promise.all([
       api<HistoryData>(endpoint + "/history"),
-      canEdit ? api<Editor>(endpoint + "/editor") : Promise.resolve(null),
+      api<Editor>(endpoint + (canEdit ? "/editor" : "/preview")),
     ]);
     setHistory(newHistory);
     setEditor(newEditor);
-    setChanges({});
+    resetChanges();
     setSelected(null);
-    setPage(0);
-    setQuery("");
   }
   async function reloadEditor() {
     if (
@@ -314,7 +376,7 @@ function EditorWorkspace({
     let cancelled = false;
     Promise.all([
       api<HistoryData>(endpoint + "/history"),
-      canEdit ? api<Editor>(endpoint + "/editor") : Promise.resolve(null),
+      api<Editor>(endpoint + (canEdit ? "/editor" : "/preview")),
     ])
       .then(([h, e]) => {
         if (!cancelled) {
@@ -352,7 +414,7 @@ function EditorWorkspace({
           .filter((block) => block.id.startsWith("word/document.xml#"))
           .flatMap(
             (block) =>
-              (changes[block.id] ?? block.text).match(
+              (changes[block.id]?.text ?? block.text).match(
                 /autozamena_\d{3}(?!\d)/gi,
               ) || [],
           ),
@@ -363,24 +425,10 @@ function EditorWorkspace({
     editor?.fields.filter((f) => f.required && !validTags.has(f.key)) || [];
   const requiredCount = editor?.fields.filter((f) => f.required).length || 0;
   const otherProblems =
-    editor?.problems.filter(
+    (previewData?.problems ?? editor?.problems)?.filter(
       (problem) => !problem.startsWith("Не подключены обязательные поля"),
     ) || [];
   const selectedBlock = editor?.blocks.find((b) => b.id === selected);
-  const needle = query.toLocaleLowerCase("ru").trim();
-  const filteredBlocks = (editor?.blocks ?? []).filter(
-    (block) =>
-      !needle ||
-      block.id === selected ||
-      block.text.toLocaleLowerCase("ru").includes(needle) ||
-      (changes[block.id] ?? "").toLocaleLowerCase("ru").includes(needle),
-  );
-  const pages = Math.max(1, Math.ceil(filteredBlocks.length / PAGE_SIZE));
-  const pageIndex = Math.min(page, pages - 1);
-  const visibleBlocks = filteredBlocks.slice(
-    pageIndex * PAGE_SIZE,
-    (pageIndex + 1) * PAGE_SIZE,
-  );
   const filteredFields = (editor?.fields ?? []).filter((f) =>
     (f.label + " " + f.key)
       .toLocaleLowerCase("ru")
@@ -388,16 +436,33 @@ function EditorWorkspace({
   );
 
   function updateBlock(block: Block, value: string) {
-    setChanges((previous) => {
+    record((previous) => {
       const next = { ...previous };
-      if (value === block.text) delete next[block.id];
-      else next[block.id] = value;
+      if (value === block.text && !previous[block.id]?.format)
+        delete next[block.id];
+      else next[block.id] = { ...previous[block.id], text: value };
+      return next;
+    });
+  }
+  function updateFormat(block: Block, format: ParagraphFormat) {
+    record((previous) => ({
+      ...previous,
+      [block.id]: {
+        text: previous[block.id]?.text ?? block.text,
+        format: { ...previous[block.id]?.format, ...format },
+      },
+    }));
+  }
+  function resetParagraph(block: Block) {
+    record((previous) => {
+      const next = { ...previous };
+      delete next[block.id];
       return next;
     });
   }
   function insertField(field: Field) {
     if (!selectedBlock || !selectedBlock.fieldsAllowed || busy) return;
-    const content = changes[selectedBlock.id] ?? selectedBlock.text;
+    const content = changes[selectedBlock.id]?.text ?? selectedBlock.text;
     const start = textarea.current?.selectionStart ?? content.length;
     const end = textarea.current?.selectionEnd ?? start;
     updateBlock(
@@ -436,10 +501,8 @@ function EditorWorkspace({
         body: form,
       });
       setEditor(draftEditor);
-      setChanges({});
+      resetChanges();
       setSelected(null);
-      setPage(0);
-      setQuery("");
       setTab("text");
       setMessage(
         file.name.toLowerCase().endsWith(".docm")
@@ -459,10 +522,8 @@ function EditorWorkspace({
     setMessage("");
     try {
       setEditor(await post<Editor>(endpoint + "/discard", {}));
-      setChanges({});
+      resetChanges();
       setSelected(null);
-      setQuery("");
-      setPage(0);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -478,12 +539,7 @@ function EditorWorkspace({
       const result =
         confirm === "publish"
           ? await post<{ active: TemplateVersion }>(endpoint + "/publish", {
-              expectedVersion: active.version,
-              draftId: draft?.id ?? null,
-              changes: Object.entries(changes).map(([id, text]) => ({
-                id,
-                text,
-              })),
+              ...payload(),
               note,
             })
           : await post<{ active: TemplateVersion }>(endpoint + "/restore", {
@@ -495,7 +551,7 @@ function EditorWorkspace({
       setMessage(
         `Версия v${result.active.version} опубликована. Она используется при создании новых договоров.`,
       );
-      setChanges({});
+      resetChanges();
       await reload();
       await fetchState();
     } catch (e) {
@@ -513,11 +569,13 @@ function EditorWorkspace({
       onBack();
   }
   const canPublish = Boolean(
+    canEdit &&
     editor &&
     (draft || changedCount) &&
     !editor.staleDraft &&
     !newerVersion &&
     !missing.length &&
+    !previewData?.problems.length &&
     !busy,
   );
   return (
@@ -624,15 +682,13 @@ function EditorWorkspace({
         </Notice>
       )}
       <div className="tl-tabs" aria-label="Работа с шаблоном">
-        {canEdit && (
-          <button
-            aria-pressed={tab === "text"}
-            className={tab === "text" ? "selected" : ""}
-            onClick={() => setTab("text")}
-          >
-            <BookOpen size={16} /> Текст и поля
-          </button>
-        )}
+        <button
+          aria-pressed={tab === "text"}
+          className={tab === "text" ? "selected" : ""}
+          onClick={() => setTab("text")}
+        >
+          <BookOpen size={16} /> Документ
+        </button>
         <button
           aria-pressed={tab === "history"}
           className={tab === "history" ? "selected" : ""}
@@ -712,9 +768,8 @@ function EditorWorkspace({
               <div>
                 <strong>Автозамена подключена</strong>
                 <p>
-                  Кнопка запуска и служебная таблица защищены. Изменяйте только
-                  текст договора и используйте готовые поля. При загрузке DOCM
-                  старые макросы автоматически заменяются на встроенные.
+                  Текст и оформление можно править на листе. Макрос и служебная
+                  таблица скрыты и защищены, при импорте DOCM макрос заменяется.
                 </p>
               </div>
               {(draft || changedCount > 0) && (
@@ -734,233 +789,161 @@ function EditorWorkspace({
                 ))}
               </Notice>
             )}
-            <div className="tl-editor-grid">
-              <section className="panel tl-document">
-                <div className="tl-document-header">
-                  <div>
-                    <h3>Текст документа</h3>
-                    <p>
-                      Выберите абзац или ячейку. Оформление Word сохраняется.
-                    </p>
-                  </div>
-                  <label className="tl-search">
-                    <Search size={17} />
-                    <input
-                      value={query}
-                      placeholder="Найти текст…"
-                      aria-label="Найти текст в шаблоне"
-                      onChange={(e) => {
-                        setQuery(e.target.value);
-                        setPage(0);
-                        setSelected(null);
-                      }}
-                    />
-                  </label>
-                </div>
-                <div className="tl-paper">
-                  <div className="tl-paper-meta">
-                    <span>WORD / ТЕКСТОВЫЙ РЕЖИМ</span>
-                    <span>{filteredBlocks.length} блоков</span>
-                  </div>
-                  {visibleBlocks.length ? (
-                    visibleBlocks.map((block) => {
-                      const current = changes[block.id] ?? block.text;
-                      const editing = selected === block.id && block.editable;
-                      return (
-                        <div
-                          key={block.id}
-                          className={`tl-block ${editing ? "editing" : ""} ${changes[block.id] !== undefined ? "modified" : ""}`}
-                        >
-                          <div className="tl-block-label">
-                            <span>{block.location}</span>
-                            {!block.editable ? (
-                              <span title="Сложный элемент Word">
-                                <LockKeyhole size={12} /> Только Word
-                              </span>
-                            ) : changes[block.id] !== undefined ? (
-                              <span>Изменён</span>
-                            ) : null}
-                          </div>
-                          {editing ? (
-                            <textarea
-                              ref={textarea}
-                              className="tl-edit-area"
-                              aria-label="Текст выбранного абзаца"
-                              value={current}
-                              rows={Math.max(
-                                3,
-                                Math.min(11, Math.ceil(current.length / 75)),
-                              )}
-                              maxLength={8000}
-                              disabled={busy}
-                              onChange={(e) =>
-                                updateBlock(
-                                  block,
-                                  e.target.value.replace(/[\r\n\t]/g, " "),
-                                )
-                              }
-                            />
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={!block.editable || busy}
-                              className="tl-paragraph"
-                              onClick={() => {
-                                setSelected(block.id);
-                                requestAnimationFrame(() =>
-                                  textarea.current?.focus(),
-                                );
-                              }}
-                            >
-                              <span>
-                                <Highlighted text={current || "Пустой абзац"} />
-                              </span>
-                              {block.editable && <FilePenLine size={15} />}
-                            </button>
-                          )}
-                          {editing && (
-                            <div className="tl-block-actions">
-                              <button
-                                className="text-button"
-                                disabled={busy}
-                                onClick={() => updateBlock(block, block.text)}
-                              >
-                                Отменить правку
-                              </button>
-                              <button
-                                className="text-button"
-                                onClick={() => setSelected(null)}
-                              >
-                                <Check size={14} /> Готово
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
+            {canEdit && !preview && (
+              <div className="we-inspector-toggle">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setShowFields((value) => !value)}
+                >
+                  {showFields ? (
+                    <PanelRightClose size={16} />
                   ) : (
-                    <div className="tl-no-results">
-                      По этому запросу ничего не найдено.
-                    </div>
+                    <PanelRightOpen size={16} />
                   )}
-                </div>
-                <div className="tl-pagination">
-                  <button
-                    className="button secondary compact"
-                    disabled={pageIndex === 0}
-                    onClick={() => {
-                      setPage(pageIndex - 1);
-                      setSelected(null);
-                    }}
-                  >
-                    <ChevronLeft size={16} /> Назад
-                  </button>
-                  <span>
-                    {pageIndex + 1} из {pages}
-                  </span>
-                  <button
-                    className="button secondary compact"
-                    disabled={pageIndex + 1 >= pages}
-                    onClick={() => {
-                      setPage(pageIndex + 1);
-                      setSelected(null);
-                    }}
-                  >
-                    Далее <ChevronRight size={16} />
-                  </button>
-                </div>
-              </section>
-              <aside className="tl-inspector">
-                <section className="panel tl-fields">
-                  <div className="tl-fields-head">
-                    <div>
-                      <span className="eyebrow">ДАННЫЕ ИЗ ГЕНЕРАТОРА</span>
-                      <h3>Поля автозамены</h3>
+                  {showFields ? "Скрыть панель полей" : "Показать панель полей"}
+                </button>
+              </div>
+            )}
+            <div
+              className={
+                "tl-editor-grid word-grid" +
+                (preview || !showFields || !canEdit ? " preview-only" : "")
+              }
+            >
+              {editor.layout ? (
+                <WordEditor
+                  layout={
+                    preview && previewData ? previewData.layout : editor.layout
+                  }
+                  blocks={
+                    preview && previewData ? previewData.blocks : editor.blocks
+                  }
+                  changes={changes}
+                  selected={selected}
+                  textarea={textarea}
+                  onSelect={setSelected}
+                  onText={updateBlock}
+                  onFormat={updateFormat}
+                  onResetParagraph={resetParagraph}
+                  onUndo={undo}
+                  onRedo={redo}
+                  canUndo={edits.undo.length > 0}
+                  canRedo={edits.redo.length > 0}
+                  preview={preview}
+                  onPreview={() => void openPreview()}
+                  onEdit={() => {
+                    setPreview(false);
+                    setPreviewData(null);
+                  }}
+                  canEdit={canEdit && !newerVersion && !editor.staleDraft}
+                  busy={busy}
+                />
+              ) : (
+                <Notice>
+                  Обновите worker документов для отображения предпросмотра.
+                </Notice>
+              )}
+              {canEdit && !preview && showFields && (
+                <aside className="tl-inspector">
+                  <section className="panel tl-fields">
+                    <div className="tl-fields-head">
+                      <div>
+                        <span className="eyebrow">ДАННЫЕ ИЗ ГЕНЕРАТОРА</span>
+                        <h3>Поля автозамены</h3>
+                      </div>
+                      <span className="tl-field-count">
+                        {requiredCount - missing.length}/{requiredCount}
+                      </span>
                     </div>
-                    <span className="tl-field-count">
-                      {requiredCount - missing.length}/{requiredCount}
-                    </span>
-                  </div>
-                  <div className="tl-coverage">
-                    <progress
-                      max={requiredCount || 1}
-                      value={requiredCount - missing.length}
-                    />
-                    <span>
-                      {missing.length
-                        ? `Не подключено: ${missing.length}`
-                        : "Обязательные поля подключены"}
-                    </span>
-                  </div>
-                  <p className="tl-field-instruction">
-                    {selectedBlock?.fieldsAllowed
-                      ? "Выделите заменяемый текст и нажмите на нужное поле."
-                      : "Выберите абзац основного текста, чтобы вставить поле."}
-                  </p>
-                  <label className="tl-search">
-                    <Search size={16} />
-                    <input
-                      value={fieldQuery}
-                      onChange={(e) => setFieldQuery(e.target.value)}
-                      placeholder="Найти поле…"
-                      aria-label="Найти поле автозамены"
-                    />
-                  </label>
-                  <div className="tl-field-list">
-                    {filteredFields.map((f) => (
-                      <button
-                        key={f.key}
-                        className="tl-field-row"
-                        type="button"
-                        disabled={!selectedBlock?.fieldsAllowed || busy}
-                        onClick={() => insertField(f)}
-                        title={f.label}
-                      >
-                        <span
-                          className={
-                            validTags.has(f.key)
-                              ? "tl-field-state present"
-                              : f.required
-                                ? "tl-field-state missing"
-                                : "tl-field-state"
+                    <div className="tl-coverage">
+                      <progress
+                        max={requiredCount || 1}
+                        value={requiredCount - missing.length}
+                      />
+                      <span>
+                        {missing.length
+                          ? `Не подключено: ${missing.length}`
+                          : "Обязательные поля подключены"}
+                      </span>
+                    </div>
+                    <p className="tl-field-instruction">
+                      {selectedBlock?.fieldsAllowed
+                        ? "Выделите заменяемый текст и нажмите на нужное поле."
+                        : "Выберите абзац основного текста, чтобы вставить поле."}
+                    </p>
+                    <label className="tl-search">
+                      <Search size={16} />
+                      <input
+                        value={fieldQuery}
+                        onChange={(e) => setFieldQuery(e.target.value)}
+                        placeholder="Найти поле…"
+                        aria-label="Найти поле автозамены"
+                      />
+                    </label>
+                    <div className="tl-field-list">
+                      {filteredFields.map((f) => (
+                        <button
+                          key={f.key}
+                          className="tl-field-row"
+                          type="button"
+                          disabled={
+                            !selectedBlock?.fieldsAllowed ||
+                            busy ||
+                            newerVersion ||
+                            editor.staleDraft
                           }
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => insertField(f)}
+                          title={f.label}
                         >
-                          {validTags.has(f.key) ? (
-                            <Check size={13} />
-                          ) : (
-                            <Plus size={13} />
-                          )}
-                        </span>
-                        <span>
-                          <strong>{f.label}</strong>
-                          <small>
-                            {f.key}
-                            {!f.required ? " · необязательное" : ""}
-                          </small>
-                        </span>
-                        <Plus size={15} className="tl-insert-icon" />
-                      </button>
-                    ))}
-                  </div>
-                </section>
-                <section className="panel tl-editor-tip">
-                  <span className="tl-card-icon tl-energy">
-                    <FileText size={22} />
-                  </span>
-                  <h3>Нужна другая вёрстка?</h3>
-                  <p>
-                    Для добавления таблиц, изображений и сложного форматирования
-                    скачайте DOCX, измените его в Word и загрузите новую версию.
-                    Поля вида autozamena_001 оставляйте в тексте.
-                  </p>
-                  <a
-                    className="text-button"
-                    href={versionFile(item.id, active.version, "docx")}
-                  >
-                    <ArrowDownToLine size={16} /> Скачать DOCX
-                  </a>
-                </section>
-              </aside>
+                          <span
+                            className={
+                              validTags.has(f.key)
+                                ? "tl-field-state present"
+                                : f.required
+                                  ? "tl-field-state missing"
+                                  : "tl-field-state"
+                            }
+                          >
+                            {validTags.has(f.key) ? (
+                              <Check size={13} />
+                            ) : (
+                              <Plus size={13} />
+                            )}
+                          </span>
+                          <span>
+                            <strong>{f.label}</strong>
+                            <small>
+                              {f.key}
+                              {!f.required ? " · необязательное" : ""}
+                            </small>
+                          </span>
+                          <Plus size={15} className="tl-insert-icon" />
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                  <section className="panel tl-editor-tip">
+                    <span className="tl-card-icon tl-energy">
+                      <FileText size={22} />
+                    </span>
+                    <h3>Нужна другая вёрстка?</h3>
+                    <p>
+                      Для добавления таблиц, изображений и сложного
+                      форматирования скачайте DOCX, измените его в Word и
+                      загрузите новую версию. Поля вида autozamena_001
+                      оставляйте в тексте.
+                    </p>
+                    <a
+                      className="text-button"
+                      href={versionFile(item.id, active.version, "docx")}
+                    >
+                      <ArrowDownToLine size={16} /> Скачать DOCX
+                    </a>
+                  </section>
+                </aside>
+              )}
             </div>
           </>
         )

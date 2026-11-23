@@ -102,3 +102,71 @@ test("template routes are private; edits use the employee from the session, not 
   );
   assert.equal(calls.length, last);
 });
+
+test("document preview is private, published previews never receive a draft owner, and formatting is validated", async (t) => {
+  const calls = [];
+  const fixture = await accountFixture(t, async (route, options) => {
+    calls.push({ route, options });
+    return Response.json({ layout: { sections: [], extras: [], images: {} } });
+  });
+  const path = "/contracts/templates/specons/preview";
+  const shared = await fixture.login(null);
+  const sales = await fixture.make("word.editor", "Редактор Word");
+  const cookie = await fixture.login(sales.login);
+  assert.equal((await fixture.request(path)).status, 401);
+  assert.equal((await fixture.api(path, "GET", undefined, shared)).status, 200);
+  assert.equal(calls.at(-1).route, "/templates/specons/preview");
+  const input = {
+    expectedVersion: 1,
+    changes: [
+      {
+        id: "word/document.xml#1",
+        text: "Текст",
+        format: {
+          align: "center",
+          fontSize: 15,
+          bold: true,
+          italic: false,
+          underline: true,
+        },
+      },
+    ],
+  };
+  assert.equal((await fixture.api(path, "POST", input, shared)).status, 403);
+  assert.equal(
+    (
+      await fixture.api(
+        path,
+        "POST",
+        { ...input, actorId: fixture.admin.id },
+        cookie,
+      )
+    ).status,
+    200,
+  );
+  const forwarded = JSON.parse(calls.at(-1).options.body);
+  assert.equal(forwarded.actorId, sales.id);
+  assert.deepEqual(forwarded.changes, input.changes);
+  const before = calls.length;
+  for (const format of [
+    { fontSize: 80 },
+    { fontSize: "12" },
+    { bold: "yes" },
+    { align: "middle" },
+    { unsupported: true },
+    null,
+  ]) {
+    assert.equal(
+      (
+        await fixture.api(
+          path,
+          "POST",
+          { ...input, changes: [{ ...input.changes[0], format }] },
+          cookie,
+        )
+      ).status,
+      400,
+    );
+  }
+  assert.equal(calls.length, before);
+});

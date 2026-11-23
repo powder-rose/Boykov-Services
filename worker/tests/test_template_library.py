@@ -185,6 +185,82 @@ class TemplateLibraryTests(unittest.TestCase):
         self.assertEqual(self.library.snapshot(key)[1], raw)
         self.assertEqual(len(self.library.history(key)['versions']), 1)
 
+    def test_word_layout_exposes_all_editor_blocks_without_the_protected_table(self):
+        def walk(nodes):
+            for node in nodes:
+                yield node
+                if node['kind'] == 'table':
+                    for row in node['rows']:
+                        for cell in row:
+                            yield from walk(cell['nodes'])
+        for key in FILES:
+            with self.subTest(key=key):
+                before, raw = self.library.snapshot(key)
+                editor = self.library.editor(key, OWNER)
+                layout = editor['layout']
+                groups = layout['sections'] + layout['extras']
+                nodes = [node for group in groups for node in walk(group['nodes'])]
+                ids = [node['id'] for node in nodes if node['kind'] == 'paragraph' and node['id']]
+                self.assertEqual(len(ids), len(set(ids)))
+                self.assertTrue({b['id'] for b in editor['blocks']} <= set(ids))
+                self.assertTrue(any(node['kind'] == 'table' for node in nodes))
+                self.assertTrue(all(240 <= group['paper']['width'] <= 1200 for group in layout['sections']))
+                self.assertTrue(all(image['src'].startswith('data:image/png;base64,') for image in layout['images'].values()))
+                self.assertFalse(any('СЛУЖЕБНАЯ ТАБЛИЦА' in r.get('text', '') for n in nodes if n['kind'] == 'paragraph' for r in n['runs']))
+                self.assertEqual(self.library.snapshot(key), (before, raw))
+
+    def test_preview_and_publish_share_the_text_and_formatting_pipeline(self):
+        key = 'passport_security'
+        original, raw = self.library.snapshot(key)
+        editor = self.library.editor(key, OWNER)
+        block = next(b for b in editor['blocks'] if b['editable'] and len(b['text']) > 100 and 'autozamena' not in b['text'])
+        value = block['text'] + ' Уточнение условий.'
+        fmt = {'align': 'center', 'fontSize': 15, 'bold': True, 'italic': False, 'underline': True}
+        changes = [(block['id'], value, fmt)]
+        projected = self.library.preview(key, 1, OWNER, changes)
+        self.assertEqual(self.library.snapshot(key), (original, raw))
+        self.assertEqual(next(b for b in projected['blocks'] if b['id'] == block['id'])['text'], value)
+        # Preview tolerates a missing required placeholder so the employee can
+        # review an unfinished draft; publication still refuses it.
+        required = next(f['key'] for f in editor['fields'] if f['required'])
+        removes = [(b['id'], b['text'].replace(required, '')) for b in editor['blocks'] if b['editable'] and required in b['text']]
+        if removes and not any(required in b['text'] for b in editor['blocks'] if not b['editable']):
+            self.assertTrue(self.library.preview(key, 1, OWNER, removes)['problems'])
+            with self.assertRaises(TemplateError):
+                self.library.publish(key, 1, OWNER, 'Анна', '', removes)
+        with self.assertRaises(TemplateError):
+            self.library.publish(key, 1, OWNER, 'Анна', '', [(block['id'], value, {'fontSize': 100})])
+        result = self.library.publish(key, 1, OWNER, 'Анна', 'Проверка редактора Word', changes)
+        self.assertEqual(result['active']['version'], 2)
+        updated = self.library.snapshot(key)[1]
+        self.assertEqual(self.library.editor(key, OWNER)['layout'], projected['layout'])
+        files = unpack(updated)
+        self.assertEqual(macro_parts(files), macro_parts(unpack(raw)))
+        for name, contents in unpack(raw).items():
+            if name != DOC:
+                self.assertEqual(contents, files[name])
+        p = xml(files[DOC]).xpath('.//w:p', namespaces=NS)[int(block['id'].split('#')[1])]
+        self.assertEqual(p.find(W+'pPr').find(W+'jc').get(W+'val'), 'center')
+        for run in p.xpath('.//w:r[w:t]', namespaces=NS):
+            props = run.find(W+'rPr')
+            self.assertEqual(props.find(W+'b').get(W+'val'), '1')
+            self.assertEqual(props.find(W+'sz').get(W+'val'), '30')
+            self.assertEqual(props.find(W+'u').get(W+'val'), 'single')
+        with self.assertRaises(TemplateConflict):
+            self.library.preview(key, 1, OWNER, changes)
+
+    def test_preview_of_personal_draft_is_not_exposed_to_other_people(self):
+        key = 'specons'
+        _, original = self.library.snapshot(key)
+        clean = self.library.documents.clean(key, original)
+        draft = self.library.upload(key, 1, OWNER, 'draft.docx', clean)['draft']
+        with self.assertRaises(TemplateConflict):
+            self.library.preview(key, 1, str(uuid4()), [], draft['id'])
+        self.assertIsNone(self.library.editor(key)['draft'])
+        result = self.library.preview(key, 1, OWNER, [], draft['id'])
+        self.assertTrue(result['layout']['sections'])
+        self.assertEqual(self.library.snapshot(key)[1], original)
+
     def test_missing_catalog_does_not_reseed_from_bundled_templates(self):
         self.library.path.rename(self.directory / 'renamed.sqlite')
         with self.assertRaisesRegex(RuntimeError, 'restore'):

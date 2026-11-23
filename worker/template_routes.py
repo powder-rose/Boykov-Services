@@ -22,6 +22,20 @@ class Change(BaseModel):
     model_config = ConfigDict(extra='forbid')
     id: str = Field(min_length=1, max_length=100)
     text: str = Field(max_length=8000)
+    format: 'ParagraphFormat | None' = None
+
+
+class ParagraphFormat(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    align: Literal['left', 'center', 'right', 'justify'] | None = None
+    fontSize: int | None = Field(default=None, ge=8, le=36)
+    bold: bool | None = None
+    italic: bool | None = None
+    underline: bool | None = None
+
+
+def edits(changes):
+    return [(c.id, c.text, c.format.model_dump(exclude_none=True) if c.format else None) for c in changes]
 
 
 class Publication(Actor):
@@ -68,6 +82,17 @@ def register_template_routes(app, library):
         with operation():
             return library.editor(key, str(owner) if owner else None)
 
+    @app.get('/templates/{key}/preview')
+    def published_preview(key: str):
+        with operation():
+            return library.editor(key)
+
+    @app.post('/templates/{key}/preview')
+    def preview(key: str, data: Publication):
+        with operation():
+            return library.preview(key, data.expectedVersion, str(data.actorId), edits(data.changes),
+                                   str(data.draftId) if data.draftId else None)
+
     @app.post('/templates/{key}/draft')
     def upload(key: str, expectedVersion: int = Form(..., ge=1), actorId: UUID = Form(...),
                file: UploadFile = File(...)):
@@ -86,7 +111,7 @@ def register_template_routes(app, library):
     def publish(key: str, data: Publication):
         with operation():
             return library.publish(key, data.expectedVersion, str(data.actorId), data.actorName,
-                                   data.note.strip(), [(c.id, c.text) for c in data.changes],
+                                   data.note.strip(), edits(data.changes),
                                    str(data.draftId) if data.draftId else None)
 
     @app.post('/templates/{key}/restore')
