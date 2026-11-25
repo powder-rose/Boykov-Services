@@ -18,6 +18,7 @@ const listener = app.listen(config.port, config.host, () =>
 );
 for (const signal of ["SIGTERM", "SIGINT"])
   process.on(signal, () => {
+    app.locals.dzen?.stop();
     listener.close(() => {
       app.locals.technical?.stop();
       app.locals.db.close();

@@ -15,6 +15,7 @@ import { createStatisticsModule } from "./modules/statistics/index.js";
 import { createPersonalModule } from "./personal.js";
 import { workerClient } from "./worker-client.js";
 import { registerTemplateRoutes } from "./modules/contracts/templates.js";
+import { createDzenModule } from "./modules/dzen/index.js";
 import { createBatchStore, validId } from "./modules/wordstat/batches.js";
 import {
   requestWordstatTop,
@@ -65,6 +66,9 @@ export async function createApp(options) {
   app.post("/hooks/leads/:siteId/heartbeat", leads.heartbeat);
   app.post("/hooks/leads/:siteId", leads.receive);
   app.use(express.json({ limit: "2mb", inflate: false }));
+  const dzen = createDzenModule(db, options);
+  app.locals.dzen = dzen;
+  dzen.registerHooks(app);
   const technical = createTechnicalModule(db, options);
   app.locals.technical = technical;
   app.post("/hooks/technical/sync", technical.webhook);
@@ -98,6 +102,7 @@ export async function createApp(options) {
   app.post("/hooks/docs-customers/commerce/heartbeat", docsCommerce.heartbeat);
   app.post("/hooks/docs-customers/commerce/handshake", docsCommerce.handshake);
   installAuth(app, { ...options, db });
+  dzen.register(app);
   docsCommerce.register(app);
   docsSales.register(app);
   docsCustomers.register(app);

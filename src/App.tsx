@@ -1,5 +1,12 @@
 import { initials } from "./identity";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -20,6 +27,7 @@ import {
   X,
   BarChart3,
   ContactRound,
+  MessageCircle,
 } from "lucide-react";
 import { api, post, errorText, dateTime } from "./api";
 import { Loading, Notice, Status } from "./components/Common";
@@ -36,6 +44,7 @@ import Cabinet from "./pages/Cabinet";
 import Statistics from "./pages/Statistics";
 import DocsCustomers from "./pages/DocsCustomers";
 import type { Dashboard, Job, Page, System, Session } from "./types";
+const Dzen = lazy(() => import("./pages/Dzen"));
 const navigation = [
   { id: "cabinet", label: "Мой кабинет", icon: UserRound },
   { id: "overview", label: "Обзор", icon: LayoutDashboard },
@@ -50,6 +59,7 @@ const navigation = [
   { id: "docs-customers", label: "Клиенты BoykovDocs", icon: ContactRound },
   { id: "statistics", label: "Статистика", icon: BarChart3 },
   { id: "wordstat", label: "Wordstat", icon: Search },
+  { id: "dzen", label: "Комментарии Дзена", icon: MessageCircle },
   {
     id: "history",
     label: "История задач",
@@ -71,6 +81,10 @@ const emptyDashboard: Dashboard = {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [page, setPage] = useState<Page>(getPage);
+  const [dzenVisited, setDzenVisited] = useState(page === "dzen");
+  useEffect(() => {
+    if (page === "dzen") setDzenVisited(true);
+  }, [page]);
   const [requestedLead, setRequestedLead] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard>(emptyDashboard);
   const [system, setSystem] = useState<System | null>(null);
@@ -420,6 +434,13 @@ export default function App() {
               selectedId={selectedBatch}
               onChange={refresh}
             />
+          </div>
+          <div hidden={page !== "dzen"} className="page">
+            {(dzenVisited || page === "dzen") && (
+              <Suspense fallback={<Loading />}>
+                <Dzen active={page === "dzen"} />
+              </Suspense>
+            )}
           </div>
           <div hidden={page !== "history"} className="page">
             <History dashboard={dashboard} onOpen={openJob} />

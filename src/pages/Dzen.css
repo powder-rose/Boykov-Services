@@ -1,0 +1,1235 @@
+.dz-page {
+  --dz-pink: #efc9d8;
+  --dz-lime: #dfeab9;
+  --dz-green: #536b3b;
+  --dz-muted: #76816d;
+}
+.dz-page .page-head p {
+  font-size: 14px;
+}
+.dz-head-actions,
+.dz-work-head > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.dz-hero {
+  min-height: 235px;
+  padding: 31px 33px;
+  gap: 16px;
+}
+.dz-hero-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.dz-hero-copy .banner-label {
+  font-size: 10px;
+}
+.dz-hero-copy h2 {
+  font-size: clamp(29px, 3.3vw, 45px);
+  margin: 16px 0 10px;
+}
+.dz-hero-copy p {
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 500px;
+  margin-top: 0;
+  color: #b8c6ad;
+}
+.dz-hero-mode {
+  display: flex;
+  gap: 13px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 21px;
+}
+.dz-hero-mode > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #dce8be;
+  font-size: 12px;
+  border: 1px solid #53604a;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.dz-hero-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  background: #dce9b4;
+  color: #303d25;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.dz-hero-button:hover {
+  background: #ecf1d4;
+}
+.dz-art {
+  width: 280px;
+  height: 190px;
+  flex: none;
+  position: relative;
+  margin-right: 8px;
+}
+.dz-art-orbit {
+  width: 145px;
+  height: 145px;
+  border: 28px solid #e8bed0;
+  border-radius: 50%;
+  position: absolute;
+  left: 18px;
+  top: 12px;
+  transform: rotate(-12deg);
+}
+.dz-art-chat {
+  display: grid;
+  place-items: center;
+  position: absolute;
+  border-radius: 14px;
+}
+.dz-art-chat.main {
+  width: 120px;
+  height: 111px;
+  background: #dce8b4;
+  color: #455631;
+  left: 97px;
+  top: 24px;
+  transform: rotate(-12deg);
+  box-shadow: 0 6px 16px #1118;
+}
+.dz-art-chat.main:after {
+  position: absolute;
+  content: "";
+  left: 17px;
+  bottom: -14px;
+  width: 27px;
+  height: 27px;
+  background: #dce8b4;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+.dz-art-chat.main i {
+  width: 24px;
+  height: 2px;
+  background: #64754f;
+  position: absolute;
+  bottom: 17px;
+  left: 18px;
+}
+.dz-art-chat.main i:last-child {
+  width: 40px;
+  bottom: 12px;
+}
+.dz-art-chat.secondary {
+  width: 71px;
+  height: 71px;
+  background: #eec5d6;
+  color: #6d4d60;
+  left: 179px;
+  top: 104px;
+  transform: rotate(9deg);
+}
+.dz-art-cross {
+  position: absolute;
+  left: 228px;
+  top: 18px;
+  font-size: 26px;
+  color: #e6c1d0;
+}
+.dz-art-caption {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  font-size: 9px;
+  color: #9ba88d;
+  letter-spacing: 0.12em;
+}
+.dz-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0 13px;
+}
+.dz-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 17px;
+  text-align: left;
+  min-width: 0;
+  gap: 8px;
+  border: 1px solid var(--line);
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.dz-metric > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #6a7562;
+  width: 100%;
+}
+.dz-metric svg {
+  color: #849471;
+  flex: none;
+}
+.dz-metric strong {
+  font-size: 35px;
+  line-height: 1;
+  letter-spacing: -0.045em;
+  font-weight: 550;
+  color: var(--ink);
+}
+.dz-metric small {
+  font-size: 11px;
+  color: #7c8672;
+  line-height: 1.5;
+}
+.dz-metric:hover,
+.dz-metric.selected {
+  border-color: #beca9f;
+  background: #f3f7e9;
+}
+.dz-connection {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr 1.1fr;
+  align-items: center;
+  padding: 13px 17px;
+  gap: 14px;
+  margin: 13px 0 18px;
+}
+.dz-connection-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.dz-connection-item svg {
+  color: #89967d;
+  flex: none;
+}
+.dz-connection-item > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.dz-connection-item b {
+  font-size: 12px;
+  font-weight: 650;
+}
+.dz-connection-item small {
+  font-size: 11px;
+  color: #7f8b75;
+  overflow-wrap: anywhere;
+}
+.dz-signal {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #c6cbbf;
+  flex: none;
+  margin: 0 5px;
+  box-shadow: 0 0 0 4px #eef1e9;
+}
+.dz-signal.online {
+  background: #7b9b50;
+  box-shadow: 0 0 0 4px #e5ecd5;
+}
+.dz-quota {
+  border-left: 1px solid #e7eae1;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dz-quota > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #77826d;
+}
+.dz-quota b {
+  color: #455b31;
+}
+.dz-quota progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  background: #eaede3;
+  border-radius: 6px;
+  overflow: hidden;
+  accent-color: #829f54;
+}
+.dz-quota progress::-webkit-progress-bar {
+  background: #eaede3;
+}
+.dz-quota progress::-webkit-progress-value {
+  background: #829f54;
+}
+.dz-quota progress::-moz-progress-bar {
+  background: #829f54;
+}
+.dz-tabs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: #ecefe6;
+  border-radius: 9px;
+  margin: 22px 0;
+  flex-wrap: wrap;
+}
+.dz-tabs button {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 41px;
+  padding: 10px 13px;
+  border-radius: 7px;
+  color: #6c7862;
+  font-size: 13px;
+  font-weight: 580;
+}
+.dz-tabs button.selected {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 3px #24272510;
+}
+.dz-tabs > span {
+  margin-left: auto;
+  padding: 0 12px;
+  color: #7d8974;
+  font-size: 11px;
+}
+.dz-work-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.dz-work-head h2,
+.dz-log-title h2,
+.dz-settings-panel h2 {
+  font-size: 23px;
+  margin: 5px 0;
+  letter-spacing: -0.04em;
+}
+.dz-work-head p,
+.dz-log-title p,
+.dz-settings-panel > p {
+  font-size: 13px;
+  color: #78836f;
+  line-height: 1.65;
+  margin: 4px 0 0;
+}
+.dz-work-grid {
+  display: grid;
+  grid-template-columns: minmax(265px, 0.83fr) minmax(0, 1.35fr);
+  align-items: start;
+  gap: 15px;
+}
+.dz-list,
+.dz-detail {
+  padding: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.dz-list-top {
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: #fafbf8;
+  border-bottom: 1px solid #e6e9e0;
+}
+.dz-search {
+  flex-direction: row;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #87937d;
+  background: #fff;
+  border: 1px solid #dfe4d9;
+  border-radius: 7px;
+  padding: 0 10px;
+}
+.dz-search input {
+  height: 39px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: 0;
+  box-shadow: none;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.dz-search:focus-within {
+  border-color: #9ab078;
+}
+.dz-filter select {
+  width: 100%;
+  background: white;
+  font-size: 13px;
+  border-color: #dfe4d9;
+  min-height: 37px;
+}
+.dz-list-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  gap: 8px;
+  font-size: 11px;
+  color: #818c77;
+}
+.dz-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 10px 10px;
+  max-height: 670px;
+  min-height: 160px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d0d8c5 transparent;
+}
+.dz-comment-card {
+  padding: 13px 12px;
+  border: 1px solid #e8eae3;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  min-width: 0;
+  transition:
+    border-color 0.16s,
+    background 0.16s;
+  flex: none;
+}
+.dz-comment-card:hover {
+  border-color: #c4d3b0;
+  background: #fbfcf8;
+}
+.dz-comment-card.selected {
+  border-color: #aabd84;
+  background: #f1f5e7;
+  box-shadow: inset 3px 0 #8da667;
+}
+.dz-card-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.dz-card-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.dz-card-header strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dz-card-header small {
+  font-size: 10px;
+  color: #86927a;
+}
+.dz-avatar {
+  width: 33px;
+  height: 33px;
+  border-radius: 9px;
+  background: #e4ebd7;
+  color: #647a49;
+  display: grid;
+  place-items: center;
+  flex: none;
+  font-size: 12px;
+  font-weight: 650;
+}
+.dz-avatar.large {
+  width: 49px;
+  height: 49px;
+  font-size: 17px;
+  border-radius: 12px;
+}
+.dz-comment-card:nth-child(3n + 2) .dz-avatar {
+  color: #98657f;
+  background: #f1dce5;
+}
+.dz-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  flex: none;
+  border-radius: 5px;
+  background: #edf0e8;
+  color: #66735e;
+  padding: 5px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.dz-badge i {
+  width: 5px;
+  height: 5px;
+  background: currentColor;
+  border-radius: 50%;
+}
+.dz-status-new {
+  background: #e9edda;
+  color: #6a8244;
+}
+.dz-status-draft,
+.dz-status-generating {
+  background: #f0dfe8;
+  color: #8f526f;
+}
+.dz-status-queued,
+.dz-status-sending {
+  background: #e5edf0;
+  color: #507581;
+}
+.dz-status-answered {
+  background: #e4edd5;
+  color: #5a7438;
+}
+.dz-status-attention,
+.dz-status-error {
+  background: #f6e4dc;
+  color: #ac6747;
+}
+.dz-card-article {
+  display: block;
+  font-size: 11px;
+  color: #687a56;
+  margin-top: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.dz-comment-card p {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 9px 0 0;
+  overflow-wrap: anywhere;
+  color: #3e4439;
+}
+.dz-card-reply {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #7d8c6d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 10px;
+  max-width: 100%;
+}
+.dz-card-reply svg {
+  flex: none;
+}
+.dz-list-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 15px;
+  border-top: 1px solid #e8ebdf;
+  font-size: 12px;
+  color: #76816b;
+}
+.dz-detail {
+  padding: 22px;
+}
+.dz-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 17px;
+}
+.dz-author {
+  flex: 1;
+  min-width: 0;
+}
+.dz-author h3 {
+  font-size: 17px;
+  margin: 0 0 5px;
+  overflow-wrap: anywhere;
+  letter-spacing: -0.02em;
+}
+.dz-author > span {
+  font-size: 11px;
+  color: #87917b;
+}
+.dz-original {
+  padding: 19px;
+  background: #f6f7f2;
+  border-radius: 9px;
+  border: 1px solid #e5e9de;
+}
+.dz-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  color: #81916f;
+}
+.dz-article-title {
+  margin-top: 11px;
+  font-size: 12px;
+  color: #798769;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.dz-original p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: #353d30;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 12px 0 0;
+}
+.dz-original .dz-link {
+  font-size: 12px;
+  margin-top: 12px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.dz-target-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  justify-content: space-between;
+  margin: 13px 0 19px;
+  font-size: 11px;
+  color: #7d8871;
+}
+.dz-target-line > span:first-child {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.dz-target-line .good {
+  color: #657f41;
+}
+.dz-target-line .neutral {
+  color: #987b58;
+}
+.dz-answer-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 17px 0 13px;
+}
+.dz-answer-title h3 {
+  margin: 6px 0 0;
+  font-size: 20px;
+  letter-spacing: -0.035em;
+}
+.dz-answer-title .dz-label {
+  color: #976d86;
+}
+.dz-reply-text {
+  min-height: 155px;
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: 8px;
+  border: 1px solid #dce3d3;
+  font-size: 15px;
+  line-height: 1.7;
+  background: #fff;
+  resize: vertical;
+}
+.dz-reply-text:focus,
+.dz-prompt-text:focus {
+  border-color: #a5b88b;
+  outline: 0;
+}
+.dz-reply-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 9px;
+  margin: 8px 0 15px;
+  color: #89927d;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.dz-over-limit {
+  color: #b05d52;
+  font-weight: 650;
+}
+.dz-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dz-actions .text-button {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 7px 4px;
+  font-size: 12px;
+}
+.dz-skip {
+  color: #a37c69;
+}
+.dz-manual-note,
+.dz-config-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #e2e9d6;
+  background: #f1f5e8;
+  padding: 13px;
+  border-radius: 7px;
+  margin-top: 17px;
+  color: #6c8250;
+}
+.dz-manual-note > svg,
+.dz-config-note > svg {
+  flex: none;
+}
+.dz-manual-note strong {
+  font-size: 13px;
+}
+.dz-manual-note p,
+.dz-config-note p {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #758366;
+}
+.dz-manual-note > div > div {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+.dz-manual-note .text-button {
+  font-size: 12px;
+}
+.dz-detail-history {
+  border-top: 1px solid #e8ebe1;
+  margin-top: 20px;
+  padding-top: 16px;
+}
+.dz-detail-history h4 {
+  font-size: 13px;
+  margin: 0 0 8px;
+  color: #627056;
+}
+.dz-empty-detail {
+  min-height: 390px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  padding: 30px;
+}
+.dz-empty-detail h3 {
+  font-size: 21px;
+  letter-spacing: -0.04em;
+  margin: 15px 0 8px;
+}
+.dz-empty-detail p {
+  color: #7f8975;
+  font-size: 13px;
+  max-width: 280px;
+  line-height: 1.7;
+}
+.dz-empty-art {
+  position: relative;
+  width: 82px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  color: #758b55;
+  background: #e6edce;
+  transform: rotate(-7deg);
+}
+.dz-empty-art svg:last-child {
+  position: absolute;
+  top: -12px;
+  right: -10px;
+  padding: 4px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: #91627c;
+  background: #edc7d8;
+  transform: rotate(14deg);
+}
+.dz-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  gap: 15px;
+  align-items: start;
+}
+.dz-settings-panel {
+  padding: 23px;
+  min-width: 0;
+}
+.dz-mode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 17px 0 20px;
+}
+.dz-mode-option {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  text-align: left;
+  padding: 13px 11px;
+  border: 1px solid #dfe5d8;
+  border-radius: 8px;
+  color: #687660;
+  background: #fbfcf9;
+}
+.dz-mode-option.selected {
+  background: #edf3df;
+  border-color: #a8bb81;
+  color: #526b39;
+}
+.dz-mode-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #e9eedf;
+  flex: none;
+}
+.dz-mode-option > span:nth-child(2) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dz-mode-option strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+.dz-mode-option small {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #78846e;
+}
+.dz-mode-option > svg {
+  flex: none;
+}
+.dz-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+.dz-form-grid label,
+.dz-prompt-label,
+.dz-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+  color: #59674f;
+  font-weight: 550;
+}
+.dz-form-grid input,
+.dz-form-grid textarea,
+.dz-dialog input,
+.dz-dialog textarea {
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+  border-color: #dfe4d8;
+}
+.dz-form-grid .dz-full {
+  grid-column: 1/-1;
+}
+.dz-form-grid small {
+  color: #8a957f;
+  font-size: 11px;
+  font-weight: 400;
+}
+.dz-config-note {
+  margin-top: 20px;
+}
+.dz-config-note p {
+  margin: 0;
+}
+.dz-prompt-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.dz-prompt-version {
+  background: #ecdce5;
+  color: #91637d;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 6px 9px;
+  flex: none;
+}
+.dz-prompt-label {
+  margin-top: 17px;
+}
+.dz-prompt-text {
+  width: 100%;
+  min-height: 310px;
+  font-size: 14px;
+  line-height: 1.7;
+  border: 1px solid #dfe4d8;
+  background: #fdfdfa;
+  border-radius: 8px;
+  padding: 13px;
+  resize: vertical;
+}
+.dz-prompt-history h3 {
+  margin: 8px 0 11px;
+  font-size: 15px;
+}
+.dz-prompt-test {
+  margin: 17px 0;
+  border: 1px solid #e1e6da;
+  background: #f8faf5;
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  gap: 10px;
+  flex-direction: column;
+}
+.dz-prompt-test h3 {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #526744;
+}
+.dz-prompt-test p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6e7b64;
+  margin: 0;
+}
+.dz-prompt-test textarea {
+  font-size: 13px;
+  background: #fff;
+  border-color: #dce3d4;
+  resize: vertical;
+}
+.dz-prompt-test .button {
+  align-self: flex-start;
+}
+.dz-test-result {
+  background: white;
+  border: 1px solid #d5e0c5;
+  border-radius: 6px;
+  padding: 11px;
+}
+.dz-test-result strong {
+  font-size: 12px;
+  color: #58733b;
+}
+.dz-test-result p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #3e4935;
+  font-size: 14px;
+  margin: 7px 0 0;
+}
+.dz-prompt-row {
+  display: flex;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #e9ebe3;
+  align-items: center;
+}
+.dz-prompt-row > span {
+  color: #708457;
+  background: #edf1e6;
+  border-radius: 5px;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+.dz-prompt-row > div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.dz-prompt-row strong {
+  font-size: 12px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.dz-prompt-row small {
+  font-size: 10px;
+  color: #87937d;
+}
+.dz-prompt-row .text-button {
+  font-size: 11px;
+}
+.dz-settings-save {
+  display: flex;
+  grid-column: 1/-1;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 20px;
+  flex-wrap: wrap;
+}
+.dz-settings-save > div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+.dz-settings-save strong {
+  font-size: 14px;
+}
+.dz-settings-save small {
+  font-size: 12px;
+  color: #849075;
+}
+.dz-log-panel {
+  padding: 23px;
+}
+.dz-log-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  margin: 0 0 16px;
+}
+.dz-event {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid #e9ece2;
+  padding: 12px 0;
+}
+.dz-event-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #75894f;
+  background: #edf2e3;
+  flex: none;
+}
+.dz-event-icon.warn {
+  background: #f5e7dd;
+  color: #ad7653;
+}
+.dz-event > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.dz-event strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.dz-event p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #839078;
+  overflow-wrap: anywhere;
+}
+.dz-event time {
+  color: #849077;
+  font-size: 11px;
+  flex: none;
+}
+.dz-activity.compact .dz-event {
+  gap: 8px;
+  padding: 9px 0;
+}
+.dz-activity.compact .dz-event-icon {
+  width: 27px;
+  height: 27px;
+}
+.dz-activity.compact .dz-event strong {
+  font-size: 12px;
+}
+.dz-muted-empty {
+  color: #8a947e;
+  font-size: 13px;
+  padding: 18px 0;
+}
+.dz-log-foot,
+.dz-bottom-note {
+  color: #7f8c72;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding-top: 15px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.dz-bottom-note {
+  margin: 12px 0 23px;
+}
+.dz-bottom-note svg,
+.dz-log-foot svg {
+  flex: none;
+}
+.dz-bottom-note > span {
+  font-size: 10px;
+  color: #97a18b;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.dz-dialog {
+  width: min(520px, calc(100% - 30px));
+  max-height: calc(100% - 30px);
+  overflow: auto;
+  border: 1px solid #e0e5d8;
+  border-radius: 13px;
+  background: #fff;
+  padding: 25px;
+  color: var(--ink);
+  box-shadow: 0 15px 75px #18221538;
+}
+.dz-dialog::backdrop {
+  background: #232a22a8;
+}
+.dz-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.dz-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dz-dialog-head h2 {
+  margin: 5px 0;
+  font-size: 23px;
+  letter-spacing: -0.04em;
+}
+.dz-dialog p {
+  font-size: 13px;
+  color: #77836d;
+  line-height: 1.6;
+  margin: 0;
+}
+.dz-dialog .primary {
+  align-self: flex-end;
+}
+@media (max-width: 1150px) {
+  .dz-connection {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dz-quota {
+    border-left: none;
+    padding-left: 0;
+  }
+  .dz-art {
+    width: 250px;
+    margin: 0;
+  }
+  .dz-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
+  .dz-work-grid,
+  .dz-settings-grid {
+    grid-template-columns: 1fr;
+  }
+  .dz-cards {
+    max-height: 450px;
+  }
+}
+@media (max-width: 680px) {
+  .dz-hero {
+    padding: 22px;
+    min-height: 0;
+  }
+  .dz-art {
+    display: none;
+  }
+  .dz-hero-copy h2 {
+    font-size: 30px;
+  }
+  .dz-metric {
+    padding: 13px;
+  }
+  .dz-metric strong {
+    font-size: 29px;
+  }
+  .dz-metric > span {
+    font-size: 12px;
+  }
+  .dz-tabs > span {
+    display: none;
+  }
+  .dz-tabs button {
+    font-size: 12px;
+    padding: 9px;
+  }
+  .dz-detail,
+  .dz-settings-panel,
+  .dz-log-panel {
+    padding: 16px;
+  }
+  .dz-original {
+    padding: 15px;
+  }
+  .dz-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .dz-form-grid .dz-full {
+    grid-column: auto;
+  }
+  .dz-event time {
+    font-size: 10px;
+    max-width: 77px;
+    text-align: right;
+  }
+  .dz-bottom-note > span {
+    display: none;
+  }
+  .dz-log-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}

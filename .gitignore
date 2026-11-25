@@ -8,6 +8,7 @@ __pycache__/
 !.env.example
 !.env.contracts.example
 !.env.wordstat.example
+!.env.dzen.example
 data/
 *.sqlite*
 *.log

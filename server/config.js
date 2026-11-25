@@ -19,6 +19,13 @@ const wordstat = serviceEnv(".env.wordstat");
 // Each service has its own Yandex account; never overwrite document credentials.
 process.env.WORDSTAT_API_KEY ||= wordstat.YANDEX_API_KEY || "";
 process.env.WORDSTAT_FOLDER_ID ||= wordstat.YANDEX_FOLDER_ID || "";
+const dzen = serviceEnv(".env.dzen");
+for (const key of [
+  "DZEN_AGENT_TOKEN",
+  "DZEN_YANDEX_FOLDER_ID",
+  "DZEN_YANDEX_API_KEY",
+])
+  process.env[key] ||= dzen[key] || "";
 export const config = {
   port: Number(process.env.PORT || 8787),
   host: process.env.HOST || "127.0.0.1",

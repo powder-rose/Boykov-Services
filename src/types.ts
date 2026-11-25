@@ -7,6 +7,7 @@ export type Page =
   | "statistics"
   | "technical"
   | "wordstat"
+  | "dzen"
   | "history"
   | "settings"
   | "accounts";

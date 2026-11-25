@@ -10,7 +10,7 @@ export const sharedPassword = "fixture-shared-password",
 const passwordHash = await hashPassword(sharedPassword);
 const failure = (status) =>
   Object.assign(new Error("fixture worker unavailable"), { status });
-export async function accountFixture(t, templateWorker) {
+export async function accountFixture(t, templateWorker, extraOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "boykov-accounts-"));
   const jobs = new Map();
   let app,
@@ -60,12 +60,14 @@ export async function accountFixture(t, templateWorker) {
       allowedOrigins: [],
       worker,
       isConfigured: () => false,
+      ...extraOptions,
     });
     server = app.listen(0, "127.0.0.1");
     await new Promise((r) => server.once("listening", r));
     base = "http://127.0.0.1:" + server.address().port;
   }
   async function stop() {
+    app.locals.dzen?.stop();
     await new Promise((r) => server.close(r));
     app.locals.db.close();
   }

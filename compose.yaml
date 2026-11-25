@@ -6,7 +6,10 @@ services:
       target: api
     init: true
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: .env
+      - path: .env.dzen
+        required: false
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
