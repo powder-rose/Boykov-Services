@@ -9,11 +9,16 @@ import {
   cleanReply,
   parseComment,
   studioUrl,
+  hasUnansweredFilter,
+  sameStudioChannel,
 } from "../server/modules/dzen/model.js";
 import { accountFixture } from "./helpers/accounts-fixture.js";
 
 const url =
   "https://dzen.ru/profile/editor/channel-test/comments?comments_data=n_reply";
+const unfilteredUrl =
+  "https://dzen.ru/profile/editor/id/channel-test/comments/";
+const currentUrl = unfilteredUrl + "?answer=notReply";
 const agentId = randomUUID();
 const data = (id, text = "Как оформить документы?", extra = {}) => ({
   commentId: id,
@@ -38,11 +43,11 @@ function fixture(t) {
       "Администратор",
       true,
     );
-  const poll = (status = "ready") =>
-    store.poll({ agentId, studioUrl: url, status }).task;
-  const scan = (items, verified = true) => {
+  const poll = (status = "ready", source = url) =>
+    store.poll({ agentId, studioUrl: source, status }).task;
+  const scan = (items, verified = true, source = url) => {
     store.requestScan("Администратор");
-    const task = poll("starting");
+    const task = poll("starting", source);
     assert.equal(task.kind, "scan");
     store.result({
       agentId,
@@ -76,6 +81,91 @@ function fixture(t) {
     },
   };
 }
+
+test("recognizes the current Studio unanswered URL without accepting conflicting filters", () => {
+  assert.equal(studioUrl(currentUrl + "&tracking=x#ignored"), currentUrl);
+  assert.equal(hasUnansweredFilter(currentUrl), true);
+  assert.equal(hasUnansweredFilter(url), true);
+  for (const invalid of [
+    unfilteredUrl,
+    currentUrl + "&answer=reply",
+    currentUrl + "&comments_data=n_reply",
+    unfilteredUrl + "?answer=reply",
+  ]) {
+    assert.equal(hasUnansweredFilter(invalid), false);
+    assert.equal(studioUrl(invalid), unfilteredUrl);
+  }
+  assert.equal(sameStudioChannel(unfilteredUrl, currentUrl), true);
+  assert.equal(
+    sameStudioChannel(
+      currentUrl,
+      currentUrl.replace("channel-test", "different"),
+    ),
+    false,
+  );
+});
+
+test("existing unfiltered connection upgrades on restart; imports, drafts and answered rows survive without duplicates", (t) => {
+  const f = fixture(t);
+  const items = [
+    data("a", "Вопрос", { href: unfilteredUrl }),
+    data("b", "Другой вопрос", { href: unfilteredUrl }),
+    data("", "Отдельный комментарий", { href: unfilteredUrl }),
+  ];
+  f.scan(items, true, unfilteredUrl);
+  assert.equal(f.store.state().connection.verified, false);
+  const row = f.draft(f.find("a"));
+  const answered = f.draft(f.find("b"));
+  f.action(answered, "confirm", { confirm: true, reply: answered.reply });
+  f.settings({ mode: "review" });
+  assert.equal(f.poll("starting", currentUrl), null);
+  assert.equal(f.store.settings().mode, "paused");
+  assert.equal(f.store.state().connection.verified, false);
+  assert.equal(f.store.state().total, 3);
+  f.scan(
+    items.map((item) => ({ ...item, href: currentUrl })),
+    true,
+    currentUrl,
+  );
+  assert.equal(f.store.state().connection.verified, true);
+  assert.equal(f.store.state().total, 3);
+  assert.equal(f.find("a").id, row.id);
+  assert.equal(f.find("a").reply, row.reply);
+  assert.equal(f.find("a").status, "draft");
+  assert.equal(f.find("a").eligible, true);
+  assert.equal(f.find("b").status, "answered");
+  assert.equal(f.find("").eligible, false);
+  assert.throws(() => f.poll("starting", unfilteredUrl), /сменой фильтра/);
+  assert.throws(
+    () => f.poll("starting", currentUrl.replace("channel-test", "different")),
+    /другой ссылкой/,
+  );
+});
+
+test("filter migration cannot overlap a leased task and requires the existing agent", (t) => {
+  const f = fixture(t);
+  f.store.requestScan("Анна");
+  const active = f.poll("starting", unfilteredUrl);
+  assert.throws(() => f.poll("starting", currentUrl), /активное задание/);
+  f.store.result({
+    agentId,
+    taskId: active.id,
+    outcome: "success",
+    comments: [],
+    verifiedUnanswered: false,
+  });
+  f.tick(100000);
+  assert.throws(
+    () =>
+      f.store.poll({
+        agentId: randomUUID(),
+        studioUrl: currentUrl,
+        status: "starting",
+      }),
+    /сменой фильтра/,
+  );
+  assert.equal(f.poll("starting", currentUrl), null);
+});
 
 test("fresh installation is paused; manual comments are deduplicated and cannot be published by the connector", (t) => {
   const f = fixture(t);

@@ -5,6 +5,8 @@ import {
   fail,
   parseSettings,
   studioUrl,
+  hasUnansweredFilter,
+  sameStudioChannel,
   parseComment,
   isOwn,
   validateReply,
@@ -439,8 +441,9 @@ export function createDzenStore(db, now = Date.now) {
       )
         throw fail("Некорректный статус агента.");
       const url = studioUrl(input.studioUrl);
-      const r = runtime();
-      if (r.studio_url && r.studio_url !== url)
+      let r = runtime();
+      const filterChanged = r.studio_url && r.studio_url !== url;
+      if (filterChanged && !sameStudioChannel(r.studio_url, url))
         throw fail(
           "Этот раздел уже связан с другой ссылкой Студии. Смена канала требует отдельной настройки.",
           409,
@@ -456,6 +459,41 @@ export function createDzenStore(db, now = Date.now) {
             .get())
       )
         throw fail("Другой агент уже подключён.", 409);
+      if (filterChanged) {
+        // Only the already paired agent may move to a proven unanswered URL
+        // on the same channel. Never carry verification or approvals across it.
+        if (
+          r.agent_id !== id ||
+          input.status !== "starting" ||
+          !hasUnansweredFilter(url) ||
+          db
+            .prepare(
+              `SELECT id FROM dzen_tasks WHERE phase IN ${ACTIVE} LIMIT 1`,
+            )
+            .get()
+        )
+          throw fail(
+            "Остановите прежний агент и завершите активное задание перед сменой фильтра.",
+            409,
+          );
+        pauseWithin("Система", "Пауза: обновлён фильтр комментариев Дзена");
+        db.prepare(
+          "UPDATE dzen_comments SET eligible=0 WHERE origin='studio'",
+        ).run();
+        db.prepare(
+          "UPDATE dzen_comments SET status='draft',approval='',error='Проверьте ответ после смены фильтра',version=version+1,updated_at=? WHERE status='queued'",
+        ).run(now());
+        db.prepare(
+          "UPDATE dzen_runtime SET verified=0,last_scan=0,next_scan=0,next_generate=0,error='' WHERE id=1",
+        ).run();
+        event(
+          "filter_updated",
+          null,
+          "Система",
+          "Фильтр обновлён; канал и история сохранены",
+        );
+        r = runtime();
+      }
       const agentError = [
         "login_required",
         "blocked",
@@ -591,9 +629,7 @@ export function createDzenStore(db, now = Date.now) {
           )
             throw fail("Некорректный пакет комментариев.");
           const verified =
-            input.verifiedUnanswered &&
-            new URL(r.studio_url).searchParams.get("comments_data") ===
-              "n_reply";
+            input.verifiedUnanswered && hasUnansweredFilter(r.studio_url);
           const parsed = input.comments.map((x) =>
               parseComment(x, r.studio_url, verified),
             ),

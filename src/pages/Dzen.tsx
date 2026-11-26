@@ -159,6 +159,7 @@ const modeInfo = {
 const eventLabels: Record<string, string> = {
   scan: "Получены комментарии",
   scan_requested: "Запрошено обновление",
+  filter_updated: "Фильтр обновлён",
   scan_error: "Обновление остановлено",
   generated: "Подготовлен черновик",
   auto_queue: "Автоматически поставлен в очередь",

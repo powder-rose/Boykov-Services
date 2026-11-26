@@ -1,12 +1,24 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
-from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity
+from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
+BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
+CURRENT = BASE + '?answer=notReply'
 
 
 class IdentityTests(unittest.TestCase):
+    def test_current_filter_and_existing_saved_url(self):
+        self.assertEqual(studio_url(CURRENT+'&tracking=x'), CURRENT)
+        self.assertEqual(unanswered_studio_url(BASE), CURRENT)
+        self.assertEqual(unanswered_studio_url(URL), URL)
+        self.assertTrue(same_studio_channel(BASE, CURRENT))
+        self.assertFalse(same_studio_channel(BASE, CURRENT.replace('/test/', '/another/')))
+        for conflicting in (CURRENT+'&answer=reply', CURRENT+'&comments_data=n_reply', BASE+'?answer=reply'):
+            self.assertIsNone(unanswered_parameter(conflicting))
+            self.assertEqual(studio_url(conflicting), BASE)
+
     def test_source_scope_and_link_normalization(self):
         self.assertEqual(studio_url(URL+'#ignored'),URL)
         with self.assertRaises(ValueError): studio_url('https://dzen.ru.example.invalid/comments')
@@ -34,6 +46,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
     def setup(self):
         studio=Studio(AsyncMock(),URL)
         studio.assert_access=AsyncMock()
+        studio.verified_filter=AsyncMock(return_value=True)
         send=AsyncMock();send.evaluate.return_value=True
         thread=AsyncMock()
         studio.prepare=AsyncMock(return_value=(send,thread,{'Спасибо!'},[]))
@@ -67,6 +80,32 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         send.evaluate.return_value=False
         self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('uncertain','uncertain'))
         send.click.assert_not_awaited()
+
+    async def test_filter_changed_before_begin_no_publication(self):
+        studio,hub,send=self.setup()
+        studio.verified_filter.return_value=False
+        self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('not_sent','interface_changed'))
+        hub.call.assert_not_awaited()
+        send.click.assert_not_awaited()
+
+
+class FilterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_filter_needs_url_and_visible_control(self):
+        page=Mock();page.url=CURRENT
+        label=Mock();label.is_visible=AsyncMock(return_value=True);label.evaluate=AsyncMock(return_value=True)
+        filters=Mock();filters.count=AsyncMock(return_value=1);filters.nth.return_value=label
+        page.get_by_text.return_value=filters
+        studio=Studio(page,CURRENT)
+        self.assertTrue(await studio.verified_filter())
+        self.assertTrue(page.get_by_text.call_args.args[0].fullmatch('Неотвеченные'))
+        label.evaluate.return_value=False
+        self.assertFalse(await studio.verified_filter())
+        label.evaluate.return_value=True;label.is_visible.return_value=False
+        self.assertFalse(await studio.verified_filter())
+        label.is_visible.return_value=True;page.url=BASE
+        self.assertFalse(await studio.verified_filter())
+        page.url=CURRENT.replace('/test/', '/another/')
+        self.assertFalse(await studio.verified_filter())
 
 
 if __name__=='__main__':unittest.main()

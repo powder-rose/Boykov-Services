@@ -38,6 +38,22 @@ export const normalize = (value) =>
     .replace(/\s+/gu, " ")
     .trim();
 const DZEN_HOSTS = new Set(["dzen.ru", "www.dzen.ru", "studio.dzen.ru"]);
+function unansweredParameter(u) {
+  const current = u.searchParams.getAll("answer");
+  const legacy = u.searchParams.getAll("comments_data");
+  if (current.length === 1 && current[0] === "notReply" && !legacy.length)
+    return ["answer", "notReply"];
+  if (legacy.length === 1 && legacy[0] === "n_reply" && !current.length)
+    return ["comments_data", "n_reply"];
+  return null;
+}
+export function hasUnansweredFilter(value) {
+  try {
+    return Boolean(unansweredParameter(new URL(value)));
+  } catch {
+    return false;
+  }
+}
 export function studioUrl(value) {
   try {
     const u = new URL(value);
@@ -50,14 +66,22 @@ export function studioUrl(value) {
       !u.pathname.includes("/comments")
     )
       throw Error();
-    const filter = u.searchParams.get("comments_data");
+    const filter = unansweredParameter(u);
     u.search = "";
-    if (filter === "n_reply") u.searchParams.set("comments_data", filter);
+    if (filter) u.searchParams.set(...filter);
     u.hash = "";
     return u.toString();
   } catch {
     throw fail("Укажите HTTPS-ссылку на раздел комментариев Студии Дзена.");
   }
+}
+export function sameStudioChannel(a, b) {
+  const first = new URL(studioUrl(a));
+  const second = new URL(studioUrl(b));
+  return (
+    first.origin === second.origin &&
+    first.pathname.replace(/\/+$/, "") === second.pathname.replace(/\/+$/, "")
+  );
 }
 export function commentLink(value, fallback) {
   if (typeof value !== "string" || !value || value.length > 1500)
@@ -137,7 +161,7 @@ export function parseComment(input, source, verified = false) {
     /^[A-Za-z0-9_-]{1,180}$/.test(input.commentId)
       ? input.commentId
       : "";
-  const href = commentLink(input.href, source);
+  const href = commentLink(input.href, commentLink(source, ""));
   const fingerprint = digest(
     [
       normalize(author).toLocaleLowerCase("ru"),

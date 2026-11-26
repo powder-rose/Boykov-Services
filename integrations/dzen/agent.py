@@ -32,12 +32,38 @@ def normalize(value):
     return ' '.join(str(value or '').replace('\u200b', '').replace('\u2060', '').replace('\ufeff', '').split())
 
 
+def unanswered_parameter(value):
+    query = parse_qs(urlsplit(value).query, keep_blank_values=True)
+    current, legacy = query.get('answer', []), query.get('comments_data', [])
+    if current == ['notReply'] and not legacy:
+        return ('answer', 'notReply')
+    if legacy == ['n_reply'] and not current:
+        return ('comments_data', 'n_reply')
+    return None
+
+
 def studio_url(value):
     url = urlsplit(value.strip())
     if url.scheme != 'https' or url.hostname not in HOSTS or url.username or url.password or url.port or '/comments' not in url.path:
         raise ValueError('Нужна HTTPS-ссылка раздела комментариев Студии Дзена.')
-    query = urlencode({'comments_data': 'n_reply'}) if parse_qs(url.query).get('comments_data') == ['n_reply'] else ''
+    parameter = unanswered_parameter(value.strip())
+    query = urlencode([parameter]) if parameter else ''
     return urlunsplit(('https', url.hostname, url.path, query, ''))
+
+
+def unanswered_studio_url(value):
+    canonical = studio_url(value)
+    if unanswered_parameter(canonical):
+        return canonical
+    url = urlsplit(canonical)
+    # Older saved configurations lost the current filter when normalized.
+    # Restore only the known unanswered view on the already paired channel.
+    return urlunsplit((url.scheme, url.netloc, url.path, 'answer=notReply', ''))
+
+
+def same_studio_channel(a, b):
+    first, second = urlsplit(studio_url(a)), urlsplit(studio_url(b))
+    return first.netloc == second.netloc and first.path.rstrip('/') == second.path.rstrip('/')
 
 
 def hub_url(value):
@@ -180,21 +206,29 @@ class Studio:
             await self.page.locator(CARD).first.wait_for(state='visible', timeout=12000)
         except Exception:
             await self.assert_access()
-            empty = self.page.get_by_text(re.compile(r'^(Нет комментариев|Комментариев пока нет|Нет комментариев без ответа|Нет новых комментариев)$', re.I))
+            empty = self.page.get_by_text(re.compile(r'^(Нет комментариев|Комментариев пока нет|Нет комментариев без ответа|Нет неотвеч[её]нных комментариев|Нет новых комментариев)$', re.I))
             for i in range(min(await empty.count(), 10)):
                 if await empty.nth(i).is_visible():
                     return
             raise AgentError('interface_changed') from None
 
     async def verified_filter(self):
-        # This is a normal Studio filter used by the original Zenbot. Only
-        # accept the explicitly selected page, not arbitrary comment lists.
-        if (parse_qs(urlsplit(self.source).query).get('comments_data') != ['n_reply']
-                or parse_qs(urlsplit(self.page.url).query).get('comments_data') != ['n_reply']):
+        # The current Studio uses answer=notReply and the «Неотвеченные» chip.
+        # Both the actual URL and a visible filter control must agree; a comment
+        # containing the same words, an open menu option or a redirect is not proof.
+        selected = unanswered_parameter(self.source)
+        if not selected or unanswered_parameter(self.page.url) != selected:
             return False
-        filters = self.page.get_by_text(re.compile(r'^Без ответа$', re.I))
+        if not same_studio_channel(self.source, self.page.url):
+            return False
+        filters = self.page.get_by_text(re.compile(r'^(Без ответа|Неотвеч[её]нные)$', re.I))
         for i in range(min(await filters.count(), 10)):
-            if await filters.nth(i).is_visible():
+            label = filters.nth(i)
+            if await label.is_visible() and await label.evaluate(r"""(el) => {
+              if (el.closest('[class*="editor--comment__block"], [class*="comments-page__commentNode"], [role="menu"], [role="listbox"], [role="dialog"], [role="option"], [role="menuitem"]')) return false;
+              const control = el.closest('button,[role="button"],[role="checkbox"],[role="radio"],[role="tab"],[class*="filter" i],[class*="chip" i],[data-testid*="filter" i]');
+              return Boolean(control && control.getClientRects().length && control.getAttribute('aria-pressed') !== 'false' && control.getAttribute('aria-selected') !== 'false' && control.getAttribute('aria-checked') !== 'false');
+            }"""):
                 return True
         return False
 
@@ -219,6 +253,8 @@ class Studio:
         found, stagnant = {}, 0
         for step in range(MAX_SCROLLS + 1):
             batch = await self.snapshots()
+            if verified and not await self.verified_filter():
+                verified = False
             keys = [identity(item) for _, item in batch]
             before = len(found)
             for _, item in batch:
@@ -319,6 +355,8 @@ class Studio:
         try:
             send, thread, expected, before = await self.prepare(task['comment'])
             await self.assert_access()
+            if not await self.verified_filter():
+                raise AgentError('interface_changed')
             # The server must acknowledge the irreversible step exactly once.
             if (await hub.call('begin', {'taskId': task['id']})).get('ok') is not True:
                 raise AgentError('not_sent')
@@ -353,12 +391,12 @@ def config_path():
 def configure(path):
     old = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
     hub = hub_url(input('Адрес Boykov Services [https://boykov-services.ru]: ').strip() or 'https://boykov-services.ru')
-    source = studio_url(input('Ссылка на комментарии Студии (выберите «Без ответа»): '))
+    source = unanswered_studio_url(input('Ссылка на комментарии Студии (выберите «Неотвеченные»): '))
     token = getpass.getpass('Ключ агента (ввод скрыт): ').strip()
     if len(token) < 32:
         raise ValueError('Ключ должен содержать не менее 32 символов.')
     data = {'hub': hub, 'studioUrl': source, 'token': token, 'agentId': old.get('agentId') or str(uuid.uuid4())}
-    if old and old.get('studioUrl') != source:
+    if old and not same_studio_channel(old['studioUrl'], source):
         raise ValueError('Уже настроен другой канал. Используйте отдельный профиль после согласованной смены канала.')
     temporary = path.with_suffix('.tmp')
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -433,7 +471,7 @@ def main():
                 raise ValueError('Сначала выполните configure.')
             config = json.loads(path.read_text(encoding='utf-8'))
             config['hub'] = hub_url(config['hub'])
-            config['studioUrl'] = studio_url(config['studioUrl'])
+            config['studioUrl'] = unanswered_studio_url(config['studioUrl'])
             asyncio.run(run(config, path.parent / 'browser-profile', args.command == 'login', args.headless))
     except KeyboardInterrupt:
         print('DZEN_AGENT_STOPPED')
