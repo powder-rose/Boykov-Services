@@ -13,6 +13,7 @@ import {
   ChevronRight,
   CircleAlert,
   Clock3,
+  Coins,
   Copy,
   ExternalLink,
   FilePenLine,
@@ -41,6 +42,7 @@ import {
   TitleDot,
 } from "../components/Common";
 import { initials } from "../identity";
+import DzenUsagePanel, { dzenRub } from "./DzenUsagePanel";
 import "./Dzen.css";
 
 type Mode = "paused" | "review" | "auto";
@@ -69,6 +71,8 @@ type Settings = {
   promptVersion: number;
   autoContext: boolean;
   autoDrafts: boolean;
+  aiInputRub: number;
+  aiOutputRub: number;
 };
 type Comment = {
   id: string;
@@ -92,6 +96,12 @@ type Comment = {
   updatedAt: string;
   answeredAt: string | null;
   origin: "studio" | "manual";
+  aiUsage: {
+    requests: number;
+    priced: number;
+    costRub: number;
+    tokens: number;
+  };
 };
 type Event = {
   id: number;
@@ -490,6 +500,21 @@ function ReplyDetail({
           {reply.length}/{data.settings.maxChars}
         </span>
       </div>
+      {row.aiUsage && row.aiUsage.requests > 0 && (
+        <div className="dz-comment-cost">
+          <Coins size={15} />
+          <strong>
+            {row.aiUsage.priced ? dzenRub(row.aiUsage.costRub) : "—"}
+          </strong>
+          <span>
+            · {number(row.aiUsage.requests)} запросов ·{" "}
+            {number(row.aiUsage.tokens)} токенов
+            {row.aiUsage.priced < row.aiUsage.requests
+              ? " · неполные данные"
+              : ""}
+          </span>
+        </div>
+      )}
       {data.permissions.edit && (
         <div className="dz-actions">
           {editable && row.status !== "attention" && (
@@ -836,6 +861,38 @@ function SettingsPanel({
               Чтобы не отвечать самим себе. Обязательно для автоответов.
             </small>
           </label>
+          <label>
+            Входные токены, ₽ / 1000
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              step={0.000001}
+              value={draft.aiInputRub}
+              disabled={!canEdit}
+              onChange={(e) => update("aiInputRub", Number(e.target.value))}
+              required
+            />
+          </label>
+          <label>
+            Выходные токены, ₽ / 1000
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              step={0.000001}
+              value={draft.aiOutputRub}
+              disabled={!canEdit}
+              onChange={(e) => update("aiOutputRub", Number(e.target.value))}
+              required
+            />
+          </label>
+          <div className="dz-full">
+            <small>
+              Расчёт расходов YandexGPT Pro 5 по тарифу в рублях с НДС.
+              Изменение цены влияет только на следующие запросы.
+            </small>
+          </div>
         </div>
         <div className="dz-config-note">
           <ShieldCheck size={18} />
@@ -1072,7 +1129,7 @@ function ImportDialog({
 
 export default function Dzen({ active }: { active: boolean }) {
   const [data, setData] = useState<DzenData | null>(null),
-    [section, setSection] = useState<"comments" | "settings" | "log">(
+    [section, setSection] = useState<"comments" | "settings" | "log" | "usage">(
       "comments",
     ),
     [filter, setFilter] = useState<CommentFilter>("all"),
@@ -1422,6 +1479,7 @@ export default function Dzen({ active }: { active: boolean }) {
         {(
           [
             { id: "comments", label: "Комментарии", icon: MessageCircle },
+            { id: "usage", label: "Расходы ИИ", icon: Coins },
             { id: "settings", label: "Настройки и промпт", icon: Settings2 },
             { id: "log", label: "Журнал работы", icon: History },
           ] as const
@@ -1623,6 +1681,8 @@ export default function Dzen({ active }: { active: boolean }) {
             )}
           </div>
         </>
+      ) : section === "usage" ? (
+        <DzenUsagePanel onSettings={() => setSection("settings")} />
       ) : section === "settings" ? (
         <SettingsPanel data={data} busy={busy} save={save} />
       ) : (

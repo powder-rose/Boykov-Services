@@ -931,7 +931,7 @@ class Studio:
 
 
 def config_path():
-    root = Path(os.getenv('LOCALAPPDATA') or (Path.home() / '.local/share')) / 'BoykovServicesDzen'
+    root = Path(os.environ['DZEN_AGENT_STATE_DIR']) if os.getenv('DZEN_AGENT_STATE_DIR') else Path(os.getenv('LOCALAPPDATA') or (Path.home() / '.local/share')) / 'BoykovServicesDzen'
     root.mkdir(parents=True, exist_ok=True)
     if os.name != 'nt':
         root.chmod(0o700)
@@ -974,11 +974,11 @@ def configure(path):
     print('DZEN_AGENT_CONFIGURED=OK')
 
 
-async def run(cfg, profile, login=False, headless=False):
+async def run(cfg, profile, login=False, headless=False, sandbox=False):
     from playwright.async_api import async_playwright
     hub = Hub(cfg)
     async with async_playwright() as pw:
-        context = await pw.chromium.launch_persistent_context(str(profile), headless=headless and not login, viewport={'width':1440,'height':1000}, locale='ru-RU')
+        context = await pw.chromium.launch_persistent_context(str(profile), headless=headless and not login, chromium_sandbox=sandbox, viewport={'width':1440,'height':1000}, locale='ru-RU')
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             studio = Studio(page, cfg['studioUrl'], cfg.get('publicAuthorUrl'))

@@ -20,3 +20,5 @@ playwright-report/
 test-results/
 coverage/
 *.tsbuildinfo
+integrations/dzen/server/seccomp_profile.json
+integrations/dzen/server/seccomp-*

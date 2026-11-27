@@ -1,0 +1,7 @@
+**/__pycache__
+**/.venv
+**/config.json
+**/browser-profile
+server/seccomp_profile.json
+test_*.py
+*.ps1

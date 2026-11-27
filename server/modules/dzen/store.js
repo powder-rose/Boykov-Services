@@ -356,7 +356,11 @@ export function createDzenStore(db, now = Date.now) {
     return tx(() => {
       expire();
       const old = settings(),
-        next = parseSettings(input);
+        next = parseSettings({
+          ...input,
+          aiInputRub: input.aiInputRub ?? old.aiInputRub,
+          aiOutputRub: input.aiOutputRub ?? old.aiOutputRub,
+        });
       if (input.version !== old.version)
         throw fail("Настройки изменились. Обновите страницу.", 409);
       if (

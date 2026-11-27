@@ -34,11 +34,12 @@ docker compose up -d --no-deps --no-build --wait --wait-timeout 120 app
 docker compose exec -T app node --input-type=module - <<'DZEN_VERIFY'
 import { DatabaseSync } from 'node:sqlite';
 const db=new DatabaseSync('/app/data/platform.sqlite',{readOnly:true});
-try {if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');for(const table of ['dzen_settings','dzen_comments','dzen_tasks','dzen_runtime','dzen_events','dzen_prompt_history'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DZEN_SCHEMA_MISSING');}finally{db.close();}
+try {if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw Error('DATABASE_CHECK_FAILED');for(const table of ['dzen_settings','dzen_comments','dzen_tasks','dzen_runtime','dzen_events','dzen_prompt_history','dzen_ai_requests'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('DZEN_SCHEMA_MISSING');}finally{db.close();}
 const base='http://127.0.0.1:8787';const health=await fetch(base+'/healthz');if(!health.ok||!(await health.json()).ok)throw Error('HEALTH_FAILED');
 const auth=await fetch(base+'/api/dzen');if(auth.status!==401)throw Error('DZEN_AUTH_FAILED');
+const usageAuth=await fetch(base+'/api/dzen/usage');if(usageAuth.status!==401)throw Error('DZEN_USAGE_AUTH_FAILED');
 const hook=await fetch(base+'/hooks/dzen/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(![401,503].includes(hook.status))throw Error('DZEN_HOOK_AUTH_FAILED');
-console.log('DZEN_MODULE=OK\nDZEN_AUTH=OK\nDZEN_HOOK_AUTH=OK');
+console.log('DZEN_MODULE=OK\nDZEN_AUTH=OK\nDZEN_HOOK_AUTH=OK\nDZEN_USAGE_MODULE=OK');
 DZEN_VERIFY
 switched=0
 docker compose ps

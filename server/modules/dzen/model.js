@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   prompt: DEFAULT_PROMPT,
   autoContext: false,
   autoDrafts: false,
+  aiInputRub: 1.2,
+  aiOutputRub: 1.2,
 });
 export const MODES = ["paused", "review", "auto"];
 export const STATUSES = [
@@ -122,6 +124,17 @@ function int(value, min, max) {
     throw fail("Проверьте числовые ограничения.");
   return value;
 }
+function tariff(value) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 1000 ||
+    Math.abs(value * 1_000_000 - Math.round(value * 1_000_000)) > 0.000001
+  )
+    throw fail("Укажите корректный тариф ИИ за 1000 токенов.");
+  return value;
+}
 export function parseSettings(input) {
   if (!input || !MODES.includes(input.mode))
     throw fail("Выберите режим работы.");
@@ -136,6 +149,8 @@ export function parseSettings(input) {
     prompt: string(input.prompt, 12000, true),
     autoContext: input.autoContext === true,
     autoDrafts: input.autoDrafts === true,
+    aiInputRub: tariff(input.aiInputRub ?? DEFAULT_SETTINGS.aiInputRub),
+    aiOutputRub: tariff(input.aiOutputRub ?? DEFAULT_SETTINGS.aiOutputRub),
   };
   if (data.mode === "auto" && !ownNames(data).length)
     throw fail("Для автоответов укажите имя автора своего канала.");

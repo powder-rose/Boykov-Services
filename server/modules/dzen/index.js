@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createDzenStore } from "./store.js";
 import { createDzenAi } from "./ai.js";
+import { createDzenUsageStore, DZEN_MODEL } from "./usage.js";
 import {
   cleanReply,
   digest,
@@ -22,6 +23,7 @@ export function createDzenModule(db, options = {}) {
       apiKey: config.apiKey ?? process.env.DZEN_YANDEX_API_KEY,
     });
   const store = createDzenStore(db, now);
+  const usage = createDzenUsageStore(db, now);
   let generating = false,
     stopped = false;
   const actor = (req) => {
@@ -50,15 +52,37 @@ export function createDzenModule(db, options = {}) {
       return res.status(401).json({ error: "Недействительный ключ агента." });
     next();
   }
+  async function invokeAi(settings, comment, context) {
+    const requestId = usage.start({
+      ...context,
+      inputRub: settings.aiInputRub,
+      outputRub: settings.aiOutputRub,
+    });
+    let outcome = "error";
+    try {
+      const reply = cleanReply(
+        await ai.generate(settings, comment, (response) =>
+          usage.record(requestId, response),
+        ),
+        settings.maxChars,
+      );
+      outcome = reply ? "reply" : "skip";
+      return reply;
+    } finally {
+      usage.complete(requestId, outcome);
+    }
+  }
   async function generate(id, version, automatic, name) {
     const job = store.startGeneration(id, version, automatic);
     let reply = "",
       error = "";
     try {
-      reply = cleanReply(
-        await ai.generate(job.settings, job.comment),
-        job.settings.maxChars,
-      );
+      reply = await invokeAi(job.settings, job.comment, {
+        kind: "reply",
+        commentId: id,
+        automatic,
+        promptVersion: job.settings.promptVersion,
+      });
     } catch (e) {
       error =
         e?.status === 503 && typeof e.message === "string"
@@ -121,16 +145,30 @@ export function createDzenModule(db, options = {}) {
     app.post(prefix + "/pause", (req, res) =>
       res.json(store.pause(actor(req))),
     );
-    app.get(prefix, (req, res) =>
+    app.get(prefix, (req, res) => {
+      const state = store.state(req.query);
       res.json({
-        ...store.state(req.query),
+        ...state,
+        items: state.items.map((item) => ({
+          ...item,
+          aiUsage: usage.comment(item.id),
+        })),
         integration: { agentConfigured, aiConfigured: !!ai.configured },
         permissions: {
           edit: !!req.actor?.id && ["admin", "sales"].includes(req.actor.role),
           settings: req.actor?.role === "admin" && !!req.actor?.id,
         },
-      }),
-    );
+      });
+    });
+    app.get(prefix + "/usage", (req, res) => {
+      const s = store.settings();
+      res.json({
+        ...usage.report(req.query.period ?? "30", req.query.page),
+        model: DZEN_MODEL,
+        inputRub: s.aiInputRub,
+        outputRub: s.aiOutputRub,
+      });
+    });
     app.post(prefix + "/settings", (req, res) => {
       const name = admin(req),
         r = store.runtime();
@@ -173,10 +211,7 @@ export function createDzenModule(db, options = {}) {
       );
       generating = true;
       try {
-        const reply = cleanReply(
-          await ai.generate(settings, comment),
-          settings.maxChars,
-        );
+        const reply = await invokeAi(settings, comment, { kind: "preview" });
         res.json({ reply, skipped: !reply });
       } finally {
         generating = false;
@@ -210,6 +245,7 @@ export function createDzenModule(db, options = {}) {
     registerHooks,
     register,
     store,
+    usage,
     tick,
     stop() {
       stopped = true;

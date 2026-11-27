@@ -1,0 +1,41 @@
+name: boykov-dzen-agent
+x-agent: &agent
+  image: boykov-dzen-agent:local
+  build:
+    context: ..
+    dockerfile: server/Dockerfile
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+    - "seccomp=${DZEN_SECCOMP_PROFILE:-/opt/boykov-services/integrations/dzen/server/seccomp_profile.json}"
+  volumes:
+    - state:/state
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+    - /run:size=32m
+  shm_size: 256m
+  mem_limit: 960m
+  memswap_limit: 1280m
+  cpus: 0.9
+  pids_limit: 256
+  stop_grace_period: 45s
+  logging:
+    options: { max-size: "10m", max-file: "3" }
+services:
+  agent:
+    <<: *agent
+    restart: unless-stopped
+    command: ["python", "/app/server_agent.py", "run"]
+  login:
+    <<: *agent
+    profiles: [login]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    command: ["python", "/app/server_agent.py", "login"]
+    ports:
+      - "127.0.0.1:6080:6080"
+volumes:
+  state:
