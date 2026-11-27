@@ -27,6 +27,8 @@ COMPOSER = 'textarea[data-testid="comment-textarea"]'
 SEND = 'button[data-testid="send-button"]'
 MAX_SCROLLS = 8
 MAX_CONFIRM_SCROLLS = 8
+PUBLIC_CARD = '[class*="comments2--comment__comment-"]'
+PUBLIC_EXPAND = re.compile(r'^(?:Показать\s+(?:ещ[её]\s+)?)?\d+\s+ответ(?:а|ов)?$', re.I)
 
 
 def normalize(value):
@@ -216,6 +218,56 @@ def recent_reply_label(value):
     return amount <= (120 if match.group(2).startswith('с') else 2)
 
 
+def public_author_link(value):
+    link = identity_link(value)
+    return link if link and re.fullmatch(r'/(?:[A-Za-z0-9_-]+|(?:id|user)/[A-Za-z0-9_-]+)', urlsplit(link).path) else ''
+
+
+def public_card_matches(value, target):
+    profile = identity_link(target.get('authorUrl'))
+    body = normalize(target.get('text'))
+    return bool(profile and body and profile == identity_link(value.get('authorUrl')) and body == normalize(value.get('text')))
+
+
+def public_root_candidates(values, context):
+    parents = context.get('parentPath')
+    if not isinstance(parents, list):
+        return []
+    root = parents[0] if parents else context
+    return [value for value in values if value.get('isRoot') and public_card_matches(value, root)]
+
+
+def public_reply_proof(values, context, author_url, expected, before):
+    roots = public_root_candidates(values, context)
+    author = public_author_link(author_url)
+    body = normalize(context.get('publishedText'))
+    if len(roots) != 1 or not author or not body or body not in expected or any(text in before for text in expected):
+        return False
+    root = roots[0]
+    branch = [value for value in values if value.get('rootIndex') == root['index']]
+    targets = [value for value in branch if public_card_matches(value, context)]
+    if len(targets) != 1 or identity_link(context.get('authorUrl')) == author:
+        return False
+    mention = normalize(context.get('publishedMention'))
+    name = author_name(context.get('author'))
+    if mention:
+        recipient = mention.rstrip(',:').strip().lstrip('@').casefold()
+        names = sum(normalize(value.get('author')).casefold() == name.casefold() for value in branch)
+        if not name or not body.startswith(mention) or recipient != name.casefold() or names != 1:
+            return False
+    if context['parentPath']:
+        # Public threads may flatten nested replies. Require a verified mention
+        # and an unambiguous recipient inside the same root conversation.
+        if not mention:
+            return False
+        if any(sum(public_card_matches(value, parent) for value in branch) != 1 for parent in context['parentPath']):
+            return False
+    elif targets[0]['index'] != root['index']:
+        return False
+    replies = [value for value in branch if value.get('isChild') and identity_link(value.get('authorUrl')) == author and normalize(value.get('text')) == body]
+    return len(replies) == 1 and recent_reply_label(replies[0].get('age'))
+
+
 class AgentError(Exception):
     def __init__(self, code):
         self.code = code
@@ -318,10 +370,36 @@ CARD_DATA = r"""(card, index=0) => {
 }"""
 EXTRACT = '(selector) => Array.from(document.querySelectorAll(selector)).map(' + CARD_DATA + ').filter(Boolean)'
 
+PUBLIC_CARD_DATA = r"""(card, index=0, cards=[]) => {
+  const selector = '[class*="comments2--comment__comment-"]';
+  const wrapperSelector = '[class*="comments2--comment__wrapper-"]';
+  const rootSelector = '[class*="comments2--comment__root-"]';
+  const visible = el => Boolean(el && el.getClientRects().length);
+  const local = (owner, s) => Array.from(owner.querySelectorAll(s)).filter(el => el.closest(selector) === owner && visible(el));
+  if (!visible(card)) return null;
+  const names = local(card, 'a[class*="comments2--comment-header__nameLink-"][href]');
+  const bodies = local(card, '[class*="comments2--comment-text__block-"]');
+  const wrapper = card.closest(wrapperSelector);
+  const root = wrapper?.closest(rootSelector);
+  if (names.length !== 1 || bodies.length !== 1 || !root || !root.matches(wrapperSelector)) return null;
+  const name = names[0], body = bodies[0];
+  const rootCard = Array.from(root.querySelectorAll(selector)).find(el => el.closest(wrapperSelector) === root);
+  if (!visible(rootCard)) return null;
+  let header = name;
+  while (header.parentElement && header.parentElement !== card && !header.parentElement.contains(body)) header = header.parentElement;
+  const headerLines = (header.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const children = wrapper.closest('[class*="comments2--comment__childComments-"]');
+  return {index, rootIndex:cards.indexOf(rootCard), isRoot:card === rootCard,
+    isChild:card !== rootCard && Boolean(children && root.contains(children)), author:name.innerText,
+    authorUrl:name.href, text:body.innerText, age:headerLines.length > 1 ? headerLines[headerLines.length-1] : ''};
+}"""
+PUBLIC_EXTRACT = '(selector) => Array.from(document.querySelectorAll(selector)).map(' + PUBLIC_CARD_DATA + ').filter(Boolean)'
+
 
 class Studio:
-    def __init__(self, page, source):
+    def __init__(self, page, source, public_author_url=''):
         self.page, self.source = page, source
+        self.public_author_url = public_author_link(public_author_url)
 
     async def assert_access(self, response=None):
         status = response.status if response else 200
@@ -490,6 +568,8 @@ class Studio:
         sends = await form.query_selector_all(SEND) if form else []
         if len(sends) != 1 or not await sends[0].is_visible() or not await sends[0].is_enabled():
             raise AgentError('interface_changed')
+        raw['publishedText'] = normalize(value)
+        raw['publishedMention'] = normalize(prefix)
         return sends[0], thread, expected, before, card, raw
 
     async def assert_pinned(self, card, send, item):
@@ -583,6 +663,97 @@ class Studio:
                 await self.scroll()
         return False
 
+    @staticmethod
+    async def public_access(page, article, response=None):
+        status = response.status if response else 200
+        if status in (401, 403, 429) or re.search(r'captcha|challenge', urlsplit(page.url).path, re.I):
+            raise AgentError('blocked')
+        if await page.get_by_role('heading', name=re.compile(r'^(Подтвердите, что вы не робот|Доступ ограничен|Слишком много запросов)$', re.I)).count():
+            raise AgentError('blocked')
+        return status < 400 and identity_link(page.url, article=True) == article
+
+    @staticmethod
+    async def expand_public_root(page, root, context):
+        card = await page.locator(PUBLIC_CARD).nth(root['index']).element_handle(timeout=2500)
+        if card is None:
+            return False
+        current = await card.evaluate(PUBLIC_CARD_DATA)
+        if not current or not public_root_candidates([current], context):
+            return False
+        controls = []
+        for button in await card.query_selector_all('button,[role="button"],a'):
+            if await button.is_visible() and await button.is_enabled() and PUBLIC_EXPAND.fullmatch(normalize(await button.inner_text())):
+                controls.append(button)
+        if not controls:
+            for label in await card.query_selector_all('span,div'):
+                if await label.is_visible() and PUBLIC_EXPAND.fullmatch(normalize(await label.inner_text())) and await label.evaluate(r"""el => !el.closest('[class*="comments2--comment-text__block-"], [class*="comments2--comment-header__"], button, a, [role="button"]') && !el.children.length && getComputedStyle(el).cursor === 'pointer'"""):
+                    controls.append(label)
+        if len(controls) != 1:
+            return False
+        await controls[0].click(timeout=3000)
+        await page.wait_for_timeout(800)
+        return True
+
+    async def read_public_comments(self, page, article, expected, before, context):
+        response = await page.goto(article, wait_until='domcontentloaded', timeout=12000)
+        if not await self.public_access(page, article, response):
+            return False
+        await page.wait_for_timeout(700)
+        opened = False
+        expanded = False
+        for step in range(MAX_CONFIRM_SCROLLS + 1):
+            if not await self.public_access(page, article):
+                return False
+            values = await page.evaluate(PUBLIC_EXTRACT, PUBLIC_CARD)
+            roots = public_root_candidates(values, context)
+            if len(roots) > 1:
+                return False
+            if public_reply_proof(values, context, self.public_author_url, expected, before):
+                return True
+            if len(roots) == 1 and not expanded:
+                expanded = await self.expand_public_root(page, roots[0], context)
+                if expanded:
+                    if not await self.public_access(page, article):
+                        return False
+                    values = await page.evaluate(PUBLIC_EXTRACT, PUBLIC_CARD)
+                    if public_reply_proof(values, context, self.public_author_url, expected, before):
+                        return True
+            if not values and not opened:
+                controls = page.get_by_role('button', name=re.compile(r'^(?:Открыть |Показать |Все )?комментарии(?:\s*\(?\d+\)?)?$', re.I))
+                visible = [controls.nth(i) for i in range(min(await controls.count(), 10)) if await controls.nth(i).is_visible()]
+                if len(visible) == 1:
+                    await visible[0].click(timeout=3000)
+                    opened = True
+                    await page.wait_for_timeout(800)
+                    continue
+            if step < MAX_CONFIRM_SCROLLS:
+                await page.evaluate(r"""(selector) => {
+                  const scrolling = document.scrollingElement;
+                  const card = Array.from(document.querySelectorAll(selector)).find(el => el.getClientRects().length);
+                  if (scrolling) scrolling.scrollTop += card ? 1800 : scrolling.scrollHeight;
+                  for (let el = card?.parentElement; el && el !== scrolling; el = el.parentElement) {
+                    if (el.getClientRects().length && el.scrollHeight > el.clientHeight+100 && /auto|scroll/.test(getComputedStyle(el).overflowY)) el.scrollTop += 1800;
+                  }
+                }""", PUBLIC_CARD)
+                await page.wait_for_timeout(700)
+        return False
+
+    async def confirm_public_comments(self, expected, before, context):
+        if not self.public_author_url:
+            print('DZEN_CONFIRM=PUBLIC_AUTHOR_REQUIRED')
+            return False
+        article = identity_link(context.get('articleUrl'), article=True)
+        if not article or not isinstance(context.get('parentPath'), list) or not context.get('publishedText'):
+            return False
+        print('DZEN_CONFIRM=PUBLIC_ARTICLE_CHECK')
+        page = await self.page.context.new_page()
+        try:
+            return await asyncio.wait_for(self.read_public_comments(page, article, expected, before, context), timeout=32)
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            await page.close()
+
     async def publish(self, task, hub):
         begun = False
         try:
@@ -615,6 +786,9 @@ class Studio:
             if await self.confirm_all_comments(task['comment'], expected, before, context):
                 print('DZEN_CONFIRM=ALL_COMMENTS')
                 return 'sent', ''
+            if await self.confirm_public_comments(expected, before, context):
+                print('DZEN_CONFIRM=PUBLIC_ARTICLE')
+                return 'sent', ''
             print('DZEN_CONFIRM=NOT_VERIFIED')
             return 'uncertain', 'uncertain'
         except AgentError as error:
@@ -631,6 +805,26 @@ def config_path():
     return root / 'config.json'
 
 
+def write_config(path, data):
+    temporary = path.with_suffix('.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(data, stream, ensure_ascii=False)
+    os.replace(temporary, path)
+
+
+def configure_public_author(path, value):
+    if not path.is_file():
+        raise ValueError('Сначала выполните configure.')
+    profile = public_author_link(value)
+    if not profile:
+        raise ValueError('Укажите HTTPS-ссылку публичного профиля своего канала Дзена.')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    data['publicAuthorUrl'] = profile
+    write_config(path, data)
+    print('DZEN_PUBLIC_AUTHOR=OK')
+
+
 def configure(path):
     old = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
     hub = hub_url(input('Адрес Boykov Services [https://boykov-services.ru]: ').strip() or 'https://boykov-services.ru')
@@ -641,11 +835,9 @@ def configure(path):
     data = {'hub': hub, 'studioUrl': source, 'token': token, 'agentId': old.get('agentId') or str(uuid.uuid4())}
     if old and not same_studio_channel(old['studioUrl'], source):
         raise ValueError('Уже настроен другой канал. Используйте отдельный профиль после согласованной смены канала.')
-    temporary = path.with_suffix('.tmp')
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-        json.dump(data, stream, ensure_ascii=False)
-    os.replace(temporary, path)
+    if old.get('publicAuthorUrl'):
+        data['publicAuthorUrl'] = old['publicAuthorUrl']
+    write_config(path, data)
     print('DZEN_AGENT_CONFIGURED=OK')
 
 
@@ -656,7 +848,7 @@ async def run(cfg, profile, login=False, headless=False):
         context = await pw.chromium.launch_persistent_context(str(profile), headless=headless and not login, viewport={'width':1440,'height':1000}, locale='ru-RU')
         try:
             page = context.pages[0] if context.pages else await context.new_page()
-            studio = Studio(page, cfg['studioUrl'])
+            studio = Studio(page, cfg['studioUrl'], cfg.get('publicAuthorUrl'))
             if login:
                 await page.goto(cfg['studioUrl'], wait_until='domcontentloaded')
                 await asyncio.to_thread(input, 'Войдите в Дзен вручную и откройте комментарии канала. Затем нажмите Enter здесь: ')
@@ -704,13 +896,16 @@ async def run(cfg, profile, login=False, headless=False):
 
 def main():
     parser = argparse.ArgumentParser(description='Boykov Services · агент комментариев Дзена')
-    parser.add_argument('command', choices=('configure', 'login', 'run'))
+    parser.add_argument('command', choices=('configure', 'login', 'run', 'public-author'))
+    parser.add_argument('--public-author-url', help='HTTPS-ссылка публичного профиля автора канала')
     parser.add_argument('--headless', action='store_true', help='Фоновый режим только для уже авторизованного профиля')
     args = parser.parse_args()
     path = config_path()
     try:
         if args.command == 'configure':
             configure(path)
+        elif args.command == 'public-author':
+            configure_public_author(path, args.public_author_url or input('Публичная ссылка своего канала: ').strip())
         else:
             if not path.is_file():
                 raise ValueError('Сначала выполните configure.')

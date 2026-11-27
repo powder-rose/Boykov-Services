@@ -1,8 +1,11 @@
 import unittest
+import json
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title, author_name, reply_value, all_comments_url, appeared_reply, same_root, recent_reply_label
+from agent import PUBLIC_EXTRACT, PUBLIC_CARD, PUBLIC_EXPAND, public_reply_proof, public_author_link, configure_public_author
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
 BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
@@ -87,6 +90,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         studio.assert_pinned=AsyncMock()
         studio.own_replies=AsyncMock(return_value=['Спасибо!'])
         studio.confirm_all_comments=AsyncMock(return_value=False)
+        studio.confirm_public_comments=AsyncMock(return_value=False)
         hub=AsyncMock();hub.call.return_value={'ok':True}
         return studio,hub,send
 
@@ -97,6 +101,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         hub.call.assert_awaited_once_with('begin',{'taskId':'task'})
         send.click.assert_awaited_once()
         studio.confirm_all_comments.assert_not_awaited()
+        studio.confirm_public_comments.assert_not_awaited()
 
     async def test_missing_filtered_thread_is_confirmed_read_only_in_all_comments(self):
         studio,hub,send=self.setup()
@@ -105,6 +110,7 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         outcome=await studio.publish({'id':'task','comment':{}},hub)
         self.assertEqual(outcome,('sent',''))
         studio.confirm_all_comments.assert_awaited_once_with({}, {'Спасибо!'}, [], {})
+        studio.confirm_public_comments.assert_not_awaited()
         send.click.assert_awaited_once()
         hub.call.assert_awaited_once()
 
@@ -113,8 +119,26 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         studio.own_replies.return_value=[]
         self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('uncertain','uncertain'))
         studio.confirm_all_comments.assert_awaited_once()
+        studio.confirm_public_comments.assert_awaited_once_with({'Спасибо!'}, [], {})
         send.click.assert_awaited_once()
         hub.call.assert_awaited_once()
+
+    async def test_public_article_confirmation_does_not_repeat_send(self):
+        studio,hub,send=self.setup()
+        studio.own_replies.return_value=[]
+        studio.confirm_public_comments.return_value=True
+        self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('sent',''))
+        studio.confirm_public_comments.assert_awaited_once_with({'Спасибо!'}, [], {})
+        hub.call.assert_awaited_once()
+        send.click.assert_awaited_once()
+
+    async def test_restricted_studio_does_not_trigger_public_fallback(self):
+        studio,hub,send=self.setup()
+        studio.own_replies.return_value=[]
+        studio.confirm_all_comments.side_effect=AgentError('blocked')
+        self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('uncertain','blocked'))
+        studio.confirm_public_comments.assert_not_awaited()
+        send.click.assert_awaited_once()
 
     async def test_hub_rejects_begin_no_click(self):
         studio,hub,send=self.setup()
@@ -234,7 +258,128 @@ class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
 
 
+class PublicConfirmationTests(unittest.TestCase):
+    def setUp(self):
+        self.author='https://dzen.ru/example-channel'
+        self.root={'index':0,'rootIndex':0,'isRoot':True,'isChild':False,'author':'Читатель','authorUrl':'https://dzen.ru/user/reader','text':'Вопрос','age':'29 мая'}
+        self.context={**self.root,'parentPath':[],'articleUrl':'https://dzen.ru/a/test-post','publishedText':'Читатель, Спасибо!','publishedMention':'Читатель,'}
+        self.reply={'index':1,'rootIndex':0,'isRoot':False,'isChild':True,'author':'Канал','authorUrl':self.author,'text':'Читатель, Спасибо!','age':'1 мин'}
+        self.expected={'Читатель, Спасибо!','Спасибо!'}
+
+    def proof(self, values, context=None, before=()):
+        return public_reply_proof(values, context or self.context, self.author, self.expected, before)
+
+    def test_exact_author_profile_fresh_reply_and_same_public_thread(self):
+        self.assertTrue(self.proof([self.root,self.reply]))
+        for changes in ({'authorUrl':'https://dzen.ru/other'}, {'rootIndex':2}, {'age':'14 мин'}, {'age':''}, {'isChild':False}, {'text':'Спасибо!'}, {'text':'Читатель, Другой ответ'}):
+            self.assertFalse(self.proof([self.root,{**self.reply,**changes}]),changes)
+        self.assertFalse(self.proof([self.root,self.reply], before=['Спасибо!']))
+        self.assertFalse(self.proof([self.root,self.reply,{**self.reply,'index':2}]))
+        self.assertFalse(self.proof([self.root,self.reply,{**self.root,'index':2,'rootIndex':2}]))
+        self.assertFalse(self.proof([self.root]))
+        self.assertFalse(self.proof([{**self.root,'authorUrl':'https://dzen.ru/user/another'},self.reply]))
+
+    def test_nested_reply_requires_full_branch_and_unambiguous_mention(self):
+        target={**self.root,'index':2,'isRoot':False,'isChild':True,'author':'Другой читатель','authorUrl':'https://dzen.ru/user/child','text':'Уточнение'}
+        context={**self.context,**target,'parentPath':[self.root],'publishedText':'Другой читатель, Спасибо!','publishedMention':'Другой читатель,'}
+        reply={**self.reply,'text':context['publishedText']}
+        self.expected.add(context['publishedText'])
+        self.assertTrue(self.proof([self.root,target,reply],context))
+        self.assertFalse(self.proof([self.root,reply],context))
+        self.assertFalse(self.proof([self.root,target,reply],{**context,'publishedMention':''}))
+        self.assertFalse(self.proof([self.root,target,reply,{**target,'index':3,'authorUrl':'https://dzen.ru/user/duplicate','text':'Другой вопрос'}],context))
+
+    def test_profile_setting_preserves_private_existing_config(self):
+        original={'hub':'https://example.test','studioUrl':CURRENT,'agentId':'id','token':'fixture-token'}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'config.json'
+            path.write_text(json.dumps(original),encoding='utf-8')
+            configure_public_author(path,'https://www.dzen.ru/example-channel/')
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),{**original,'publicAuthorUrl':self.author})
+            for value in ('https://dzen.ru/a/article','https://other.test/name','https://dzen.ru/profile/editor/test','http://dzen.ru/name'):
+                self.assertFalse(public_author_link(value))
+                with self.assertRaises(ValueError):
+                    configure_public_author(path,value)
+
+    def test_expansion_label_does_not_match_reply_or_collapse(self):
+        for text in ('4 ответа','1 ответ','Показать 7 ответов'):
+            self.assertTrue(PUBLIC_EXPAND.fullmatch(text))
+        for text in ('Ответить','Отправить','Свернуть ответы','4 лайка'):
+            self.assertFalse(PUBLIC_EXPAND.fullmatch(text))
+
+
+class PublicNavigationTests(unittest.IsolatedAsyncioTestCase):
+    def setup(self):
+        fixture=PublicConfirmationTests()
+        fixture.setUp()
+        page=Mock();page.url=fixture.context['articleUrl'];page.goto=AsyncMock(return_value=Mock(status=200));page.evaluate=AsyncMock();page.wait_for_timeout=AsyncMock()
+        page.get_by_role.return_value.count=AsyncMock(return_value=0)
+        page.close=AsyncMock()
+        studio=Studio(Mock(),CURRENT,fixture.author)
+        studio.page.context.new_page=AsyncMock(return_value=page)
+        return studio,page,fixture
+
+    async def test_opens_only_original_article_expands_root_and_closes_confirmation_tab(self):
+        studio,page,fixture=self.setup()
+        page.evaluate.side_effect=[[fixture.root],[fixture.root,fixture.reply]]
+        studio.expand_public_root=AsyncMock(return_value=True)
+        self.assertTrue(await studio.confirm_public_comments(fixture.expected, [], fixture.context))
+        page.goto.assert_awaited_once_with(fixture.context['articleUrl'],wait_until='domcontentloaded',timeout=12000)
+        studio.expand_public_root.assert_awaited_once_with(page,fixture.root,fixture.context)
+        page.close.assert_awaited_once()
+
+    async def test_redirect_and_access_restriction_never_confirm(self):
+        studio,page,fixture=self.setup()
+        page.url='https://dzen.ru/a/another'
+        self.assertFalse(await studio.confirm_public_comments(fixture.expected, [], fixture.context))
+        page.evaluate.assert_not_awaited()
+        page.close.assert_awaited_once()
+        studio,page,fixture=self.setup()
+        page.goto.return_value.status=429
+        with self.assertRaisesRegex(AgentError,'blocked'):
+            await studio.confirm_public_comments(fixture.expected, [], fixture.context)
+        page.evaluate.assert_not_awaited()
+        page.close.assert_awaited_once()
+
+    async def test_unconfigured_author_does_not_open_article(self):
+        studio,page,fixture=self.setup()
+        studio.public_author_url=''
+        self.assertFalse(await studio.confirm_public_comments(fixture.expected, [], fixture.context))
+        studio.page.context.new_page.assert_not_awaited()
+
+
 class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_article_expanded_root_and_channel_reply(self):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.skipTest('Playwright not installed')
+        async with async_playwright() as pw:
+            if not Path(pw.chromium.executable_path).is_file():
+                self.skipTest('Chromium fixture runner not installed')
+            browser=await pw.chromium.launch(headless=True)
+            try:
+                page=await browser.new_page()
+                await page.set_content('''<div class="comments2--comment__wrapper-2Z comments2--comment__root-_K"><div class="comments2--comment__content-1L"><div class="comments2--comment__right-3j">
+                  <div class="comments2--comment__comment-2P"><div><div><a class="comments2--comment-header__nameLink-38" href="https://dzen.ru/user/reader">Читатель</a></div><div>29 мая</div></div><div class="comments2--comment-text__block-2s">Вопрос</div><button>Ответить</button><button>Свернуть ответы</button></div>
+                  <div class="comments2--comment__childComments-2H"><div class="comments2--comment__wrapper-2Z"><div class="comments2--comment__content-1L"><div class="comments2--comment__right-3j">
+                    <div class="comments2--comment__comment-2P"><div><div><a class="comments2--comment-header__nameLink-38" href="https://dzen.ru/example-channel">Канал</a></div><div>1 мин</div></div><div class="comments2--comment-text__block-2s"><span>Читатель, </span><span>Спасибо!</span></div><button>Ответить</button></div>
+                  </div></div></div></div>
+                </div></div></div>''')
+                raw=await page.evaluate(PUBLIC_EXTRACT,PUBLIC_CARD)
+                self.assertEqual(len(raw),2)
+                self.assertTrue(raw[0]['isRoot'])
+                self.assertTrue(raw[1]['isChild'])
+                self.assertEqual(raw[1]['rootIndex'],0)
+                self.assertEqual(raw[1]['age'],'1 мин')
+                context={**raw[0],'parentPath':[],'publishedText':'Читатель, Спасибо!','publishedMention':'Читатель,'}
+                self.assertTrue(public_reply_proof(raw,context,'https://dzen.ru/example-channel',{'Читатель, Спасибо!'},[]))
+                await page.locator('[class*="comment__childComments-"]').evaluate('(el) => el.style.display="none"')
+                raw=await page.evaluate(PUBLIC_EXTRACT,PUBLIC_CARD)
+                self.assertFalse(public_reply_proof(raw,context,'https://dzen.ru/example-channel',{'Читатель, Спасибо!'},[]))
+            finally:
+                await browser.close()
+
     async def test_observed_post_root_and_nested_structure(self):
         try:
             from playwright.async_api import async_playwright
