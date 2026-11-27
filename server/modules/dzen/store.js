@@ -55,6 +55,7 @@ export function createDzenStore(db, now = Date.now) {
     CREATE TABLE IF NOT EXISTS dzen_comments (id TEXT PRIMARY KEY, source_key TEXT UNIQUE NOT NULL, external_id TEXT NOT NULL, author TEXT NOT NULL, article TEXT NOT NULL, text TEXT NOT NULL, created_label TEXT NOT NULL, href TEXT NOT NULL, fingerprint TEXT NOT NULL, is_own INTEGER NOT NULL, eligible INTEGER NOT NULL, status TEXT NOT NULL, reply TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, prompt_version INTEGER, approval TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', discovered_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, answered_at INTEGER, origin TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS dzen_comments_status ON dzen_comments(status, discovered_at);
     CREATE TABLE IF NOT EXISTS dzen_comment_aliases (legacy_key TEXT NOT NULL, comment_id TEXT NOT NULL, PRIMARY KEY(legacy_key,comment_id));
+    CREATE TABLE IF NOT EXISTS dzen_comment_archives (comment_id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS dzen_tasks (id TEXT PRIMARY KEY, kind TEXT NOT NULL, comment_id TEXT, agent_id TEXT NOT NULL, phase TEXT NOT NULL, created_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, begun_at INTEGER, day TEXT, outcome TEXT NOT NULL DEFAULT '');
     CREATE INDEX IF NOT EXISTS dzen_tasks_phase ON dzen_tasks(phase, lease_until);
     CREATE INDEX IF NOT EXISTS dzen_tasks_day ON dzen_tasks(day);
@@ -105,7 +106,18 @@ export function createDzenStore(db, now = Date.now) {
         "INSERT INTO dzen_events(created_at,action,comment_id,actor,detail) VALUES(?,?,?,?,?)",
       )
       .run(now(), action, id ?? null, actor || "Система", detail);
-  function view(r) {
+  function view(r, s = settings(), connection = runtime()) {
+    const ready = Boolean(eligible(r, s, connection));
+    const binding =
+      r.status === "archived"
+        ? "archived"
+        : ready
+          ? "ready"
+          : !r.external_id
+            ? "unbound"
+            : !connection.verified
+              ? "unverified"
+              : "not_confirmed";
     return {
       id: r.id,
       commentId: r.external_id,
@@ -115,7 +127,8 @@ export function createDzenStore(db, now = Date.now) {
       createdLabel: r.created_label,
       href: r.href,
       isOwn: !!r.is_own,
-      eligible: !!r.eligible,
+      eligible: ready,
+      binding,
       status: r.status,
       reply: r.reply,
       version: r.version,
@@ -198,12 +211,29 @@ export function createDzenStore(db, now = Date.now) {
         counts[row.status] = row.n;
       const where = [],
         args = [];
-      if (filters.status && filters.status !== "all") {
+      const readyIds = db
+        .prepare(
+          "SELECT * FROM dzen_comments WHERE status='draft' AND eligible=1",
+        )
+        .all()
+        .filter((row) => eligible(row, s, r))
+        .map((row) => row.id);
+      const readyFilter =
+        filters.status === "ready" || filters.status === "blocked";
+      if (readyFilter) {
+        where.push("status='draft'");
+        if (readyIds.length) {
+          where.push(
+            `id ${filters.status === "blocked" ? "NOT IN" : "IN"} (${readyIds.map(() => "?").join(",")})`,
+          );
+          args.push(...readyIds);
+        } else if (filters.status === "ready") where.push("0=1");
+      } else if (filters.status && filters.status !== "all") {
         if (!STATUSES.includes(filters.status))
           throw fail("Некорректный статус.");
         where.push("status=?");
         args.push(filters.status);
-      }
+      } else where.push("status<>'archived'");
       const q =
         typeof filters.q === "string" ? filters.q.trim().slice(0, 200) : "";
       if (q) {
@@ -227,10 +257,12 @@ export function createDzenStore(db, now = Date.now) {
         .prepare(
           "SELECT * FROM dzen_comments" +
             clause +
-            " ORDER BY discovered_at DESC,id DESC LIMIT 40 OFFSET ?",
+            (filters.status === "draft"
+              ? " ORDER BY eligible DESC,discovered_at DESC,id DESC LIMIT 40 OFFSET ?"
+              : " ORDER BY discovered_at DESC,id DESC LIMIT 40 OFFSET ?"),
         )
         .all(...args, (page - 1) * 40)
-        .map(view);
+        .map((row) => view(row, s, r));
       const task = db
         .prepare(
           `SELECT kind,phase,created_at FROM dzen_tasks WHERE phase IN ${ACTIVE} LIMIT 1`,
@@ -242,6 +274,8 @@ export function createDzenStore(db, now = Date.now) {
       return {
         settings: s,
         counts,
+        draftReady: readyIds.length,
+        draftBlocked: counts.draft - readyIds.length,
         items,
         total,
         page,
@@ -353,7 +387,13 @@ export function createDzenStore(db, now = Date.now) {
       return { ok: true };
     });
   }
-  function ingest(item, source, origin, duplicate = false, legacyCount = 0) {
+  function ingest(
+    item,
+    source,
+    origin,
+    duplicate = false,
+    legacySeen = new Map(),
+  ) {
     const s = settings();
     const existing = db
       .prepare("SELECT * FROM dzen_comments WHERE source_key=?")
@@ -378,18 +418,58 @@ export function createDzenStore(db, now = Date.now) {
       existing.text === item.text &&
       existing.href === item.href &&
       articleAgeOnlyChanged(existing.article, item.article);
-    if (origin === "studio" && item.legacyKey) {
-      const legacy = db
-        .prepare(
-          "SELECT * FROM dzen_comments WHERE source_key=? AND origin='studio' AND external_id='' ",
-        )
-        .get(item.legacyKey);
+    if (
+      origin === "studio" &&
+      item.externalId &&
+      (item.legacyKey || existing)
+    ) {
+      let legacy = item.legacyKey
+        ? db
+            .prepare(
+              "SELECT * FROM dzen_comments WHERE source_key=? AND origin='studio' AND external_id='' ",
+            )
+            .get(item.legacyKey)
+        : null;
+      if (!legacy && existing && sameVisibleContext) {
+        const known = db
+          .prepare(
+            "SELECT c.* FROM dzen_comment_aliases a JOIN dzen_comments c ON c.source_key=a.legacy_key WHERE a.comment_id=? AND c.origin='studio' AND c.external_id='' LIMIT 2",
+          )
+          .all(existing.id);
+        if (known.length === 1 && !(legacySeen.get(known[0].source_key) || 0))
+          legacy = known[0];
+      }
       if (legacy) {
+        const legacyCount = legacySeen.get(legacy.source_key) || 0;
+        const knownTargets = db
+          .prepare(
+            "SELECT comment_id FROM dzen_comment_aliases WHERE legacy_key=?",
+          )
+          .all(legacy.source_key);
+        const unique =
+          legacy.source_key === item.legacyKey
+            ? legacyCount === 1
+            : legacyCount === 0 &&
+              existing &&
+              knownTargets.some((row) => row.comment_id === existing.id);
+        const conflictingAlias = knownTargets.some(
+          (row) =>
+            row.comment_id !== existing?.id && row.comment_id !== legacy.id,
+        );
+        const archived =
+          legacy.status === "archived" &&
+          existing &&
+          db
+            .prepare(
+              "SELECT 1 FROM dzen_comment_archives WHERE comment_id=? AND canonical_id=?",
+            )
+            .get(legacy.id, existing.id);
         const safeExisting =
           existing &&
           sameVisibleContext &&
           eligible &&
-          legacyCount === 1 &&
+          unique &&
+          !conflictingAlias &&
           ["new", "draft", "error"].includes(legacy.status) &&
           !legacy.answered_at &&
           !db
@@ -397,35 +477,50 @@ export function createDzenStore(db, now = Date.now) {
               "SELECT 1 FROM dzen_tasks WHERE comment_id=? AND begun_at IS NOT NULL LIMIT 1",
             )
             .get(legacy.id);
-        if (safeExisting) {
-          if (rememberAlias(existing.id)) {
-            if (
-              existing.status === "new" &&
-              !existing.reply &&
-              legacy.status === "draft" &&
-              legacy.reply
-            ) {
-              db.prepare(
-                "UPDATE dzen_comments SET status='draft',reply=?,prompt_version=?,actor=?,version=version+1,updated_at=? WHERE id=?",
-              ).run(
-                legacy.reply,
-                legacy.prompt_version,
-                legacy.actor,
-                now(),
-                existing.id,
-              );
-            }
-            event(
-              "binding",
+        if (archived && unique && !conflictingAlias) {
+          // The preserved old card must not reserve a second publication.
+        } else if (safeExisting) {
+          rememberAlias(existing.id);
+          if (
+            ["new", "error"].includes(existing.status) &&
+            !existing.reply &&
+            legacy.status === "draft" &&
+            legacy.reply
+          ) {
+            db.prepare(
+              "UPDATE dzen_comments SET status='draft',reply=?,prompt_version=?,actor=?,version=version+1,updated_at=? WHERE id=?",
+            ).run(
+              legacy.reply,
+              legacy.prompt_version,
+              legacy.actor,
+              now(),
               existing.id,
-              "Агент Дзена",
-              "Связана прежняя карточка без ID; оба черновика и история сохранены.",
             );
           }
+          db.prepare(
+            "INSERT INTO dzen_comment_archives(comment_id,canonical_id) VALUES(?,?)",
+          ).run(legacy.id, existing.id);
+          db.prepare(
+            "UPDATE dzen_comments SET status='archived',eligible=0,approval='',error='Дубликат подтверждённой карточки. Текст ответа сохранён в архиве.',version=version+1,updated_at=? WHERE id=?",
+          ).run(now(), legacy.id);
+          event(
+            "binding",
+            existing.id,
+            "Агент Дзена",
+            "Связана прежняя карточка без ID; дополнительный текст и история сохранены в архиве дублей.",
+          );
+          event(
+            "binding_archive",
+            legacy.id,
+            "Агент Дзена",
+            "Дубликат архивирован; ответ и история сохранены.",
+          );
         } else if (
           existing ||
           !eligible ||
-          legacyCount !== 1 ||
+          !unique ||
+          conflictingAlias ||
+          legacy.status === "archived" ||
           ["generating", "sending"].includes(legacy.status)
         ) {
           if (existing)
@@ -788,7 +883,7 @@ export function createDzenStore(db, now = Date.now) {
                 r.studio_url,
                 "studio",
                 seen.get(item.key) > 1,
-                legacySeen.get(item.legacyKey) || 0,
+                legacySeen,
               )
             )
               added++;
@@ -935,7 +1030,8 @@ export function createDzenStore(db, now = Date.now) {
         (automatic &&
           (s.mode === "paused" ||
             row.status !== "new" ||
-            row.origin !== "studio"))
+            row.origin !== "studio" ||
+            !eligible(row, s, runtime())))
       )
         throw fail("Генерация недоступна.", 409);
       if (isOwn({ author: row.author, isOwn: !!row.is_own }, s))
@@ -1023,9 +1119,11 @@ export function createDzenStore(db, now = Date.now) {
       );
       return db
         .prepare(
-          "SELECT id FROM dzen_comments WHERE status='new' AND origin='studio' AND is_own=0 AND last_seen>=? ORDER BY discovered_at,id LIMIT ?",
+          "SELECT * FROM dzen_comments WHERE status='new' AND origin='studio' AND is_own=0 AND eligible=1 AND external_id<>'' AND last_seen>=? ORDER BY discovered_at,id",
         )
-        .all(r.last_scan - 1000, s.batchLimit)
+        .all(r.last_scan - 1000)
+        .filter((row) => eligible(row, s, r))
+        .slice(0, s.batchLimit)
         .map((x) => x.id);
     });
   }

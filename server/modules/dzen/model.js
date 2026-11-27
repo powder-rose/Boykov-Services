@@ -27,6 +27,7 @@ export const STATUSES = [
   "skipped",
   "error",
   "attention",
+  "archived",
 ];
 export const fail = (message, status = 400) =>
   Object.assign(new Error(message), { status });

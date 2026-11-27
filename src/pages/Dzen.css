@@ -538,6 +538,16 @@
   overflow-wrap: anywhere;
   color: #3e4439;
 }
+.dz-card-binding {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--dz-muted);
+}
+.dz-card-binding.ready {
+  color: var(--dz-green);
+}
 .dz-card-reply {
   display: flex;
   align-items: center;

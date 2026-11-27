@@ -25,7 +25,7 @@ COMMENT = 'p[aria-label="Текст комментария"]'
 REPLY = 'button[data-testid="reply-button"]'
 COMPOSER = 'textarea[data-testid="comment-textarea"]'
 SEND = 'button[data-testid="send-button"]'
-MAX_SCROLLS = 8
+MAX_SCROLLS = 18
 MAX_CONFIRM_SCROLLS = 8
 PUBLIC_CARD = '[class*="comments2--comment__comment-"]'
 PUBLIC_EXPAND = re.compile(r'^(?:Показать\s+(?:ещ[её]\s+)?)?\d+\s+ответ(?:а|ов)?$', re.I)
@@ -463,13 +463,28 @@ class Studio:
 
     async def scroll(self):
         # Only the normal visible comments page/container, never hidden data.
-        await self.page.evaluate("""() => { const root=document.scrollingElement; if(root) root.scrollTop += 1800; for(const e of document.querySelectorAll('[class*="comments-page__"]')) { if(e.getClientRects().length && e.scrollHeight>e.clientHeight+100) e.scrollTop+=1800; } }""")
-        await self.page.wait_for_timeout(500)
+        moved = await self.page.evaluate("""(selector) => {
+          const root = document.scrollingElement;
+          const cards = Array.from(document.querySelectorAll(selector)).filter(el => el.getClientRects().length);
+          for (let el = cards.at(-1)?.parentElement; el && el !== root; el = el.parentElement) {
+            if (el.getClientRects().length && el.scrollHeight > el.clientHeight + 100 && /auto|scroll/.test(getComputedStyle(el).overflowY) && el.scrollTop < el.scrollHeight - el.clientHeight - 2) {
+              const before = el.scrollTop;
+              el.scrollTop += 1800;
+              return el.scrollTop > before;
+            }
+          }
+          if (!root) return false;
+          const before = root.scrollTop;
+          root.scrollTop += 1800;
+          return root.scrollTop > before;
+        }""", CARD)
+        await self.page.wait_for_timeout(700)
+        return moved is True
 
     async def scan(self):
         await self.open()
         verified = await self.verified_filter()
-        found, stagnant = {}, 0
+        found, stagnant, advanced = {}, 0, True
         for step in range(MAX_SCROLLS + 1):
             batch = await self.snapshots()
             if verified and not await self.verified_filter():
@@ -481,10 +496,10 @@ class Studio:
                 if keys.count(key) > 1 or (key in found and not found[key]['canReply']):
                     item['canReply'] = False
                 found[key] = item
-            stagnant = stagnant + 1 if before == len(found) else 0
-            if stagnant >= 2 or len(found) >= 250 or step == MAX_SCROLLS:
+            stagnant = stagnant + 1 if before == len(found) and not advanced else 0
+            if stagnant >= 4 or len(found) >= 250 or step == MAX_SCROLLS:
                 break
-            await self.scroll()
+            advanced = await self.scroll()
         # Stay below both the default reverse-proxy body limit and the Hub's
         # JSON limit, including non-ASCII text. Later scans can pick up more.
         items, size = [], 0

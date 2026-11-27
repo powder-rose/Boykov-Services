@@ -184,6 +184,19 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TargetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scan_continues_through_loaded_cards_until_scroll_stops(self):
+        studio=Studio(AsyncMock(),CURRENT)
+        studio.open=AsyncMock()
+        studio.verified_filter=AsyncMock(return_value=True)
+        first={'commentId':'first','author':'Читатель','text':'Первый','canReply':True,'isOwn':False}
+        later={'commentId':'later','author':'Читатель','text':'Поздний','canReply':True,'isOwn':False}
+        studio.snapshots=AsyncMock(side_effect=[[(0,first)]]*6+[[(0,first),(1,later)]]*5)
+        studio.scroll=AsyncMock(side_effect=[True]*6+[False]*4)
+        comments,verified=await studio.scan()
+        self.assertTrue(verified)
+        self.assertEqual([item['commentId'] for item in comments],['first','later'])
+        self.assertEqual(studio.scroll.await_count,10)
+
     async def test_contextual_target_detects_duplicate_in_later_snapshot(self):
         page=Mock()
         studio=Studio(page,CURRENT)

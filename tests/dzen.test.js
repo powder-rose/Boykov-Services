@@ -113,7 +113,7 @@ test("subscriber and relative-time metadata are removed from names without inval
   assert.equal(f.find(current.commentId).eligible, false);
 });
 
-test("the previously duplicated legacy row does not block a proven contextual draft with clean author", (t) => {
+test("verified duplicate is archived without overwriting either saved draft", (t) => {
   const f = fixture(t);
   const old = data("", "Один текст", {
     author: "Геннадий Д",
@@ -130,16 +130,129 @@ test("the previously duplicated legacy row does not block a proven contextual dr
   const later = f.draft(f.find(bound.commentId), "Новый черновик.");
   assert.equal(f.store.state().total, 2);
   f.scan([{ ...bound, author: "Геннадий Д" }], true, currentUrl);
-  assert.equal(f.store.state().total, 2);
+  assert.equal(f.store.state().total, 1);
   assert.equal(f.find(bound.commentId).id, later.id);
   assert.equal(f.find(bound.commentId).reply, later.reply);
   assert.equal(f.find(bound.commentId).eligible, true);
-  assert.equal(f.find("").id, earlier.id);
-  assert.equal(f.find("").reply, earlier.reply);
-  assert.equal(f.find("").eligible, false);
-  f.action(f.find(""), "confirm", { confirm: true, reply: earlier.reply });
+  const archived = f.store.state({ status: "archived" }).items[0];
+  assert.equal(archived.id, earlier.id);
+  assert.equal(archived.reply, earlier.reply);
+  assert.equal(archived.eligible, false);
+  assert.throws(() => f.action(archived, "reopen"), /Действие недоступно/);
+  assert.throws(
+    () =>
+      f.action(archived, "confirm", { confirm: true, reply: earlier.reply }),
+    /Действие недоступно/,
+  );
+  assert.throws(
+    () => f.store.startGeneration(archived.id, archived.version),
+    /Генерация недоступна/,
+  );
+  f.restart();
   f.scan([{ ...bound, author: "Геннадий Д" }], true, currentUrl);
+  assert.equal(f.find(bound.commentId).eligible, true);
+  assert.equal(f.store.state().counts.archived, 1);
+  assert.equal(f.store.state({ status: "ready" }).total, 1);
+});
+
+test("a known older draft is copied into a blank verified duplicate even when the alias already exists", (t) => {
+  const f = fixture(t);
+  const old = data("", "Один текст", {
+    author: "Геннадий Д",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  const bound = contextual("b", old.text, {
+    author: "Геннадий Д подписчик 1 д",
+    legacy: { author: "Геннадий Д", articleTitle: "", href: currentUrl },
+  });
+  f.scan([old], true, currentUrl);
+  const original = f.draft(f.find(""), "Сохранённый черновик.");
+  f.scan([bound], true, currentUrl);
+  const canonical = f.find(bound.commentId);
+  const current = { ...bound, author: "Геннадий Д" };
+  const key = parseComment(current, currentUrl, true).legacyKey;
+  f.db
+    .prepare(
+      "INSERT INTO dzen_comment_aliases(legacy_key,comment_id) VALUES(?,?)",
+    )
+    .run(key, canonical.id);
+  f.scan([current], true, currentUrl);
+  assert.equal(f.find(bound.commentId).reply, original.reply);
+  assert.equal(f.find(bound.commentId).status, "draft");
+  assert.equal(
+    f.store.state({ status: "archived" }).items[0].reply,
+    original.reply,
+  );
+  assert.equal(f.store.state().draftReady, 1);
+  assert.equal(f.store.state().draftBlocked, 0);
+  f.scan([{ ...current, legacy: undefined }], true, currentUrl);
+  assert.equal(f.find(bound.commentId).eligible, true);
+});
+
+test("a legacy card with a confirmed publication blocks a duplicate and is never archived", (t) => {
+  const f = fixture(t);
+  const old = data("", "Один текст", {
+    author: "Геннадий Д",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  const bound = contextual("b", old.text, {
+    author: "Геннадий Д подписчик 1 д",
+    legacy: { author: "Геннадий Д", articleTitle: "", href: currentUrl },
+  });
+  f.scan([old], true, currentUrl);
+  const original = f.draft(f.find(""));
+  f.scan([bound], true, currentUrl);
+  f.action(original, "confirm", { confirm: true, reply: original.reply });
+  f.scan([{ ...bound, author: "Геннадий Д" }], true, currentUrl);
+  assert.equal(f.find("").status, "answered");
   assert.equal(f.find(bound.commentId).eligible, false);
+  assert.equal(f.store.state().counts.archived, 0);
+});
+
+test("ready and blocked draft filters reflect the latest verified scan and preserve unseen drafts", (t) => {
+  const f = fixture(t);
+  const a = contextual("a", "Первый вопрос");
+  const b = contextual("b", "Другой вопрос");
+  f.scan([a, b], true, currentUrl);
+  f.draft(f.find(a.commentId));
+  const older = f.draft(f.find(b.commentId));
+  f.tick(10000);
+  f.scan([a], true, currentUrl);
+  assert.equal(f.store.state().draftReady, 1);
+  assert.equal(f.store.state().draftBlocked, 1);
+  assert.equal(
+    f.store.state({ status: "ready" }).items[0].commentId,
+    a.commentId,
+  );
+  assert.equal(f.store.state({ status: "blocked" }).items[0].id, older.id);
+  assert.equal(
+    f.store.state({ status: "draft" }).items[0].commentId,
+    a.commentId,
+  );
+  f.tick(16 * 60000);
+  assert.equal(f.store.state().draftReady, 0);
+  assert.equal(f.store.state({ status: "blocked" }).total, 2);
+});
+
+test("automatic generation does not create drafts for unavailable or ambiguous comments", (t) => {
+  const f = fixture(t);
+  f.settings({ mode: "review" });
+  f.scan(
+    [
+      data("", "Без привязки"),
+      data("usable", "С привязкой"),
+      data("duplicate", "Дубликат"),
+      data("duplicate", "Дубликат"),
+    ],
+    true,
+  );
+  assert.deepEqual(f.store.reserveAutoBatch(), [f.find("usable").id]);
+  assert.throws(
+    () => f.store.startGeneration(f.find("").id, null, true),
+    /Генерация недоступна/,
+  );
 });
 
 test("relative post age never invalidates an existing contextual draft, including a v1 stored title", (t) => {

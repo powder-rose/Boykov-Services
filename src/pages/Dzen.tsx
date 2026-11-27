@@ -53,7 +53,9 @@ type Status =
   | "answered"
   | "skipped"
   | "error"
-  | "attention";
+  | "attention"
+  | "archived";
+type CommentFilter = Status | "all" | "ready" | "blocked";
 type Settings = {
   mode: Mode;
   channel: string;
@@ -77,6 +79,7 @@ type Comment = {
   href: string;
   isOwn: boolean;
   eligible: boolean;
+  binding: "ready" | "unbound" | "not_confirmed" | "unverified" | "archived";
   status: Status;
   approval: string;
   actor: string;
@@ -99,6 +102,8 @@ type Event = {
 export type DzenData = {
   settings: Settings;
   counts: Record<Status, number>;
+  draftReady: number;
+  draftBlocked: number;
   items: Comment[];
   total: number;
   page: number;
@@ -138,6 +143,7 @@ const statuses: Record<Status, string> = {
   skipped: "Пропущен",
   error: "Ошибка ИИ",
   attention: "Проверить",
+  archived: "Архив дублей",
 };
 const modeInfo = {
   paused: {
@@ -161,6 +167,7 @@ const eventLabels: Record<string, string> = {
   scan_requested: "Запрошено обновление",
   filter_updated: "Фильтр обновлён",
   binding: "Уточнена привязка",
+  binding_archive: "Дубликат сохранён в архиве",
   scan_error: "Обновление остановлено",
   generated: "Подготовлен черновик",
   auto_queue: "Автоматически поставлен в очередь",
@@ -190,9 +197,11 @@ const connectionLabels: Record<string, string> = {
   error: "Ошибка подключения",
 };
 const formatDate = (s: string | null) => (s ? dateTime(s, true) : "—");
-const filtered: { key: Status | "all"; label: string }[] = [
+const filtered: { key: CommentFilter; label: string }[] = [
   { key: "all", label: "Все" },
   { key: "new", label: "Новые" },
+  { key: "ready", label: "Можно отправить" },
+  { key: "blocked", label: "Без подтверждения" },
   { key: "draft", label: "Черновики" },
   { key: "queued", label: "В очереди" },
   { key: "answered", label: "Отвечено" },
@@ -201,7 +210,16 @@ const filtered: { key: Status | "all"; label: string }[] = [
   { key: "error", label: "Ошибки" },
   { key: "generating", label: "Генерация" },
   { key: "sending", label: "Отправка" },
+  { key: "archived", label: "Архив дублей" },
 ];
+
+const bindingLabels: Record<Comment["binding"], string> = {
+  ready: "Можно отправить",
+  unbound: "Нет точной привязки к исходному комментарию",
+  not_confirmed: "Нет подтверждения в последнем сборе",
+  unverified: "Обновите список неотвеченных комментариев",
+  archived: "Дубликат · сохранённый текст",
+};
 
 function Badge({ status }: { status: Status }) {
   return (
@@ -274,7 +292,9 @@ function ReplyDetail({
   const stale = dirty && local.version !== row.version;
   const editable =
     data.permissions.edit &&
-    !["generating", "queued", "sending", "answered"].includes(row.status);
+    !["generating", "queued", "sending", "answered", "archived"].includes(
+      row.status,
+    );
   const canSave =
     editable &&
     row.status !== "attention" &&
@@ -366,7 +386,8 @@ function ReplyDetail({
               ? contextual
                 ? "Привязка по статье и тексту · с проверкой"
                 : "Подтверждён в списке без ответа"
-              : "Для отправки нужна точная привязка к комментарию"}
+              : bindingLabels[row.binding] ||
+                "Для отправки нужна точная привязка к комментарию"}
         </span>
         {row.promptVersion && <span>Промпт v{row.promptVersion}</span>}
       </div>
@@ -402,9 +423,11 @@ function ReplyDetail({
             <Sparkles size={15} /> ОТВЕТ КАНАЛА
           </span>
           <h3>
-            {row.status === "answered"
-              ? "Опубликованный ответ"
-              : "Подготовить ответ"}
+            {row.status === "archived"
+              ? "Сохранённый черновик"
+              : row.status === "answered"
+                ? "Опубликованный ответ"
+                : "Подготовить ответ"}
             <TitleDot />
           </h3>
         </div>
@@ -989,7 +1012,7 @@ export default function Dzen({ active }: { active: boolean }) {
     [section, setSection] = useState<"comments" | "settings" | "log">(
       "comments",
     ),
-    [filter, setFilter] = useState<Status | "all">("all"),
+    [filter, setFilter] = useState<CommentFilter>("all"),
     [query, setQuery] = useState(""),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(1),
@@ -1038,7 +1061,7 @@ export default function Dzen({ active }: { active: boolean }) {
     const last = Math.max(1, Math.ceil(data.total / data.pageSize));
     if (page > last) setPage(last);
   }, [data, page]);
-  const changeFilter = (status: Status | "all") => {
+  const changeFilter = (status: CommentFilter) => {
     setFilter(status);
     setPage(1);
     setSelected(null);
@@ -1212,11 +1235,11 @@ export default function Dzen({ active }: { active: boolean }) {
             hint: "Ожидают обработки",
           },
           {
-            label: "Готовы к проверке",
-            value: data.counts.draft,
+            label: "Можно отправить",
+            value: data.draftReady,
             icon: FilePenLine,
-            key: "draft",
-            hint: "Черновики ответов",
+            key: "ready",
+            hint: `Без подтверждения: ${number(data.draftBlocked)}`,
           },
           {
             label: "Отвечено сегодня",
@@ -1236,7 +1259,7 @@ export default function Dzen({ active }: { active: boolean }) {
           <button
             key={m.key}
             className={`panel dz-metric ${filter === m.key && section === "comments" ? "selected" : ""}`}
-            onClick={() => changeFilter(m.key as Status)}
+            onClick={() => changeFilter(m.key as CommentFilter)}
           >
             <span>
               {m.label}
@@ -1398,13 +1421,15 @@ export default function Dzen({ active }: { active: boolean }) {
                     aria-label="Фильтр комментариев"
                     value={filter}
                     onChange={(e) =>
-                      changeFilter(e.target.value as Status | "all")
+                      changeFilter(e.target.value as CommentFilter)
                     }
                   >
                     {filtered.map((f) => (
                       <option key={f.key} value={f.key}>
                         {f.label}
-                        {f.key !== "all" ? ` · ${data.counts[f.key]}` : ""}
+                        {f.key !== "all"
+                          ? ` · ${f.key === "ready" ? data.draftReady : f.key === "blocked" ? data.draftBlocked : data.counts[f.key]}`
+                          : ""}
                       </option>
                     ))}
                   </select>
@@ -1438,6 +1463,18 @@ export default function Dzen({ active }: { active: boolean }) {
                         <span className="dz-card-article">{c.article}</span>
                       )}
                       <p>{c.text}</p>
+                      {c.status === "draft" && (
+                        <span
+                          className={`dz-card-binding ${c.eligible ? "ready" : "blocked"}`}
+                        >
+                          {c.eligible ? (
+                            <ShieldCheck size={13} />
+                          ) : (
+                            <CircleAlert size={13} />
+                          )}
+                          {bindingLabels[c.binding] || "Нет подтверждения"}
+                        </span>
+                      )}
                       {c.reply && (
                         <span className="dz-card-reply">
                           <MessageCircle size={13} /> {c.reply}
