@@ -90,6 +90,36 @@ const contextual = (suffix, text, extra = {}) =>
     ...extra,
   });
 
+test("relative post age never invalidates an existing contextual draft, including a v1 stored title", (t) => {
+  const f = fixture(t);
+  const item = contextual("a", "Точный вопрос", {
+    articleTitle: "Статья о кабеле 4 м 4 м",
+  });
+  f.scan([item], true, currentUrl);
+  const draft = f.draft(f.find(item.commentId));
+  f.scan(
+    [{ ...item, articleTitle: "Статья о кабеле 4 м\n5\u00a0м" }],
+    true,
+    currentUrl,
+  );
+  const row = f.find(item.commentId);
+  assert.equal(row.id, draft.id);
+  assert.equal(row.reply, draft.reply);
+  assert.equal(row.status, "draft");
+  assert.equal(row.article, "Статья о кабеле 4 м");
+  assert.equal(row.eligible, true);
+  f.scan(
+    [{ ...item, articleTitle: "Статья о кабеле 4 м\n2 ч" }],
+    true,
+    currentUrl,
+  );
+  assert.equal(f.find(item.commentId).status, "draft");
+  assert.equal(f.find(item.commentId).eligible, true);
+  f.scan([{ ...item, articleTitle: "Другая статья" }], true, currentUrl);
+  assert.equal(f.find(item.commentId).status, "attention");
+  assert.equal(f.find(item.commentId).eligible, false);
+});
+
 test("exact contextual binding upgrades the existing text-only row and preserves draft, history and identity", (t) => {
   const f = fixture(t);
   const old = data("", "Точный текст", {

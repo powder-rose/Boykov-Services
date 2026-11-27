@@ -150,6 +150,24 @@ export function isOwn(item, settings) {
 }
 export const isContextIdentity = (value) =>
   String(value ?? "").startsWith("context_");
+const articleAge =
+  /^(?:\d+\s*(?:м|мин\.?|ч|час(?:а|ов)?|д|дн\.?|день|дня|дней|нед\.?|мес\.?|г|год(?:а)?|лет)(?:\s+назад)?|сегодня|вчера|только что)$/iu;
+export function canonicalArticleTitle(value) {
+  const lines = String(value ?? "")
+    .split(/\r?\n/u)
+    .map(normalize)
+    .filter(Boolean);
+  if (lines.length > 1 && articleAge.test(lines.at(-1))) lines.pop();
+  return lines.join(" ");
+}
+export function articleAgeOnlyChanged(previous, current) {
+  const a = canonicalArticleTitle(previous),
+    b = canonicalArticleTitle(current);
+  if (a === b) return true;
+  return Boolean(
+    b && a.startsWith(b + " ") && articleAge.test(a.slice(b.length + 1)),
+  );
+}
 function commentFingerprint(author, text, article, href) {
   return digest(
     [
@@ -165,7 +183,13 @@ export function parseComment(input, source, verified = false) {
     throw fail("Некорректный комментарий.");
   const author = string(input.author ?? "", 180),
     text = string(input.text, 6000, true);
-  const article = string(input.articleTitle ?? "", 500),
+  const rawArticle = input.articleTitle ?? "";
+  const article = string(
+      isContextIdentity(input.commentId) && typeof rawArticle === "string"
+        ? canonicalArticleTitle(rawArticle)
+        : rawArticle,
+      500,
+    ),
     created = string(input.createdLabel ?? "", 140);
   const externalId =
     typeof input.commentId === "string" &&
@@ -193,7 +217,7 @@ export function parseComment(input, source, verified = false) {
       (!oldAuthor ||
         normalize(oldAuthor).toLocaleLowerCase("ru") ===
           normalize(author).toLocaleLowerCase("ru")) &&
-      (!oldArticle || normalize(oldArticle) === normalize(article))
+      (!oldArticle || articleAgeOnlyChanged(oldArticle, article))
     ) {
       legacyKey = `text:${commentFingerprint(oldAuthor, text, oldArticle, oldHref)}`;
     }

@@ -32,6 +32,16 @@ def normalize(value):
     return ' '.join(str(value or '').replace('\u200b', '').replace('\u2060', '').replace('\ufeff', '').split())
 
 
+ARTICLE_AGE = re.compile(r'(?:\d+\s*(?:м|мин\.?|ч|час(?:а|ов)?|д|дн\.?|день|дня|дней|нед\.?|мес\.?|г|год(?:а)?|лет)(?:\s+назад)?|сегодня|вчера|только что)', re.I)
+
+
+def article_title(value):
+    lines = [normalize(line) for line in str(value or '').splitlines() if normalize(line)]
+    if len(lines) > 1 and ARTICLE_AGE.fullmatch(lines[-1]):
+        lines.pop()
+    return ' '.join(lines)[:500]
+
+
 def unanswered_parameter(value):
     query = parse_qs(urlsplit(value).query, keep_blank_values=True)
     current, legacy = query.get('answer', []), query.get('comments_data', [])
@@ -124,7 +134,7 @@ def make_comment(raw, source):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,180}', external):
         external = ''
     href = allowed_link(raw.get('href'), source)
-    article = normalize(raw.get('articleTitle'))[:500]
+    article = article_title(raw.get('articleTitle'))
     article_url = identity_link(raw.get('articleUrl'), article=True)
     if not external:
         external = context_id(raw, text, author)

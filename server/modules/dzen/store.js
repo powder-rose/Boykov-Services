@@ -9,6 +9,7 @@ import {
   sameStudioChannel,
   parseComment,
   isContextIdentity,
+  articleAgeOnlyChanged,
   isOwn,
   validateReply,
   automaticReplyAllowed,
@@ -422,6 +423,28 @@ export function createDzenStore(db, now = Date.now) {
       return false;
     if (existing) {
       if (existing.fingerprint !== item.fingerprint) {
+        if (
+          item.externalId.startsWith("context_ui_") &&
+          existing.origin === "studio" &&
+          existing.author === item.author &&
+          existing.text === item.text &&
+          existing.href === item.href &&
+          articleAgeOnlyChanged(existing.article, item.article)
+        ) {
+          db.prepare(
+            "UPDATE dzen_comments SET article=?,fingerprint=?,eligible=?,is_own=?,last_seen=?,created_label=? WHERE id=?",
+          ).run(
+            item.article,
+            item.fingerprint,
+            Number(eligible),
+            Number(own),
+            now(),
+            item.created,
+            existing.id,
+          );
+          rememberAlias(existing.id);
+          return false;
+        }
         if (!["answered", "attention", "sending"].includes(existing.status))
           db.prepare(
             "UPDATE dzen_comments SET status='attention',eligible=0,approval='',error='Текст или автор изменился в Студии. Проверьте вручную.',version=version+1,updated_at=?,last_seen=? WHERE id=?",
