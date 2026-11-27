@@ -7,6 +7,8 @@ x-agent: &agent
   init: true
   read_only: true
   cap_drop: [ALL]
+
+  cap_add: [SYS_CHROOT]
   security_opt:
     - no-new-privileges:true
     - "seccomp=${DZEN_SECCOMP_PROFILE:-/opt/boykov-services/integrations/dzen/server/seccomp_profile.json}"
@@ -39,6 +41,3 @@ services:
       - "127.0.0.1:6080:6080"
 volumes:
   state:
-
-  cap_drop: [ALL]
-  cap_add: [SYS_CHROOT]
