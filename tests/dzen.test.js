@@ -90,6 +90,58 @@ const contextual = (suffix, text, extra = {}) =>
     ...extra,
   });
 
+test("subscriber and relative-time metadata are removed from names without invalidating a draft", (t) => {
+  const f = fixture(t);
+  const current = contextual("a", "Вопрос читателя", {
+    author: "Геннадий Д подписчик 1 д",
+  });
+  f.scan([current], true, currentUrl);
+  const draft = f.draft(f.find(current.commentId));
+  f.scan(
+    [{ ...current, author: "Геннадий Д\nподписчик\n2\u00a0д" }],
+    true,
+    currentUrl,
+  );
+  const row = f.find(current.commentId);
+  assert.equal(row.author, "Геннадий Д");
+  assert.equal(row.id, draft.id);
+  assert.equal(row.status, "draft");
+  assert.equal(row.reply, draft.reply);
+  assert.equal(row.eligible, true);
+  f.scan([{ ...current, author: "Другой читатель" }], true, currentUrl);
+  assert.equal(f.find(current.commentId).status, "attention");
+  assert.equal(f.find(current.commentId).eligible, false);
+});
+
+test("the previously duplicated legacy row does not block a proven contextual draft with clean author", (t) => {
+  const f = fixture(t);
+  const old = data("", "Один текст", {
+    author: "Геннадий Д",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  const bound = contextual("b", old.text, {
+    author: "Геннадий Д подписчик 1 д",
+    legacy: { author: "Геннадий Д", articleTitle: "", href: currentUrl },
+  });
+  f.scan([old], true, currentUrl);
+  const earlier = f.draft(f.find(""), "Ранний черновик.");
+  f.scan([bound], true, currentUrl);
+  const later = f.draft(f.find(bound.commentId), "Новый черновик.");
+  assert.equal(f.store.state().total, 2);
+  f.scan([{ ...bound, author: "Геннадий Д" }], true, currentUrl);
+  assert.equal(f.store.state().total, 2);
+  assert.equal(f.find(bound.commentId).id, later.id);
+  assert.equal(f.find(bound.commentId).reply, later.reply);
+  assert.equal(f.find(bound.commentId).eligible, true);
+  assert.equal(f.find("").id, earlier.id);
+  assert.equal(f.find("").reply, earlier.reply);
+  assert.equal(f.find("").eligible, false);
+  f.action(f.find(""), "confirm", { confirm: true, reply: earlier.reply });
+  f.scan([{ ...bound, author: "Геннадий Д" }], true, currentUrl);
+  assert.equal(f.find(bound.commentId).eligible, false);
+});
+
 test("relative post age never invalidates an existing contextual draft, including a v1 stored title", (t) => {
   const f = fixture(t);
   const item = contextual("a", "Точный вопрос", {

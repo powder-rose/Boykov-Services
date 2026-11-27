@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title
+from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title, author_name, reply_value
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
 BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
@@ -10,6 +10,18 @@ CURRENT = BASE + '?answer=notReply'
 
 
 class IdentityTests(unittest.TestCase):
+    def test_author_link_metadata_does_not_corrupt_reply_mention(self):
+        self.assertEqual(author_name('Геннадий Д\nподписчик\n1\u00a0д'),'Геннадий Д')
+        self.assertEqual(author_name('Геннадий Д\nподписчик · 2 ч'),'Геннадий Д')
+        self.assertEqual(author_name('Смирнов\n9 ч'),'Смирнов')
+        self.assertEqual(author_name('Анна\nавтор\nсегодня'),'Анна')
+        self.assertEqual(author_name('Мастер 4 м'),'Мастер 4 м')
+        clean=author_name('Геннадий Д\nподписчик\n1\u00a0д')
+        self.assertEqual(reply_value('Геннадий Д, ',clean,'Спасибо за вопрос.'),'Геннадий Д, Спасибо за вопрос.')
+        self.assertEqual(reply_value('Геннадий Д, ',clean,'Геннадий Д, спасибо.'),'Геннадий Д, спасибо.')
+        with self.assertRaisesRegex(AgentError,'ambiguous'):
+            reply_value('Другой читатель, ',clean,'Спасибо.')
+
     def test_post_title_excludes_visible_relative_age_but_preserves_actual_title(self):
         title='Техническая статья о кабеле длиной 4 м'
         self.assertEqual(article_title(title+'\n4\u00a0м'),title)
@@ -158,7 +170,7 @@ class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
                   <a href="https://dzen.ru/a/test-post">Тестовая статья<br>4&nbsp;м</a>
                   <div class="editor--comments-page__commentsContainer-12">
                     <div class="editor--comments-page__commentNode-2f">
-                      <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/parent">Читатель</a><p aria-label="Текст комментария">Вопрос</p><button data-testid="reply-button">Ответить</button></div>
+                      <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/parent">Читатель<br>подписчик<br>1&nbsp;д</a><p aria-label="Текст комментария">Вопрос</p><button data-testid="reply-button">Ответить</button></div>
                       <div class="editor--root-comment__commentsContainer-Ep"><div class="editor--root-comment__commentNode-14">
                         <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/child">Другой читатель</a><p aria-label="Текст комментария">Уточнение</p><button data-testid="reply-button">Ответить</button></div>
                       </div></div>
@@ -171,6 +183,7 @@ class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raw[1]['parentPath'],[{'authorUrl':'https://dzen.ru/id/parent','text':'Вопрос'}])
                 self.assertEqual(article_title(raw[1]['articleTitle']),'Тестовая статья')
                 self.assertEqual(raw[1]['author'],'Другой читатель')
+                self.assertEqual(make_comment(raw[0],CURRENT)['author'],'Читатель')
                 self.assertTrue(all(make_comment(value,CURRENT)['canReply'] for value in raw))
             finally:
                 await browser.close()

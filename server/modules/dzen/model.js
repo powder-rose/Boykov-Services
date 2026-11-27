@@ -152,6 +152,31 @@ export const isContextIdentity = (value) =>
   String(value ?? "").startsWith("context_");
 const articleAge =
   /^(?:\d+\s*(?:м|мин\.?|ч|час(?:а|ов)?|д|дн\.?|день|дня|дней|нед\.?|мес\.?|г|год(?:а)?|лет)(?:\s+назад)?|сегодня|вчера|только что)$/iu;
+function authorMetadata(value) {
+  const text = normalize(value).replace(/^[ ·•]+|[ ·•]+$/gu, "");
+  if (articleAge.test(text)) return true;
+  const role = text.match(/^(?:подписчик|автор)(?:\s*[·•]?\s*(.*))?$/iu);
+  return Boolean(
+    role &&
+    (!role[1] || articleAge.test(role[1].replace(/^[ ·•]+|[ ·•]+$/gu, ""))),
+  );
+}
+export function canonicalAuthorName(value) {
+  const lines = String(value ?? "")
+    .split(/\r?\n/u)
+    .map(normalize)
+    .filter(Boolean);
+  while (lines.length > 1 && authorMetadata(lines.at(-1))) lines.pop();
+  return lines.join(" ");
+}
+export function authorMetadataOnlyChanged(previous, current) {
+  const a = canonicalAuthorName(previous),
+    b = canonicalAuthorName(current);
+  return (
+    a === b ||
+    Boolean(b && a.startsWith(b + " ") && authorMetadata(a.slice(b.length + 1)))
+  );
+}
 export function canonicalArticleTitle(value) {
   const lines = String(value ?? "")
     .split(/\r?\n/u)
@@ -181,7 +206,13 @@ function commentFingerprint(author, text, article, href) {
 export function parseComment(input, source, verified = false) {
   if (!input || typeof input !== "object")
     throw fail("Некорректный комментарий.");
-  const author = string(input.author ?? "", 180),
+  const rawAuthor = input.author ?? "";
+  const author = string(
+      isContextIdentity(input.commentId) && typeof rawAuthor === "string"
+        ? canonicalAuthorName(rawAuthor)
+        : rawAuthor,
+      180,
+    ),
     text = string(input.text, 6000, true);
   const rawArticle = input.articleTitle ?? "";
   const article = string(
@@ -215,8 +246,10 @@ export function parseComment(input, source, verified = false) {
       oldHref &&
       (oldHref === commentLink(source, "") || oldHref === href) &&
       (!oldAuthor ||
-        normalize(oldAuthor).toLocaleLowerCase("ru") ===
-          normalize(author).toLocaleLowerCase("ru")) &&
+        authorMetadataOnlyChanged(
+          oldAuthor.toLocaleLowerCase("ru"),
+          author.toLocaleLowerCase("ru"),
+        )) &&
       (!oldArticle || articleAgeOnlyChanged(oldArticle, article))
     ) {
       legacyKey = `text:${commentFingerprint(oldAuthor, text, oldArticle, oldHref)}`;

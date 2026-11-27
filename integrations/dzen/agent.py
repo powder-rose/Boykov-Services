@@ -33,6 +33,7 @@ def normalize(value):
 
 
 ARTICLE_AGE = re.compile(r'(?:\d+\s*(?:м|мин\.?|ч|час(?:а|ов)?|д|дн\.?|день|дня|дней|нед\.?|мес\.?|г|год(?:а)?|лет)(?:\s+назад)?|сегодня|вчера|только что)', re.I)
+AUTHOR_ROLE = re.compile(r'(?:подписчик|автор)(?:\s*[·•]?\s*(.*))?', re.I)
 
 
 def article_title(value):
@@ -40,6 +41,21 @@ def article_title(value):
     if len(lines) > 1 and ARTICLE_AGE.fullmatch(lines[-1]):
         lines.pop()
     return ' '.join(lines)[:500]
+
+
+def author_metadata(value):
+    text = normalize(value).strip(' ·•')
+    if ARTICLE_AGE.fullmatch(text):
+        return True
+    role = AUTHOR_ROLE.fullmatch(text)
+    return bool(role and (not role.group(1) or ARTICLE_AGE.fullmatch(role.group(1).strip(' ·•'))))
+
+
+def author_name(value):
+    lines = [normalize(line) for line in str(value or '').splitlines() if normalize(line)]
+    while len(lines) > 1 and author_metadata(lines[-1]):
+        lines.pop()
+    return ' '.join(lines)[:180]
 
 
 def unanswered_parameter(value):
@@ -127,7 +143,7 @@ def context_id(raw, text, author):
 
 def make_comment(raw, source):
     text = normalize(raw.get('text'))
-    author = normalize(raw.get('author'))[:180]
+    author = author_name(raw.get('author'))
     if not text or len(text) > 6000:
         return None
     external = str(raw.get('commentId') or '')
@@ -172,6 +188,14 @@ class AgentError(Exception):
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+def reply_value(prefix, author, reply):
+    if prefix.strip():
+        mention = normalize(prefix).casefold().rstrip(',:').strip().lstrip('@')
+        if mention != normalize(author).casefold():
+            raise AgentError('ambiguous')
+    return reply if not prefix or normalize(reply).casefold().startswith(normalize(prefix).casefold()) else prefix + reply
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -422,12 +446,8 @@ class Studio:
             raise AgentError('ambiguous')
         composer = composers[0]
         prefix = await composer.input_value()
-        if prefix.strip():
-            mention = normalize(prefix).casefold().rstrip(',:').strip().lstrip('@')
-            if mention != normalize(item['author']).casefold():
-                raise AgentError('ambiguous')
         reply = item['reply']
-        value = reply if not prefix or normalize(reply).casefold().startswith(normalize(prefix).casefold()) else prefix + reply
+        value = reply_value(prefix, item['author'], reply)
         expected = {normalize(value), normalize(reply)}
         if any(x in expected for x in before):
             raise AgentError('ambiguous')

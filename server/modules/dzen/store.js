@@ -10,6 +10,7 @@ import {
   parseComment,
   isContextIdentity,
   articleAgeOnlyChanged,
+  authorMetadataOnlyChanged,
   isOwn,
   validateReply,
   automaticReplyAllowed,
@@ -361,10 +362,22 @@ export function createDzenStore(db, now = Date.now) {
     const eligible = item.eligible && !own && !duplicate;
     const rememberAlias = (id) => {
       if (origin === "studio" && item.legacyKey)
-        db.prepare(
-          "INSERT OR IGNORE INTO dzen_comment_aliases(legacy_key,comment_id) VALUES(?,?)",
-        ).run(item.legacyKey, id);
+        return db
+          .prepare(
+            "INSERT OR IGNORE INTO dzen_comment_aliases(legacy_key,comment_id) VALUES(?,?)",
+          )
+          .run(item.legacyKey, id).changes;
+      return 0;
     };
+    const sameVisibleContext =
+      existing &&
+      item.externalId.startsWith("context_ui_") &&
+      existing.origin === "studio" &&
+      existing.external_id === item.externalId &&
+      authorMetadataOnlyChanged(existing.author, item.author) &&
+      existing.text === item.text &&
+      existing.href === item.href &&
+      articleAgeOnlyChanged(existing.article, item.article);
     if (origin === "studio" && item.legacyKey) {
       const legacy = db
         .prepare(
@@ -372,7 +385,44 @@ export function createDzenStore(db, now = Date.now) {
         )
         .get(item.legacyKey);
       if (legacy) {
-        if (
+        const safeExisting =
+          existing &&
+          sameVisibleContext &&
+          eligible &&
+          legacyCount === 1 &&
+          ["new", "draft", "error"].includes(legacy.status) &&
+          !legacy.answered_at &&
+          !db
+            .prepare(
+              "SELECT 1 FROM dzen_tasks WHERE comment_id=? AND begun_at IS NOT NULL LIMIT 1",
+            )
+            .get(legacy.id);
+        if (safeExisting) {
+          if (rememberAlias(existing.id)) {
+            if (
+              existing.status === "new" &&
+              !existing.reply &&
+              legacy.status === "draft" &&
+              legacy.reply
+            ) {
+              db.prepare(
+                "UPDATE dzen_comments SET status='draft',reply=?,prompt_version=?,actor=?,version=version+1,updated_at=? WHERE id=?",
+              ).run(
+                legacy.reply,
+                legacy.prompt_version,
+                legacy.actor,
+                now(),
+                existing.id,
+              );
+            }
+            event(
+              "binding",
+              existing.id,
+              "Агент Дзена",
+              "Связана прежняя карточка без ID; оба черновика и история сохранены.",
+            );
+          }
+        } else if (
           existing ||
           !eligible ||
           legacyCount !== 1 ||
@@ -383,31 +433,32 @@ export function createDzenStore(db, now = Date.now) {
               existing.id,
             );
           return false;
+        } else {
+          db.prepare(
+            "UPDATE dzen_comments SET source_key=?,external_id=?,author=?,article=?,href=?,fingerprint=?,is_own=?,eligible=?,created_label=?,last_seen=?,updated_at=?,version=version+1,approval='',status=CASE WHEN status='queued' THEN 'draft' ELSE status END WHERE id=?",
+          ).run(
+            item.key,
+            item.externalId,
+            item.author,
+            item.article,
+            item.href,
+            item.fingerprint,
+            Number(own),
+            Number(eligible),
+            item.created,
+            now(),
+            now(),
+            legacy.id,
+          );
+          rememberAlias(legacy.id);
+          event(
+            "binding",
+            legacy.id,
+            "Агент Дзена",
+            "Уточнена привязка; сохранены черновик и история. Проверьте статью и автора перед отправкой.",
+          );
+          return false;
         }
-        db.prepare(
-          "UPDATE dzen_comments SET source_key=?,external_id=?,author=?,article=?,href=?,fingerprint=?,is_own=?,eligible=?,created_label=?,last_seen=?,updated_at=?,version=version+1,approval='',status=CASE WHEN status='queued' THEN 'draft' ELSE status END WHERE id=?",
-        ).run(
-          item.key,
-          item.externalId,
-          item.author,
-          item.article,
-          item.href,
-          item.fingerprint,
-          Number(own),
-          Number(eligible),
-          item.created,
-          now(),
-          now(),
-          legacy.id,
-        );
-        rememberAlias(legacy.id);
-        event(
-          "binding",
-          legacy.id,
-          "Агент Дзена",
-          "Уточнена привязка; сохранены черновик и история. Проверьте статью и автора перед отправкой.",
-        );
-        return false;
       }
     }
     if (
@@ -423,17 +474,11 @@ export function createDzenStore(db, now = Date.now) {
       return false;
     if (existing) {
       if (existing.fingerprint !== item.fingerprint) {
-        if (
-          item.externalId.startsWith("context_ui_") &&
-          existing.origin === "studio" &&
-          existing.author === item.author &&
-          existing.text === item.text &&
-          existing.href === item.href &&
-          articleAgeOnlyChanged(existing.article, item.article)
-        ) {
+        if (sameVisibleContext) {
           db.prepare(
-            "UPDATE dzen_comments SET article=?,fingerprint=?,eligible=?,is_own=?,last_seen=?,created_label=? WHERE id=?",
+            "UPDATE dzen_comments SET author=?,article=?,fingerprint=?,eligible=?,is_own=?,last_seen=?,created_label=? WHERE id=?",
           ).run(
+            item.author,
             item.article,
             item.fingerprint,
             Number(eligible),
