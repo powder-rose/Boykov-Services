@@ -527,6 +527,8 @@ class Studio:
         for value in raw:
             item = make_comment(value, self.source)
             if item:
+                if self.public_author_url and identity_link(value.get('authorUrl')) == self.public_author_url:
+                    item['isOwn'], item['canReply'] = True, False
                 results.append((value['index'], item))
         return results
 
@@ -624,7 +626,7 @@ class Studio:
             raise AgentError('ambiguous')
         raw = await card.evaluate(CARD_DATA)
         pinned = make_comment(raw, self.source) if raw else None
-        if not pinned or not same_target(pinned, item) or pinned['isOwn'] or not pinned['canReply']:
+        if not pinned or not same_target(pinned, item) or pinned['isOwn'] or not pinned['canReply'] or (self.public_author_url and identity_link(raw.get('authorUrl')) == self.public_author_url):
             raise AgentError('ambiguous')
         buttons = await card.query_selector_all(REPLY)
         if len(buttons) != 1 or not await buttons[0].is_visible():
@@ -661,7 +663,7 @@ class Studio:
             raise AgentError('ambiguous')
         raw = await card.evaluate(CARD_DATA)
         pinned = make_comment(raw, self.source) if raw else None
-        if not pinned or not same_target(pinned, item) or pinned['isOwn']:
+        if not pinned or not same_target(pinned, item) or pinned['isOwn'] or (self.public_author_url and identity_link(raw.get('authorUrl')) == self.public_author_url):
             raise AgentError('ambiguous')
 
     @staticmethod
@@ -882,8 +884,11 @@ class Studio:
     async def publish(self, task, hub):
         begun = False
         try:
-            if task['comment'].get('commentId', '').startswith('context_') and task['comment'].get('approval') != 'manual':
-                raise AgentError('ambiguous')
+            comment = task['comment']
+            comment_id = comment.get('commentId', '')
+            if comment_id.startswith('context_') and comment.get('approval') != 'manual':
+                if not (comment.get('approval') == 'auto' and comment.get('autoContextAuthorized') is True and self.public_author_url and re.fullmatch(r'context_ui_[a-f0-9]{64}', comment_id)):
+                    raise AgentError('ambiguous')
             send, thread, expected, before, card, context = await self.prepare(task['comment'])
             await self.assert_access()
             if not await self.verified_filter():
@@ -986,7 +991,7 @@ async def run(cfg, profile, login=False, headless=False):
             status = 'starting'
             print('DZEN_AGENT_STARTED')
             while True:
-                polled = await hub.call('poll', {'studioUrl':cfg['studioUrl'], 'status':status})
+                polled = await hub.call('poll', {'studioUrl':cfg['studioUrl'], 'status':status, 'autoContextSupported':bool(studio.public_author_url)})
                 task = polled.get('task')
                 if not task:
                     await asyncio.sleep(max(5, min(60, int(polled.get('waitSeconds', 15)))))

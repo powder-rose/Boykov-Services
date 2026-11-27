@@ -43,11 +43,17 @@ function fixture(t) {
       "Администратор",
       true,
     );
-  const poll = (status = "ready", source = url) =>
-    store.poll({ agentId, studioUrl: source, status }).task;
-  const scan = (items, verified = true, source = url) => {
+  const poll = (status = "ready", source = url, autoContextSupported = false) =>
+    store.poll({ agentId, studioUrl: source, status, autoContextSupported })
+      .task;
+  const scan = (
+    items,
+    verified = true,
+    source = url,
+    autoContextSupported = false,
+  ) => {
     store.requestScan("Администратор");
-    const task = poll("starting", source);
+    const task = poll("starting", source, autoContextSupported);
     assert.equal(task.kind, "scan");
     store.result({
       agentId,
@@ -656,6 +662,222 @@ test("automatic mode requires explicit consent and only queues fresh safe respon
   );
   assert.equal(f.store.state().promptHistory.length, 2);
   assert.equal(f.store.state().promptHistory[0].version, 2);
+});
+
+test("strong contextual auto replies require explicit consent and a capable paired agent", (t) => {
+  const f = fixture(t);
+  const item = contextual("a", "Точный вопрос");
+  const weak = data("context_" + "b".repeat(64), "Старый тип привязки");
+  f.settings({ mode: "review", ownNames: "Наш канал" });
+  f.scan([item, weak], true, currentUrl);
+  assert.throws(
+    () => f.settings({ mode: "auto", autoContext: true, confirmAuto: true }),
+    /Обновите локальный агент/,
+  );
+  f.scan([item, weak], true, currentUrl, true);
+  assert.equal(f.store.state().connection.autoContextSupported, true);
+  assert.throws(
+    () => f.settings({ mode: "auto", autoContext: true }),
+    /Подтвердите/,
+  );
+  f.settings({ mode: "auto", autoContext: true, confirmAuto: true });
+  f.scan([item, weak], true, currentUrl, true);
+  for (const entry of [item, weak]) {
+    const job = f.store.startGeneration(f.find(entry.commentId).id, null, true);
+    const result = f.store.finishGeneration(
+      job.comment.id,
+      job.comment.version,
+      "Спасибо за вопрос.",
+      job.settings,
+      true,
+      "Zenbot · ИИ",
+    );
+    assert.equal(result.status, entry === item ? "queued" : "draft");
+  }
+  const task = f.poll("ready", currentUrl, true);
+  assert.equal(task.kind, "publish");
+  assert.equal(task.comment.commentId, item.commentId);
+  assert.equal(task.comment.approval, "auto");
+  assert.equal(task.comment.autoContextAuthorized, true);
+  assert.deepEqual(f.store.begin({ agentId, taskId: task.id }), { ok: true });
+  f.store.result({ agentId, taskId: task.id, outcome: "sent" });
+  assert.equal(f.find(item.commentId).status, "answered");
+});
+
+test("previous AI drafts enter the opt-in auto queue, but edited, cancelled and prior attempts never do", (t) => {
+  const f = fixture(t);
+  const items = [
+    contextual("a", "Первый"),
+    contextual("b", "Второй"),
+    contextual("c", "Третий"),
+    contextual("d", "Четвёртый"),
+  ];
+  f.settings({
+    mode: "review",
+    ownNames: "Наш канал",
+    dailyLimit: 2,
+    batchLimit: 4,
+  });
+  f.scan(items, true, currentUrl, true);
+  for (const item of items) {
+    const job = f.store.startGeneration(f.find(item.commentId).id, null, true);
+    f.store.finishGeneration(
+      job.comment.id,
+      job.comment.version,
+      "Спасибо за вопрос.",
+      job.settings,
+      true,
+      "Zenbot · ИИ",
+    );
+  }
+  f.draft(f.find(items[1].commentId), "Ручная правка.");
+  f.action(f.find(items[2].commentId), "queue");
+  f.action(f.find(items[2].commentId), "cancel");
+  f.action(f.find(items[3].commentId), "queue");
+  const previous = f.poll("ready", currentUrl, true);
+  f.store.begin({ agentId, taskId: previous.id });
+  f.store.result({
+    agentId,
+    taskId: previous.id,
+    outcome: "uncertain",
+    code: "uncertain",
+  });
+  f.action(f.find(items[3].commentId), "not_sent", { confirm: true });
+  f.settings({
+    mode: "auto",
+    autoContext: true,
+    autoDrafts: true,
+    confirmAuto: true,
+  });
+  f.scan(items, true, currentUrl, true);
+  assert.equal(f.store.state().autoDraftReady, 1);
+  assert.deepEqual(f.store.reserveAutoBatch(), []);
+  assert.equal(f.store.state().autoQueued, 1);
+  assert.equal(f.find(items[0].commentId).status, "queued");
+  for (const item of items.slice(1))
+    assert.equal(f.find(item.commentId).status, "draft");
+  const task = f.poll("ready", currentUrl, true);
+  assert.equal(task.comment.commentId, items[0].commentId);
+  assert.equal(task.comment.autoContextAuthorized, true);
+  f.store.begin({ agentId, taskId: task.id });
+  f.store.result({ agentId, taskId: task.id, outcome: "sent" });
+  assert.equal(f.store.state().dailyUsed, 2);
+  assert.equal(f.poll("ready", currentUrl, true), null);
+});
+
+test("disabling contextual auto replies or reconnecting an old agent invalidates an unbegun lease", (t) => {
+  const f = fixture(t);
+  const item = contextual("a", "Вопрос");
+  f.settings({ mode: "review", ownNames: "Наш канал" });
+  f.scan([item], true, currentUrl, true);
+  f.settings({ mode: "auto", autoContext: true, confirmAuto: true });
+  f.scan([item], true, currentUrl, true);
+  const job = f.store.startGeneration(f.find(item.commentId).id, null, true);
+  f.store.finishGeneration(
+    job.comment.id,
+    job.comment.version,
+    "Спасибо за вопрос.",
+    job.settings,
+    true,
+    "Zenbot · ИИ",
+  );
+  const task = f.poll("ready", currentUrl, true);
+  assert.equal(task.comment.autoContextAuthorized, true);
+  assert.equal(f.poll("ready", currentUrl, false), null);
+  assert.throws(
+    () => f.store.begin({ agentId, taskId: task.id }),
+    /Публикация остановлена/,
+  );
+  f.settings({ autoContext: false });
+  f.poll("ready", currentUrl, true);
+  assert.throws(
+    () => f.store.begin({ agentId, taskId: task.id }),
+    /Публикация остановлена/,
+  );
+  assert.equal(f.store.state().dailyUsed, 0);
+});
+
+test("automatic queue reserves only remaining daily capacity and ignores an outdated prompt", (t) => {
+  const f = fixture(t);
+  const items = [
+    contextual("a", "Старый промпт"),
+    contextual("b", "Текущий промпт"),
+    contextual("c", "Второй текущий промпт"),
+    contextual("d", "Новый вопрос"),
+  ];
+  f.settings({
+    mode: "review",
+    ownNames: "Наш канал",
+    dailyLimit: 1,
+    batchLimit: 5,
+  });
+  f.scan(items, true, currentUrl, true);
+  let job = f.store.startGeneration(f.find(items[0].commentId).id, null, true);
+  f.store.finishGeneration(
+    job.comment.id,
+    job.comment.version,
+    "Старый ответ.",
+    job.settings,
+    true,
+    "Zenbot · ИИ",
+  );
+  f.settings({ prompt: DEFAULT_PROMPT + "\nНовый стиль." });
+  for (const item of items.slice(1, 3)) {
+    job = f.store.startGeneration(f.find(item.commentId).id, null, true);
+    f.store.finishGeneration(
+      job.comment.id,
+      job.comment.version,
+      "Новый ответ.",
+      job.settings,
+      true,
+      "Zenbot · ИИ",
+    );
+  }
+  f.settings({
+    mode: "auto",
+    autoContext: true,
+    autoDrafts: true,
+    confirmAuto: true,
+  });
+  f.scan(items, true, currentUrl, true);
+  assert.equal(f.store.state().autoDraftReady, 2);
+  assert.deepEqual(f.store.reserveAutoBatch(), [f.find(items[3].commentId).id]);
+  assert.equal(f.store.state().autoQueued, 1);
+  assert.equal(f.find(items[0].commentId).status, "draft");
+  job = f.store.startGeneration(f.find(items[3].commentId).id, null, true);
+  assert.equal(
+    f.store.finishGeneration(
+      job.comment.id,
+      job.comment.version,
+      "Ответ на новый вопрос.",
+      job.settings,
+      true,
+      "Zenbot · ИИ",
+    ).status,
+    "draft",
+  );
+  assert.equal(f.store.state().autoQueued, 1);
+});
+
+test("upgrade preserves prior settings and drafts without silently activating contextual auto replies", (t) => {
+  const f = fixture(t);
+  f.settings({ mode: "review", ownNames: "Наш канал" });
+  f.scan([data("a")]);
+  const draft = f.draft(f.find("a"));
+  const old = JSON.parse(
+    f.db.prepare("SELECT data FROM dzen_settings WHERE id=1").get().data,
+  );
+  delete old.autoContext;
+  delete old.autoDrafts;
+  f.db
+    .prepare("UPDATE dzen_settings SET data=? WHERE id=1")
+    .run(JSON.stringify(old));
+  f.db.exec("ALTER TABLE dzen_runtime DROP COLUMN auto_context");
+  f.restart();
+  assert.equal(f.store.settings().autoContext, false);
+  assert.equal(f.store.settings().autoDrafts, false);
+  assert.equal(f.find("a").reply, draft.reply);
+  assert.equal(f.store.state().connection.autoContextSupported, false);
 });
 test("changed source comment cannot silently receive an old prepared answer", (t) => {
   const f = fixture(t);

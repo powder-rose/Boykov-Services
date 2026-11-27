@@ -67,6 +67,8 @@ type Settings = {
   prompt: string;
   version: number;
   promptVersion: number;
+  autoContext: boolean;
+  autoDrafts: boolean;
 };
 type Comment = {
   id: string;
@@ -104,6 +106,8 @@ export type DzenData = {
   counts: Record<Status, number>;
   draftReady: number;
   draftBlocked: number;
+  autoDraftReady: number;
+  autoQueued: number;
   items: Comment[];
   total: number;
   page: number;
@@ -117,8 +121,10 @@ export type DzenData = {
     lastHeartbeat: string | null;
     lastScan: string | null;
     nextScan: string | null;
+    nextGenerate: string | null;
     scanRequested: boolean;
     verified: boolean;
+    autoContextSupported: boolean;
     error: string;
     task: { kind: string; phase: string; createdAt: string } | null;
   };
@@ -171,6 +177,7 @@ const eventLabels: Record<string, string> = {
   scan_error: "Обновление остановлено",
   generated: "Подготовлен черновик",
   auto_queue: "Автоматически поставлен в очередь",
+  auto_settings: "Изменены параметры автоответов",
   ai_skip: "ИИ предложил пропустить",
   ai_error: "Ошибка генерации",
   queue: "Ответ подтверждён сотрудником",
@@ -287,6 +294,11 @@ function ReplyDetail({
   );
   const reply = local?.text ?? row.reply;
   const contextual = row.commentId.startsWith("context_");
+  const automaticContext =
+    row.commentId.startsWith("context_ui_") &&
+    data.settings.mode === "auto" &&
+    data.settings.autoContext &&
+    data.connection.autoContextSupported;
   const [copied, setCopied] = useState(false);
   const dirty = local !== null && reply !== row.reply;
   const stale = dirty && local.version !== row.version;
@@ -384,7 +396,9 @@ function ReplyDetail({
             ? "Комментарий своего канала"
             : row.eligible && data.connection.verified
               ? contextual
-                ? "Привязка по статье и тексту · с проверкой"
+                ? automaticContext
+                  ? "Точная привязка · автоответы разрешены"
+                  : "Привязка по статье и тексту · с проверкой"
                 : "Подтверждён в списке без ответа"
               : bindingLabels[row.binding] ||
                 "Для отправки нужна точная привязка к комментарию"}
@@ -393,9 +407,9 @@ function ReplyDetail({
       </div>
       {contextual && row.eligible && (
         <Notice tone="info">
-          Дзен не показывает ID этого комментария. Перед отправкой сверьте
-          автора, статью и текст. Для такой привязки требуется подтверждение
-          сотрудника.
+          {automaticContext
+            ? "Автоответ разрешён только при повторной точной проверке автора, статьи, текста и ветки перед публикацией. Изменённые вручную ответы требуют подтверждения сотрудника."
+            : "Дзен не показывает ID этого комментария. Перед отправкой сверьте автора, статью и текст. Для такой привязки требуется подтверждение сотрудника."}
         </Notice>
       )}
       {row.error && (
@@ -652,11 +666,20 @@ function SettingsPanel({
     e.preventDefault();
     const confirmAuto =
       draft.mode === "auto" &&
-      (data.settings.mode !== "auto" || draft.prompt !== data.settings.prompt);
+      (data.settings.mode !== "auto" ||
+        draft.prompt !== data.settings.prompt ||
+        (draft.autoContext && !data.settings.autoContext) ||
+        (draft.autoDrafts && !data.settings.autoDrafts));
     if (
       confirmAuto &&
       !window.confirm(
-        "Разрешить автоматическую публикацию ответов от имени канала? Действуют указанные лимиты. Неподтверждённые комментарии не отправляются.",
+        "Разрешить автоматическую публикацию ответов от имени канала? Действуют указанные лимиты. Неподтверждённые комментарии не отправляются." +
+          (draft.autoContext
+            ? " Контекстно привязанные комментарии будут повторно проверяться перед отправкой."
+            : "") +
+          (draft.autoDrafts
+            ? " Ранее подготовленные ИИ неизменённые черновики текущего промпта также будут отправляться."
+            : ""),
       )
     )
       return;
@@ -700,6 +723,46 @@ function SettingsPanel({
             );
           })}
         </div>
+        {draft.mode === "auto" && (
+          <div className="dz-auto-options">
+            <label className="dz-auto-option">
+              <input
+                type="checkbox"
+                checked={draft.autoContext}
+                disabled={
+                  !canEdit ||
+                  (!data.connection.autoContextSupported && !draft.autoContext)
+                }
+                onChange={(e) => update("autoContext", e.target.checked)}
+              />
+              <span>
+                <strong>Автоответы по точной привязке</strong>
+                <small>
+                  Для комментариев без открытого ID, найденных по профилю,
+                  публикации, тексту и ветке.{" "}
+                  {!data.connection.autoContextSupported &&
+                    "Обновите и запустите агент с настроенной ссылкой канала."}
+                </small>
+              </span>
+            </label>
+            <label className="dz-auto-option">
+              <input
+                type="checkbox"
+                checked={draft.autoDrafts}
+                disabled={!canEdit}
+                onChange={(e) => update("autoDrafts", e.target.checked)}
+              />
+              <span>
+                <strong>Отправлять готовые черновики ИИ</strong>
+                <small>
+                  Только неизменённые ответы текущего промпта. Ручные правки,
+                  отменённые и неподтверждённые публикации не отправляются
+                  автоматически.
+                </small>
+              </span>
+            </label>
+          </div>
+        )}
         <div className="dz-form-grid">
           <label>
             Название канала
@@ -1321,6 +1384,27 @@ export default function Dzen({ active }: { active: boolean }) {
         </div>
       </section>
       {data.connection.error && <Notice>{data.connection.error}</Notice>}
+      {data.settings.mode === "auto" && (
+        <Notice tone="info">
+          {data.settings.autoContext && data.connection.autoContextSupported
+            ? "Автоответы с точной контекстной привязкой разрешены."
+            : "Комментарии с контекстной привязкой ждут ручного подтверждения. Разрешите автоответы по точной привязке в настройках."}{" "}
+          {data.settings.autoDrafts
+            ? `Черновиков ИИ к автоотправке: ${number(data.autoDraftReady)}. `
+            : "Готовые черновики ИИ не включены в автоочередь. "}
+          В автоочереди: {number(data.autoQueued)}. Следующий цикл:{" "}
+          {data.connection.nextGenerate
+            ? formatDate(data.connection.nextGenerate)
+            : "при обновлении"}
+          .{" "}
+          <button
+            className="text-button"
+            onClick={() => setSection("settings")}
+          >
+            Настройки
+          </button>
+        </Notice>
+      )}
       {(!data.integration.agentConfigured ||
         !data.integration.aiConfigured) && (
         <Notice tone="info">

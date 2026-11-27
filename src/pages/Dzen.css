@@ -714,6 +714,40 @@
 .dz-skip {
   color: #a37c69;
 }
+.dz-auto-options {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 20px;
+}
+.dz-auto-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 14px;
+  gap: 11px;
+  border: 1px solid var(--line, #d9dfd0);
+  border-radius: 8px;
+  background: #f4f6ef;
+}
+.dz-auto-option input[type="checkbox"] {
+  flex: 0 0 auto;
+  accent-color: var(--dz-green);
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+.dz-auto-option span {
+  display: grid;
+  gap: 4px;
+}
+.dz-auto-option strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.dz-auto-option small {
+  font-size: 11px;
+  color: var(--dz-muted);
+  line-height: 1.5;
+}
 .dz-manual-note,
 .dz-config-note {
   display: flex;

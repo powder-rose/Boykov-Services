@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   dailyLimit: 10,
   maxChars: 700,
   prompt: DEFAULT_PROMPT,
+  autoContext: false,
+  autoDrafts: false,
 });
 export const MODES = ["paused", "review", "auto"];
 export const STATUSES = [
@@ -132,6 +134,8 @@ export function parseSettings(input) {
     dailyLimit: int(input.dailyLimit, 1, 50),
     maxChars: int(input.maxChars, 120, 1500),
     prompt: string(input.prompt, 12000, true),
+    autoContext: input.autoContext === true,
+    autoDrafts: input.autoDrafts === true,
   };
   if (data.mode === "auto" && !ownNames(data).length)
     throw fail("Для автоответов укажите имя автора своего канала.");
@@ -151,6 +155,8 @@ export function isOwn(item, settings) {
 }
 export const isContextIdentity = (value) =>
   String(value ?? "").startsWith("context_");
+export const isStrongContextIdentity = (value) =>
+  /^context_ui_[a-f0-9]{64}$/.test(String(value ?? ""));
 const articleAge =
   /^(?:\d+\s*(?:м|мин\.?|ч|час(?:а|ов)?|д|дн\.?|день|дня|дней|нед\.?|мес\.?|г|год(?:а)?|лет)(?:\s+назад)?|сегодня|вчера|только что)$/iu;
 function authorMetadata(value) {

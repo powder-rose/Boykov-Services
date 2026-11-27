@@ -175,6 +175,25 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         hub.call.assert_not_awaited()
         send.click.assert_not_awaited()
 
+    async def test_authorized_strong_context_auto_task_can_publish_once(self):
+        studio,hub,send=self.setup()
+        studio.public_author_url='https://dzen.ru/example-channel'
+        task={'id':'task','comment':{'commentId':'context_ui_'+'a'*64,'approval':'auto','autoContextAuthorized':True}}
+        self.assertEqual(await studio.publish(task,hub),('sent',''))
+        studio.assert_pinned.assert_awaited()
+        hub.call.assert_awaited_once_with('begin',{'taskId':'task'})
+        send.click.assert_awaited_once()
+
+    async def test_context_auto_authorization_does_not_allow_weak_id_or_unconfigured_channel(self):
+        for comment_id,profile in [('context_'+'a'*64,'https://dzen.ru/example-channel'),('context_ui_'+'a'*64,'')]:
+            studio,hub,send=self.setup()
+            studio.public_author_url=profile
+            task={'id':'task','comment':{'commentId':comment_id,'approval':'auto','autoContextAuthorized':True}}
+            self.assertEqual(await studio.publish(task,hub),('not_sent','ambiguous'))
+            studio.prepare.assert_not_awaited()
+            hub.call.assert_not_awaited()
+            send.click.assert_not_awaited()
+
     async def test_replaced_card_after_begin_refuses_click(self):
         studio,hub,send=self.setup()
         studio.assert_pinned.side_effect=[None,AgentError('ambiguous')]

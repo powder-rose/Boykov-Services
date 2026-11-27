@@ -9,6 +9,7 @@ import {
   sameStudioChannel,
   parseComment,
   isContextIdentity,
+  isStrongContextIdentity,
   articleAgeOnlyChanged,
   authorMetadataOnlyChanged,
   isOwn,
@@ -60,6 +61,18 @@ export function createDzenStore(db, now = Date.now) {
     CREATE INDEX IF NOT EXISTS dzen_tasks_phase ON dzen_tasks(phase, lease_until);
     CREATE INDEX IF NOT EXISTS dzen_tasks_day ON dzen_tasks(day);
     CREATE TABLE IF NOT EXISTS dzen_events (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, action TEXT NOT NULL, comment_id TEXT, actor TEXT NOT NULL, detail TEXT NOT NULL);`);
+  if (
+    !db
+      .prepare("PRAGMA table_info(dzen_runtime)")
+      .all()
+      .some((column) => column.name === "auto_context")
+  )
+    db.exec(
+      "ALTER TABLE dzen_runtime ADD COLUMN auto_context INTEGER NOT NULL DEFAULT 0",
+    );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS dzen_events_comment ON dzen_events(comment_id,id); CREATE INDEX IF NOT EXISTS dzen_tasks_comment ON dzen_tasks(comment_id,begun_at)",
+  );
   db.prepare("INSERT OR IGNORE INTO dzen_settings VALUES(1,?,1,1)").run(
     JSON.stringify(DEFAULT_SETTINGS),
   );
@@ -88,6 +101,7 @@ export function createDzenStore(db, now = Date.now) {
   function settings() {
     const r = db.prepare("SELECT * FROM dzen_settings WHERE id=1").get();
     return {
+      ...DEFAULT_SETTINGS,
       ...JSON.parse(r.data),
       version: r.version,
       promptVersion: r.prompt_version,
@@ -211,13 +225,13 @@ export function createDzenStore(db, now = Date.now) {
         counts[row.status] = row.n;
       const where = [],
         args = [];
-      const readyIds = db
+      const readyDrafts = db
         .prepare(
           "SELECT * FROM dzen_comments WHERE status='draft' AND eligible=1",
         )
         .all()
-        .filter((row) => eligible(row, s, r))
-        .map((row) => row.id);
+        .filter((row) => eligible(row, s, r));
+      const readyIds = readyDrafts.map((row) => row.id);
       const readyFilter =
         filters.status === "ready" || filters.status === "blocked";
       if (readyFilter) {
@@ -276,6 +290,15 @@ export function createDzenStore(db, now = Date.now) {
         counts,
         draftReady: readyIds.length,
         draftBlocked: counts.draft - readyIds.length,
+        autoDraftReady:
+          s.mode === "auto" && s.autoDrafts
+            ? readyDrafts.filter((row) => resumableDraft(row, s, r)).length
+            : 0,
+        autoQueued: db
+          .prepare(
+            "SELECT count(*) n FROM dzen_comments WHERE approval='auto' AND status IN ('queued','sending')",
+          )
+          .get().n,
         items,
         total,
         page,
@@ -291,8 +314,10 @@ export function createDzenStore(db, now = Date.now) {
           lastHeartbeat: iso(r.heartbeat),
           lastScan: iso(r.last_scan),
           nextScan: iso(r.next_scan),
+          nextGenerate: iso(r.next_generate),
           scanRequested: !!r.scan_requested,
           verified: !!r.verified,
+          autoContextSupported: !!r.auto_context && online,
           error: r.error,
           task: task
             ? {
@@ -336,13 +361,21 @@ export function createDzenStore(db, now = Date.now) {
         throw fail("Настройки изменились. Обновите страницу.", 409);
       if (
         next.mode === "auto" &&
-        (old.mode !== "auto" || next.prompt !== old.prompt)
+        (old.mode !== "auto" ||
+          next.prompt !== old.prompt ||
+          (next.autoContext && !old.autoContext) ||
+          (next.autoDrafts && !old.autoDrafts))
       ) {
         if (input.confirmAuto !== true)
           throw fail("Подтвердите автоматическую публикацию.");
         if (!autoReady)
           throw fail(
             "Сначала подключите YandexGPT и проверьте связь со Студией.",
+            409,
+          );
+        if (next.autoContext && !runtime().auto_context)
+          throw fail(
+            "Обновите локальный агент и настройте ссылку собственного канала.",
             409,
           );
       }
@@ -364,7 +397,9 @@ export function createDzenStore(db, now = Date.now) {
         next.mode !== "auto" ||
         next.prompt !== old.prompt ||
         next.ownNames !== old.ownNames ||
-        next.maxChars !== old.maxChars
+        next.maxChars !== old.maxChars ||
+        next.autoContext !== old.autoContext ||
+        next.autoDrafts !== old.autoDrafts
       ) {
         db.prepare(
           "UPDATE dzen_comments SET status='draft',approval='',version=version+1,updated_at=?,error='Автоотправка снята после изменения настроек' WHERE status='queued' AND approval='auto'",
@@ -372,11 +407,26 @@ export function createDzenStore(db, now = Date.now) {
       }
       if (old.mode !== next.mode) {
         event("mode", null, actor, next.mode);
-        if (next.mode !== "paused")
-          db.prepare(
-            "UPDATE dzen_runtime SET next_scan=0,next_generate=0 WHERE id=1",
-          ).run();
       }
+      if (
+        next.autoContext !== old.autoContext ||
+        next.autoDrafts !== old.autoDrafts
+      )
+        event(
+          "auto_settings",
+          null,
+          actor,
+          `Контекстные автоответы: ${next.autoContext ? "вкл" : "выкл"}; готовые черновики ИИ: ${next.autoDrafts ? "вкл" : "выкл"}`,
+        );
+      if (
+        next.mode !== "paused" &&
+        (old.mode !== next.mode ||
+          next.autoContext !== old.autoContext ||
+          next.autoDrafts !== old.autoDrafts)
+      )
+        db.prepare(
+          "UPDATE dzen_runtime SET next_scan=0,next_generate=0 WHERE id=1",
+        ).run();
       return settings();
     });
   }
@@ -640,11 +690,20 @@ export function createDzenStore(db, now = Date.now) {
     });
   }
   function taskView(task) {
+    const row = task.kind === "publish" ? get(task.comment_id) : null;
     return {
       id: task.id,
       kind: task.kind,
-      ...(task.kind === "publish"
-        ? { comment: view(get(task.comment_id)) }
+      ...(row
+        ? {
+            comment: {
+              ...view(row),
+              autoContextAuthorized:
+                row.approval === "auto" &&
+                isStrongContextIdentity(row.external_id) &&
+                autoBindingAllowed(row, settings(), runtime()),
+            },
+          }
         : {}),
     };
   }
@@ -658,6 +717,57 @@ export function createDzenStore(db, now = Date.now) {
       now() - r.last_scan <= Math.max(15, s.scanMinutes + 5) * 60000 &&
       row.last_seen >= r.last_scan - 1000
     );
+  }
+  function autoBindingAllowed(row, s, r) {
+    return (
+      !isContextIdentity(row.external_id) ||
+      (s.autoContext &&
+        r.auto_context === 1 &&
+        isStrongContextIdentity(row.external_id))
+    );
+  }
+  function autoReplyAllowed(row, reply, promptVersion, s, r) {
+    return (
+      s.mode === "auto" &&
+      r.status === "ready" &&
+      now() - r.heartbeat < 90000 &&
+      !row.answered_at &&
+      eligible(row, s, r) &&
+      autoBindingAllowed(row, s, r) &&
+      promptVersion === s.promptVersion &&
+      reply.length <= s.maxChars &&
+      automaticReplyAllowed(reply) &&
+      !db
+        .prepare(
+          "SELECT 1 FROM dzen_tasks WHERE comment_id=? AND begun_at IS NOT NULL LIMIT 1",
+        )
+        .get(row.id)
+    );
+  }
+  function autoSlots(s) {
+    const pending = db
+      .prepare(
+        "SELECT count(*) n FROM dzen_comments WHERE status='queued' OR (status='sending' AND EXISTS (SELECT 1 FROM dzen_tasks t WHERE t.comment_id=dzen_comments.id AND t.phase='leased'))",
+      )
+      .get().n;
+    return Math.max(0, s.dailyLimit - countToday() - pending);
+  }
+  function resumableDraft(row, s, r) {
+    if (
+      row.status !== "draft" ||
+      row.origin !== "studio" ||
+      row.error ||
+      row.answered_at ||
+      !row.reply ||
+      !autoReplyAllowed(row, row.reply, row.prompt_version, s, r)
+    )
+      return false;
+    const last = db
+      .prepare(
+        "SELECT action FROM dzen_events WHERE comment_id=? AND action NOT IN ('binding','binding_archive') ORDER BY id DESC LIMIT 1",
+      )
+      .get(row.id);
+    return last?.action === "generated";
   }
   function poll(input) {
     return tx(() => {
@@ -732,8 +842,16 @@ export function createDzenStore(db, now = Date.now) {
         ? message(input.status)
         : r.error;
       db.prepare(
-        "UPDATE dzen_runtime SET agent_id=?,studio_url=?,status=?,heartbeat=?,error=? WHERE id=1",
-      ).run(id, url, input.status, now(), agentError);
+        "UPDATE dzen_runtime SET agent_id=?,studio_url=?,status=?,heartbeat=?,error=?,auto_context=? WHERE id=1",
+      ).run(
+        id,
+        url,
+        input.status,
+        now(),
+        agentError,
+        Number(input.autoContextSupported === true),
+      );
+      r = runtime();
       if (!["starting", "ready"].includes(input.status)) {
         db.prepare("UPDATE dzen_runtime SET verified=0 WHERE id=1").run();
         pauseWithin("Система", "Пауза: проверьте подключение к Студии");
@@ -772,10 +890,7 @@ export function createDzenStore(db, now = Date.now) {
             row.reply.length > s.maxChars ||
             !row.reply ||
             (row.approval === "auto" &&
-              (s.mode !== "auto" ||
-                isContextIdentity(row.external_id) ||
-                row.prompt_version !== s.promptVersion ||
-                !automaticReplyAllowed(row.reply)))
+              !autoReplyAllowed(row, row.reply, row.prompt_version, s, r))
           ) {
             db.prepare(
               "UPDATE dzen_comments SET status='draft',approval='',error='Нужно обновить комментарий или повторно подтвердить ответ',version=version+1,updated_at=? WHERE id=?",
@@ -827,10 +942,7 @@ export function createDzenStore(db, now = Date.now) {
         countToday() >= s.dailyLimit ||
         row.reply.length > s.maxChars ||
         (row.approval === "auto" &&
-          (s.mode !== "auto" ||
-            isContextIdentity(row.external_id) ||
-            row.prompt_version !== s.promptVersion ||
-            !automaticReplyAllowed(row.reply)))
+          !autoReplyAllowed(row, row.reply, row.prompt_version, s, r))
       )
         throw fail("Публикация остановлена настройками или лимитом.", 409);
       db.prepare(
@@ -1064,12 +1176,9 @@ export function createDzenStore(db, now = Date.now) {
       if (
         automatic &&
         status === "draft" &&
-        s.mode === "auto" &&
         snapshot.version === s.version &&
-        eligible(row, s, r) &&
-        !isContextIdentity(row.external_id) &&
-        automaticReplyAllowed(reply) &&
-        countToday() < s.dailyLimit
+        autoReplyAllowed(row, reply, snapshot.promptVersion, s, r) &&
+        autoSlots(s) > 0
       ) {
         status = "queued";
         approval = "auto";
@@ -1117,13 +1226,36 @@ export function createDzenStore(db, now = Date.now) {
       db.prepare("UPDATE dzen_runtime SET next_generate=? WHERE id=1").run(
         now() + s.scanMinutes * 60000,
       );
+      let remaining = s.batchLimit;
+      if (s.mode === "auto" && s.autoDrafts) {
+        const available = Math.min(remaining, autoSlots(s));
+        const drafts = db
+          .prepare(
+            "SELECT * FROM dzen_comments WHERE status='draft' AND origin='studio' AND eligible=1 AND prompt_version=? AND error='' ORDER BY updated_at,id",
+          )
+          .all(s.promptVersion);
+        for (const row of drafts
+          .filter((row) => resumableDraft(row, s, r))
+          .slice(0, available)) {
+          db.prepare(
+            "UPDATE dzen_comments SET status='queued',approval='auto',version=version+1,updated_at=? WHERE id=?",
+          ).run(now(), row.id);
+          event(
+            "auto_queue",
+            row.id,
+            "Zenbot · ИИ",
+            "Сохранённый черновик текущего промпта",
+          );
+          remaining--;
+        }
+      }
       return db
         .prepare(
           "SELECT * FROM dzen_comments WHERE status='new' AND origin='studio' AND is_own=0 AND eligible=1 AND external_id<>'' AND last_seen>=? ORDER BY discovered_at,id",
         )
         .all(r.last_scan - 1000)
         .filter((row) => eligible(row, s, r))
-        .slice(0, s.batchLimit)
+        .slice(0, remaining)
         .map((x) => x.id);
     });
   }
