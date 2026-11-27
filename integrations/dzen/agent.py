@@ -26,6 +26,7 @@ REPLY = 'button[data-testid="reply-button"]'
 COMPOSER = 'textarea[data-testid="comment-textarea"]'
 SEND = 'button[data-testid="send-button"]'
 MAX_SCROLLS = 8
+MAX_CONFIRM_SCROLLS = 8
 
 
 def normalize(value):
@@ -85,6 +86,11 @@ def unanswered_studio_url(value):
     # Older saved configurations lost the current filter when normalized.
     # Restore only the known unanswered view on the already paired channel.
     return urlunsplit((url.scheme, url.netloc, url.path, 'answer=notReply', ''))
+
+
+def all_comments_url(value):
+    url = urlsplit(studio_url(value))
+    return urlunsplit((url.scheme, url.netloc, url.path, '', ''))
 
 
 def same_studio_channel(a, b):
@@ -184,6 +190,32 @@ def same_target(a, b):
     return bool(a['commentId'] and a['commentId'] == b['commentId'] and normalize(a['author']).casefold() == normalize(b['author']).casefold() and normalize(a['text']) == normalize(b['text']))
 
 
+def same_root(raw, target):
+    if not target or raw.get('parentPath') != []:
+        return False
+    parents = target.get('parentPath')
+    root = parents[0] if isinstance(parents, list) and parents else target
+    article = identity_link(target.get('articleUrl'), article=True)
+    profile = identity_link(root.get('authorUrl'))
+    text = normalize(root.get('text'))
+    return bool(article and profile and text and article == identity_link(raw.get('articleUrl'), article=True) and profile == identity_link(raw.get('authorUrl')) and text == normalize(raw.get('text')))
+
+
+def appeared_reply(before, after, expected):
+    return any(x and after.count(x) > before.count(x) for x in expected)
+
+
+def recent_reply_label(value):
+    text = re.sub(r'^автор\s*[·•]?\s*', '', normalize(value).casefold()).strip(' ·•')
+    if text in ('сейчас', 'только что'):
+        return True
+    match = re.fullmatch(r'(\d+)\s*(с|сек\.?|секунд(?:а|ы)?|м|мин\.?|минут(?:а|ы)?)(?:\s+назад)?', text)
+    if not match:
+        return False
+    amount = int(match.group(1))
+    return amount <= (120 if match.group(2).startswith('с') else 2)
+
+
 class AgentError(Exception):
     def __init__(self, code):
         self.code = code
@@ -250,7 +282,9 @@ CARD_DATA = r"""(card, index=0) => {
   const names = local(card, nameSelector);
   const name = names.length === 1 ? names[0] : null;
   const author = name?.innerText || legacyAuthor;
-  const visibleAuthorBadge = Boolean(name && local(card, 'span,div').some(el => !p.contains(el) && el.children.length === 0 && /^автор$/i.test(String(el.innerText || '').trim())));
+  const authorBadge = value => /^автор(?:\s*[·•])?(?:\s+(?:\d+\s*(?:с|сек\.?|м|ч|д|мин\.?|дн\.?)|сейчас|только что))?$/i.test(String(value || '').trim());
+  const nameLines = String(name?.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const visibleAuthorBadge = Boolean(name && (nameLines.slice(1).some(authorBadge) || Array.from(name.parentElement?.querySelectorAll('span,div') || []).some(el => visible(el) && !p.contains(el) && !name.contains(el) && el.children.length === 0 && authorBadge(el.innerText))));
   const created = marker >= 0 ? lines[marker+1] || '' : '';
   const hrefs = local(card, 'a[href]').map(a => a.href);
   const oldDirect = hrefs.find(x => /#comment_[A-Za-z0-9_-]+$/.test(x));
@@ -277,7 +311,7 @@ CARD_DATA = r"""(card, index=0) => {
   }
   const time = local(card, 'time[datetime]')[0];
   const buttons = local(card, 'button[data-testid="reply-button"]').filter(x => !x.disabled);
-  return {index, text:p.innerText || '', author, createdLabel:created, isOwn:visibleAuthorBadge || (marker>=0 && /^автор$/i.test(lines[marker])), commentId:nodeId || fromLink,
+  return {index, text:p.innerText || '', author, createdLabel:created, nameAge:nameLines.length>1 ? nameLines[nameLines.length-1] : '', ownConfirmed:visibleAuthorBadge, isOwn:visibleAuthorBadge || (marker>=0 && /^автор$/i.test(lines[marker])), commentId:nodeId || fromLink,
     href:direct || location.href, articleTitle:article?.innerText || legacyArticle?.innerText || '', articleUrl:article?.href || legacyArticle?.href || '', authorUrl:name?.href || '', parentPath:complete && article ? parentPath : null,
     absoluteTime:time?.getAttribute('datetime') || '', canReply:buttons.length===1,
     legacy:{author:legacyAuthor, articleTitle:legacyArticle?.innerText || '', href:oldDirect || location.href}};
@@ -456,7 +490,7 @@ class Studio:
         sends = await form.query_selector_all(SEND) if form else []
         if len(sends) != 1 or not await sends[0].is_visible() or not await sends[0].is_enabled():
             raise AgentError('interface_changed')
-        return sends[0], thread, expected, before, card
+        return sends[0], thread, expected, before, card, raw
 
     async def assert_pinned(self, card, send, item):
         if not await card.evaluate('(el, send) => el.isConnected && el.contains(send) && send.isConnected', send):
@@ -467,24 +501,94 @@ class Studio:
             raise AgentError('ambiguous')
 
     @staticmethod
-    async def own_replies(thread):
-        # Verify only the original thread and the channel's visible author label.
-        values = await thread.evaluate("""(el) => {
+    async def own_replies(thread, confirmed_only=False, fresh_only=False):
+        values = await thread.evaluate("""(el, confirmedOnly) => {
           if (!el.isConnected) throw Error('detached thread');
-          return Array.from(el.querySelectorAll('div[class*="editor--comment__block"]')).filter(card => {
-            const lines=(card.innerText||'').split(/\\n+/).map(x=>x.trim());
-            const marker=lines.findIndex(x=>/^(подписчик|автор)$/i.test(x));
-            return card.getClientRects().length && marker>0 && /^автор$/i.test(lines[marker]);
-          }).map(card=>card.querySelector('p[aria-label="Текст комментария"]')?.innerText||'');
-        }""")
-        return [normalize(x) for x in values]
+          const extract = """ + CARD_DATA + """;
+          return Array.from(el.querySelectorAll('div[class*="editor--comment__block"]')).map(extract).filter(card => card && (confirmedOnly ? card.ownConfirmed : card.isOwn)).map(card => ({text:card.text, age:card.createdLabel, nameAge:card.nameAge}));
+        }""", confirmed_only)
+        return [normalize(x['text']) for x in values if not fresh_only or recent_reply_label(x.get('age')) or recent_reply_label(x.get('nameAge'))]
+
+    async def all_view_access(self):
+        await self.assert_access()
+        params = parse_qs(urlsplit(self.page.url).query, keep_blank_values=True)
+        return same_studio_channel(self.source, self.page.url) and not any(key in params for key in ('answer', 'comments_data'))
+
+    async def pinned_confirmation_thread(self, value, item=None, root=None):
+        card = await self.page.locator(CARD).nth(value['index']).element_handle(timeout=5000)
+        if card is None:
+            return None
+        raw = await card.evaluate(CARD_DATA)
+        if not raw:
+            return None
+        if item is not None:
+            current = make_comment(raw, self.source)
+            if not current or current['isOwn'] or not same_target(current, item):
+                return None
+        elif not same_root(raw, root):
+            return None
+        return await card.query_selector('xpath=ancestor::div[contains(@class,"comments-page__commentNode")][1]')
+
+    async def expand_confirmation_thread(self, thread):
+        controls = []
+        for button in await thread.query_selector_all('button,[role="button"]'):
+            if await button.is_visible() and await button.is_enabled() and re.fullmatch(r'Показать\s+(?:ещ[её]\s+)?(?:\d+\s+)?ответ(?:а|ов|ы)?', normalize(await button.inner_text()), re.I):
+                controls.append(button)
+        if len(controls) != 1:
+            return False
+        await controls[0].click(timeout=5000)
+        await self.page.wait_for_timeout(600)
+        return True
+
+    async def confirm_all_comments(self, item, expected, before, context):
+        # Verification is read-only: open the same channel without filters and
+        # look for the exact posted text from the channel in the original thread.
+        response = await self.page.goto(all_comments_url(self.source), wait_until='domcontentloaded', timeout=25000)
+        await self.assert_access(response)
+        if not await self.all_view_access():
+            return False
+        try:
+            await self.page.locator(CARD).first.wait_for(state='visible', timeout=12000)
+        except Exception:
+            return False
+        expanded = False
+        for step in range(MAX_CONFIRM_SCROLLS + 1):
+            if not await self.all_view_access():
+                return False
+            raw = await self.page.evaluate(EXTRACT, CARD)
+            candidates = [value for value in raw if (current := make_comment(value, self.source)) and not current['isOwn'] and same_target(current, item)]
+            if len(candidates) > 1:
+                return False
+            thread = await self.pinned_confirmation_thread(candidates[0], item=item) if candidates else None
+            if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True), expected):
+                return True
+            if not expanded:
+                roots = [value for value in raw if same_root(value, context)]
+                if len(roots) == 1:
+                    if thread is None:
+                        thread = await self.pinned_confirmation_thread(roots[0], root=context)
+                    if thread is not None:
+                        expanded = await self.expand_confirmation_thread(thread)
+                        if expanded:
+                            if not await self.all_view_access():
+                                return False
+                            raw = await self.page.evaluate(EXTRACT, CARD)
+                            candidates = [value for value in raw if (current := make_comment(value, self.source)) and not current['isOwn'] and same_target(current, item)]
+                            if len(candidates) != 1:
+                                return False
+                            thread = await self.pinned_confirmation_thread(candidates[0], item=item)
+                            if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True), expected):
+                                return True
+            if step < MAX_CONFIRM_SCROLLS:
+                await self.scroll()
+        return False
 
     async def publish(self, task, hub):
         begun = False
         try:
             if task['comment'].get('commentId', '').startswith('context_') and task['comment'].get('approval') != 'manual':
                 raise AgentError('ambiguous')
-            send, thread, expected, before, card = await self.prepare(task['comment'])
+            send, thread, expected, before, card, context = await self.prepare(task['comment'])
             await self.assert_access()
             if not await self.verified_filter():
                 raise AgentError('interface_changed')
@@ -500,12 +604,18 @@ class Studio:
             for _ in range(20):
                 await self.assert_access()
                 try:
-                    after = await self.own_replies(thread)
-                    if any(after.count(x) > before.count(x) for x in expected):
+                    after = await self.own_replies(thread, confirmed_only=True)
+                    if appeared_reply(before, after, expected):
+                        print('DZEN_CONFIRM=THREAD')
                         return 'sent', ''
                 except Exception:
                     pass
                 await self.page.wait_for_timeout(500)
+            print('DZEN_CONFIRM=ALL_COMMENTS_CHECK')
+            if await self.confirm_all_comments(task['comment'], expected, before, context):
+                print('DZEN_CONFIRM=ALL_COMMENTS')
+                return 'sent', ''
+            print('DZEN_CONFIRM=NOT_VERIFIED')
             return 'uncertain', 'uncertain'
         except AgentError as error:
             return ('uncertain' if begun else 'not_sent'), error.code

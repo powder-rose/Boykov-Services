@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title, author_name, reply_value
+from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title, author_name, reply_value, all_comments_url, appeared_reply, same_root, recent_reply_label
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
 BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
@@ -83,9 +83,10 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         studio.verified_filter=AsyncMock(return_value=True)
         send=AsyncMock();send.evaluate.return_value=True
         thread=AsyncMock()
-        studio.prepare=AsyncMock(return_value=(send,thread,{'Спасибо!'},[],AsyncMock()))
+        studio.prepare=AsyncMock(return_value=(send,thread,{'Спасибо!'},[],AsyncMock(),{}))
         studio.assert_pinned=AsyncMock()
         studio.own_replies=AsyncMock(return_value=['Спасибо!'])
+        studio.confirm_all_comments=AsyncMock(return_value=False)
         hub=AsyncMock();hub.call.return_value={'ok':True}
         return studio,hub,send
 
@@ -95,6 +96,25 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome,('sent',''))
         hub.call.assert_awaited_once_with('begin',{'taskId':'task'})
         send.click.assert_awaited_once()
+        studio.confirm_all_comments.assert_not_awaited()
+
+    async def test_missing_filtered_thread_is_confirmed_read_only_in_all_comments(self):
+        studio,hub,send=self.setup()
+        studio.own_replies.side_effect=RuntimeError('detached thread')
+        studio.confirm_all_comments.return_value=True
+        outcome=await studio.publish({'id':'task','comment':{}},hub)
+        self.assertEqual(outcome,('sent',''))
+        studio.confirm_all_comments.assert_awaited_once_with({}, {'Спасибо!'}, [], {})
+        send.click.assert_awaited_once()
+        hub.call.assert_awaited_once()
+
+    async def test_missing_proof_stays_uncertain_without_second_click(self):
+        studio,hub,send=self.setup()
+        studio.own_replies.return_value=[]
+        self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('uncertain','uncertain'))
+        studio.confirm_all_comments.assert_awaited_once()
+        send.click.assert_awaited_once()
+        hub.call.assert_awaited_once()
 
     async def test_hub_rejects_begin_no_click(self):
         studio,hub,send=self.setup()
@@ -154,6 +174,66 @@ class TargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(studio.snapshots.await_count,2)
 
 
+class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    def setup(self):
+        page=Mock();page.url=BASE;page.goto=AsyncMock();page.evaluate=AsyncMock()
+        page.locator.return_value.first.wait_for=AsyncMock()
+        studio=Studio(page,CURRENT)
+        studio.assert_access=AsyncMock();studio.all_view_access=AsyncMock(return_value=True);studio.scroll=AsyncMock()
+        studio.pinned_confirmation_thread=AsyncMock(return_value=AsyncMock())
+        studio.own_replies=AsyncMock(return_value=['Спасибо!'])
+        studio.expand_confirmation_thread=AsyncMock(return_value=False)
+        raw={'index':0,'author':'Читатель','authorUrl':'https://dzen.ru/id/test','articleTitle':'Статья','articleUrl':'https://dzen.ru/a/test-post','parentPath':[],'text':'Вопрос','canReply':True,'href':BASE}
+        return studio,page,raw,make_comment(raw,CURRENT)
+
+    async def test_unfiltered_same_thread_and_new_author_reply_confirm_publication(self):
+        studio,page,raw,item=self.setup()
+        page.evaluate.return_value=[raw]
+        self.assertTrue(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
+        page.goto.assert_awaited_once_with(BASE,wait_until='domcontentloaded',timeout=25000)
+        studio.own_replies.assert_awaited_once_with(studio.pinned_confirmation_thread.return_value,confirmed_only=True,fresh_only=True)
+        studio.expand_confirmation_thread.assert_not_awaited()
+        self.assertEqual(all_comments_url(CURRENT),BASE)
+        self.assertFalse(appeared_reply(['Спасибо!'],['Спасибо!'],{'Спасибо!'}))
+        self.assertFalse(appeared_reply([],['Не тот ответ'],{'Спасибо!'}))
+
+    async def test_old_identical_reply_after_reopening_does_not_confirm(self):
+        thread=AsyncMock()
+        thread.evaluate.return_value=[{'text':'Старый ответ','age':'1 д','nameAge':'1 д'},{'text':'Новый ответ','age':'','nameAge':'автор · 1\u00a0м'}]
+        self.assertEqual(await Studio.own_replies(thread,confirmed_only=True,fresh_only=True),['Новый ответ'])
+        self.assertTrue(recent_reply_label('только что'))
+        self.assertTrue(recent_reply_label('1 м'))
+        self.assertFalse(recent_reply_label('3 м'))
+        self.assertFalse(recent_reply_label(''))
+
+    async def test_duplicate_or_unrelated_target_cannot_confirm(self):
+        studio,page,raw,item=self.setup()
+        page.evaluate.return_value=[raw,{**raw,'index':1}]
+        self.assertFalse(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
+        studio.own_replies.assert_not_awaited()
+        page.evaluate.return_value=[{**raw,'articleUrl':'https://dzen.ru/a/other'}]
+        self.assertFalse(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
+        studio.own_replies.assert_not_awaited()
+
+    async def test_collapsed_root_can_be_expanded_before_exact_nested_proof(self):
+        studio,page,root,_=self.setup()
+        raw={**root,'index':1,'author':'Другой читатель','authorUrl':'https://dzen.ru/id/nested','text':'Уточнение','parentPath':[{'authorUrl':root['authorUrl'],'text':root['text']}]}
+        item=make_comment(raw,CURRENT)
+        self.assertTrue(same_root(root,raw))
+        page.evaluate.side_effect=[[root],[root,raw]]
+        studio.expand_confirmation_thread.return_value=True
+        self.assertTrue(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
+        studio.expand_confirmation_thread.assert_awaited_once()
+        studio.pinned_confirmation_thread.assert_any_await(root,root=raw)
+        studio.pinned_confirmation_thread.assert_any_await(raw,item=item)
+
+    async def test_reply_without_matching_author_badge_is_not_confirmation(self):
+        studio,page,raw,item=self.setup()
+        page.evaluate.return_value=[raw]
+        studio.own_replies.return_value=[]
+        self.assertFalse(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
+
+
 class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
     async def test_observed_post_root_and_nested_structure(self):
         try:
@@ -173,18 +253,23 @@ class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
                       <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/parent">Читатель<br>подписчик<br>1&nbsp;д</a><p aria-label="Текст комментария">Вопрос</p><button data-testid="reply-button">Ответить</button></div>
                       <div class="editor--root-comment__commentsContainer-Ep"><div class="editor--root-comment__commentNode-14">
                         <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/child">Другой читатель</a><p aria-label="Текст комментария">Уточнение</p><button data-testid="reply-button">Ответить</button></div>
+                        <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/own">Канал<br>автор<br>1&nbsp;м</a><p aria-label="Текст комментария">Спасибо!</p></div>
                       </div></div>
                     </div>
                   </div>
                 </div>''')
                 raw=await page.evaluate(EXTRACT,CARD)
-                self.assertEqual(len(raw),2)
+                self.assertEqual(len(raw),3)
                 self.assertEqual(raw[0]['parentPath'],[])
                 self.assertEqual(raw[1]['parentPath'],[{'authorUrl':'https://dzen.ru/id/parent','text':'Вопрос'}])
                 self.assertEqual(article_title(raw[1]['articleTitle']),'Тестовая статья')
                 self.assertEqual(raw[1]['author'],'Другой читатель')
                 self.assertEqual(make_comment(raw[0],CURRENT)['author'],'Читатель')
-                self.assertTrue(all(make_comment(value,CURRENT)['canReply'] for value in raw))
+                self.assertTrue(all(make_comment(value,CURRENT)['canReply'] for value in raw[:2]))
+                self.assertTrue(raw[2]['ownConfirmed'])
+                thread=await page.locator('[class*="comments-page__commentNode"]').first.element_handle()
+                self.assertEqual(await Studio.own_replies(thread,confirmed_only=True),['Спасибо!'])
+                self.assertEqual(await Studio.own_replies(thread,confirmed_only=True,fresh_only=True),['Спасибо!'])
             finally:
                 await browser.close()
 
