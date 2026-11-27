@@ -26,7 +26,8 @@ REPLY = 'button[data-testid="reply-button"]'
 COMPOSER = 'textarea[data-testid="comment-textarea"]'
 SEND = 'button[data-testid="send-button"]'
 MAX_SCROLLS = 18
-MAX_CONFIRM_SCROLLS = 8
+MAX_CONFIRM_SCROLLS = 18
+MAX_PUBLIC_EXPANSIONS = 8
 PUBLIC_CARD = '[class*="comments2--comment__comment-"]'
 PUBLIC_EXPAND = re.compile(r'^(?:Показать\s+(?:ещ[её]\s+)?)?\d+\s+ответ(?:а|ов)?$', re.I)
 
@@ -226,46 +227,90 @@ def public_author_link(value):
 def public_card_matches(value, target):
     profile = identity_link(target.get('authorUrl'))
     body = normalize(target.get('text'))
-    return bool(profile and body and profile == identity_link(value.get('authorUrl')) and body == normalize(value.get('text')))
+    return bool(not value.get('clamped') and profile and body and profile == identity_link(value.get('authorUrl')) and body == normalize(value.get('text')))
+
+
+def public_preview_matches(value, target):
+    if not value.get('clamped') or identity_link(value.get('authorUrl')) != identity_link(target.get('authorUrl')) or not identity_link(target.get('authorUrl')):
+        return False
+    preview = re.sub(r'(?:\s+|(?<=[.…]))ещ[её]$', '', normalize(value.get('text')), flags=re.I)
+    preview = re.sub(r'(?:\.{3,}|…)+$', '', preview).rstrip()
+    return len(preview) >= 20 and normalize(target.get('text')).startswith(preview)
+
+
+def public_root_target(context):
+    parents = context.get('parentPath')
+    return (parents[0] if parents else context) if isinstance(parents, list) else None
 
 
 def public_root_candidates(values, context):
-    parents = context.get('parentPath')
-    if not isinstance(parents, list):
+    root = public_root_target(context)
+    if root is None:
         return []
-    root = parents[0] if parents else context
     return [value for value in values if value.get('isRoot') and public_card_matches(value, root)]
 
 
-def public_reply_proof(values, context, author_url, expected, before):
+def public_expansion_candidates(values, context, author_url):
+    root_target = public_root_target(context)
+    if root_target is None:
+        return []
+    previews = [value for value in values if value.get('isRoot') and public_preview_matches(value, root_target)]
+    if previews:
+        return previews
+    roots = public_root_candidates(values, context)
+    if len(roots) != 1:
+        return []
+    branch = [value for value in values if value.get('rootIndex') == roots[0]['index']]
+    desired = [*context['parentPath'], context, {'authorUrl': author_url, 'text': context.get('publishedText')}]
+    return [value for value in branch if any(public_preview_matches(value, target) for target in desired)]
+
+
+def public_reply_status(values, context, author_url, expected, before):
     roots = public_root_candidates(values, context)
     author = public_author_link(author_url)
     body = normalize(context.get('publishedText'))
-    if len(roots) != 1 or not author or not body or body not in expected or any(text in before for text in expected):
-        return False
+    if not author or not body or body not in expected or any(text in before for text in expected):
+        return 'PUBLIC_CONTEXT_INVALID'
+    if public_expansion_candidates(values, context, author_url):
+        return 'PUBLIC_TEXT_COLLAPSED'
+    if not roots:
+        root = public_root_target(context)
+        if root and any(value.get('isRoot') and identity_link(value.get('authorUrl')) == identity_link(root.get('authorUrl')) for value in values):
+            return 'PUBLIC_ROOT_TEXT_NOT_VERIFIED'
+        return 'PUBLIC_ROOT_NOT_FOUND'
+    if len(roots) != 1:
+        return 'PUBLIC_ROOT_AMBIGUOUS'
     root = roots[0]
     branch = [value for value in values if value.get('rootIndex') == root['index']]
     targets = [value for value in branch if public_card_matches(value, context)]
     if len(targets) != 1 or identity_link(context.get('authorUrl')) == author:
-        return False
+        return 'PUBLIC_TARGET_NOT_UNIQUE'
     mention = normalize(context.get('publishedMention'))
     name = author_name(context.get('author'))
     if mention:
         recipient = mention.rstrip(',:').strip().lstrip('@').casefold()
         names = sum(normalize(value.get('author')).casefold() == name.casefold() for value in branch)
         if not name or not body.startswith(mention) or recipient != name.casefold() or names != 1:
-            return False
+            return 'PUBLIC_RECIPIENT_NOT_UNIQUE'
     if context['parentPath']:
         # Public threads may flatten nested replies. Require a verified mention
         # and an unambiguous recipient inside the same root conversation.
         if not mention:
-            return False
+            return 'PUBLIC_RECIPIENT_NOT_UNIQUE'
         if any(sum(public_card_matches(value, parent) for value in branch) != 1 for parent in context['parentPath']):
-            return False
+            return 'PUBLIC_PARENT_NOT_UNIQUE'
     elif targets[0]['index'] != root['index']:
-        return False
-    replies = [value for value in branch if value.get('isChild') and identity_link(value.get('authorUrl')) == author and normalize(value.get('text')) == body]
-    return len(replies) == 1 and recent_reply_label(replies[0].get('age'))
+        return 'PUBLIC_TARGET_NOT_UNIQUE'
+    replies = [value for value in branch if value.get('isChild') and not value.get('clamped') and identity_link(value.get('authorUrl')) == author and normalize(value.get('text')) == body]
+    if len(replies) != 1:
+        if not replies and any(value.get('isChild') and normalize(value.get('text')) == body for value in branch):
+            return 'PUBLIC_REPLY_PROFILE_NOT_VERIFIED'
+        return 'PUBLIC_REPLY_NOT_UNIQUE'
+    return 'VERIFIED' if recent_reply_label(replies[0].get('age')) else 'PUBLIC_REPLY_AGE_UNVERIFIED'
+
+
+def public_reply_proof(values, context, author_url, expected, before):
+    return public_reply_status(values, context, author_url, expected, before) == 'VERIFIED'
 
 
 class AgentError(Exception):
@@ -317,6 +362,18 @@ class Hub:
                 await asyncio.sleep(5)
 
 
+HEADER_AGE = r"""(name, body, card) => {
+  if (!name || !body) return '';
+  let header = name;
+  while (header.parentElement && header.parentElement !== card && !header.parentElement.contains(body)) header = header.parentElement;
+  const full = (header.innerText || '').trim();
+  const nameText = (name.innerText || '').trim();
+  if (!nameText || !full.startsWith(nameText)) return '';
+  const tail = full.slice(nameText.length).trim();
+  const lines = (tail || nameText).split(/\n+/).map(x => x.trim()).filter(Boolean);
+  return (tail || lines.length > 1) && lines.length ? lines[lines.length-1] : '';
+}"""
+
 CARD_DATA = r"""(card, index=0) => {
   const visible = el => Boolean(el && el.getClientRects().length);
   const cardSelector = 'div[class*="editor--comment__block"]';
@@ -363,12 +420,25 @@ CARD_DATA = r"""(card, index=0) => {
   }
   const time = local(card, 'time[datetime]')[0];
   const buttons = local(card, 'button[data-testid="reply-button"]').filter(x => !x.disabled);
-  return {index, text:p.innerText || '', author, createdLabel:created, nameAge:nameLines.length>1 ? nameLines[nameLines.length-1] : '', ownConfirmed:visibleAuthorBadge, isOwn:visibleAuthorBadge || (marker>=0 && /^автор$/i.test(lines[marker])), commentId:nodeId || fromLink,
+  const headerAge = (""" + HEADER_AGE + r""")(name, p, card);
+  return {index, text:p.innerText || '', author, createdLabel:created, nameAge:nameLines.length>1 ? nameLines[nameLines.length-1] : '', headerAge, ownConfirmed:visibleAuthorBadge, isOwn:visibleAuthorBadge || (marker>=0 && /^автор$/i.test(lines[marker])), commentId:nodeId || fromLink,
     href:direct || location.href, articleTitle:article?.innerText || legacyArticle?.innerText || '', articleUrl:article?.href || legacyArticle?.href || '', authorUrl:name?.href || '', parentPath:complete && article ? parentPath : null,
     absoluteTime:time?.getAttribute('datetime') || '', canReply:buttons.length===1,
     legacy:{author:legacyAuthor, articleTitle:legacyArticle?.innerText || '', href:oldDirect || location.href}};
 }"""
 EXTRACT = '(selector) => Array.from(document.querySelectorAll(selector)).map(' + CARD_DATA + ').filter(Boolean)'
+
+PUBLIC_MORE_CONTROL = r"""(card) => {
+  const cardSelector = '[class*="comments2--comment__comment-"]';
+  const body = Array.from(card.querySelectorAll('[class*="comments2--comment-text__block-"]')).find(el => el.closest(cardSelector) === card && el.getClientRects().length);
+  if (!body) return null;
+  const region = body.parentElement;
+  const labels = Array.from(region.querySelectorAll('button,[role="button"],span,div')).filter(el => el.closest(cardSelector) === card && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' && /^ещ[её]$/i.test((el.innerText || '').trim()));
+  const buttons = labels.filter(el => el.matches('button,[role="button"]') && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+  const leaves = labels.filter(el => !el.children.length && !el.closest('button,[role="button"],a') && (getComputedStyle(el).cursor === 'pointer' || el.closest('[class*="rich-text-clamp__"]')));
+  const controls = buttons.length ? buttons : leaves;
+  return controls.length === 1 ? controls[0] : null;
+}"""
 
 PUBLIC_CARD_DATA = r"""(card, index=0, cards=[]) => {
   const selector = '[class*="comments2--comment__comment-"]';
@@ -385,13 +455,12 @@ PUBLIC_CARD_DATA = r"""(card, index=0, cards=[]) => {
   const name = names[0], body = bodies[0];
   const rootCard = Array.from(root.querySelectorAll(selector)).find(el => el.closest(wrapperSelector) === root);
   if (!visible(rootCard)) return null;
-  let header = name;
-  while (header.parentElement && header.parentElement !== card && !header.parentElement.contains(body)) header = header.parentElement;
-  const headerLines = (header.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const age = (""" + HEADER_AGE + r""")(name, body, card);
+  const more = (""" + PUBLIC_MORE_CONTROL + r""")(card);
   const children = wrapper.closest('[class*="comments2--comment__childComments-"]');
   return {index, rootIndex:cards.indexOf(rootCard), isRoot:card === rootCard,
     isChild:card !== rootCard && Boolean(children && root.contains(children)), author:name.innerText,
-    authorUrl:name.href, text:body.innerText, age:headerLines.length > 1 ? headerLines[headerLines.length-1] : ''};
+    authorUrl:name.href, text:body.innerText, age, clamped:Boolean(more)};
 }"""
 PUBLIC_EXTRACT = '(selector) => Array.from(document.querySelectorAll(selector)).map(' + PUBLIC_CARD_DATA + ').filter(Boolean)'
 
@@ -563,7 +632,7 @@ class Studio:
         thread = await card.query_selector('xpath=ancestor::div[contains(@class,"comments-page__commentNode")][1]')
         if thread is None:
             raise AgentError('interface_changed')
-        before = await self.own_replies(thread)
+        before = await self.own_replies(thread, author_url=self.public_author_url)
         if item['commentId'].startswith('context_') and before:
             raise AgentError('ambiguous')
         await buttons[0].click(timeout=7000)
@@ -596,13 +665,16 @@ class Studio:
             raise AgentError('ambiguous')
 
     @staticmethod
-    async def own_replies(thread, confirmed_only=False, fresh_only=False):
-        values = await thread.evaluate("""(el, confirmedOnly) => {
+    async def own_replies(thread, confirmed_only=False, fresh_only=False, author_url=''):
+        values = await thread.evaluate("""(el) => {
           if (!el.isConnected) throw Error('detached thread');
           const extract = """ + CARD_DATA + """;
-          return Array.from(el.querySelectorAll('div[class*="editor--comment__block"]')).map(extract).filter(card => card && (confirmedOnly ? card.ownConfirmed : card.isOwn)).map(card => ({text:card.text, age:card.createdLabel, nameAge:card.nameAge}));
-        }""", confirmed_only)
-        return [normalize(x['text']) for x in values if not fresh_only or recent_reply_label(x.get('age')) or recent_reply_label(x.get('nameAge'))]
+          return Array.from(el.querySelectorAll('div[class*="editor--comment__block"]')).map(extract).filter(Boolean).map(card => ({text:card.text, age:card.createdLabel, nameAge:card.nameAge, headerAge:card.headerAge, authorUrl:card.authorUrl, ownConfirmed:card.ownConfirmed, isOwn:card.isOwn}));
+        }""")
+        profile = public_author_link(author_url)
+        return [normalize(x['text']) for x in values
+                if (x.get('ownConfirmed' if confirmed_only else 'isOwn') or (profile and identity_link(x.get('authorUrl')) == profile))
+                and (not fresh_only or any(recent_reply_label(x.get(key)) for key in ('age', 'nameAge', 'headerAge')))]
 
     async def all_view_access(self):
         await self.assert_access()
@@ -647,15 +719,18 @@ class Studio:
         except Exception:
             return False
         expanded = False
+        found_target = False
         for step in range(MAX_CONFIRM_SCROLLS + 1):
             if not await self.all_view_access():
                 return False
             raw = await self.page.evaluate(EXTRACT, CARD)
             candidates = [value for value in raw if (current := make_comment(value, self.source)) and not current['isOwn'] and same_target(current, item)]
             if len(candidates) > 1:
+                print('DZEN_CONFIRM_DETAIL=STUDIO_TARGET_AMBIGUOUS')
                 return False
             thread = await self.pinned_confirmation_thread(candidates[0], item=item) if candidates else None
-            if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True), expected):
+            found_target = found_target or thread is not None
+            if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True, author_url=self.public_author_url), expected):
                 return True
             if not expanded:
                 roots = [value for value in raw if same_root(value, context)]
@@ -669,13 +744,17 @@ class Studio:
                                 return False
                             raw = await self.page.evaluate(EXTRACT, CARD)
                             candidates = [value for value in raw if (current := make_comment(value, self.source)) and not current['isOwn'] and same_target(current, item)]
-                            if len(candidates) != 1:
+                            if len(candidates) > 1:
+                                print('DZEN_CONFIRM_DETAIL=STUDIO_TARGET_AMBIGUOUS')
                                 return False
-                            thread = await self.pinned_confirmation_thread(candidates[0], item=item)
-                            if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True), expected):
-                                return True
+                            if candidates:
+                                thread = await self.pinned_confirmation_thread(candidates[0], item=item)
+                                found_target = found_target or thread is not None
+                                if thread is not None and appeared_reply(before, await self.own_replies(thread, confirmed_only=True, fresh_only=True, author_url=self.public_author_url), expected):
+                                    return True
             if step < MAX_CONFIRM_SCROLLS:
                 await self.scroll()
+        print('DZEN_CONFIRM_DETAIL=' + ('STUDIO_REPLY_NOT_VERIFIED' if found_target else 'STUDIO_TARGET_NOT_FOUND'))
         return False
 
     @staticmethod
@@ -709,30 +788,59 @@ class Studio:
         await page.wait_for_timeout(800)
         return True
 
+    @staticmethod
+    async def expand_public_text(page, value):
+        card = await page.locator(PUBLIC_CARD).nth(value['index']).element_handle(timeout=2500)
+        if card is None:
+            return False
+        current = await card.evaluate(PUBLIC_CARD_DATA)
+        if not current or not current.get('clamped') or identity_link(current.get('authorUrl')) != identity_link(value.get('authorUrl')) or normalize(current.get('text')) != normalize(value.get('text')):
+            return False
+        handle = await card.evaluate_handle(PUBLIC_MORE_CONTROL)
+        control = handle.as_element()
+        if control is None or not await control.is_visible() or not await control.is_enabled():
+            return False
+        await control.click(timeout=3000)
+        await page.wait_for_timeout(500)
+        return True
+
     async def read_public_comments(self, page, article, expected, before, context):
         response = await page.goto(article, wait_until='domcontentloaded', timeout=12000)
         if not await self.public_access(page, article, response):
             return False
         await page.wait_for_timeout(700)
         opened = False
-        expanded = False
+        expanded = 0
+        expanded_texts = 0
+        attempted = set()
+        detail = 'PUBLIC_ROOT_NOT_FOUND'
         for step in range(MAX_CONFIRM_SCROLLS + 1):
             if not await self.public_access(page, article):
                 return False
             values = await page.evaluate(PUBLIC_EXTRACT, PUBLIC_CARD)
-            roots = public_root_candidates(values, context)
-            if len(roots) > 1:
-                return False
-            if public_reply_proof(values, context, self.public_author_url, expected, before):
-                return True
-            if len(roots) == 1 and not expanded:
-                expanded = await self.expand_public_root(page, roots[0], context)
-                if expanded:
+            while expanded_texts < MAX_PUBLIC_EXPANSIONS:
+                previews = public_expansion_candidates(values, context, self.public_author_url)
+                pending = [value for value in previews if (value['index'], value.get('authorUrl'), value.get('text')) not in attempted]
+                if not pending:
+                    break
+                value = pending[0]
+                attempted.add((value['index'], value.get('authorUrl'), value.get('text')))
+                expanded_texts += 1
+                if await self.expand_public_text(page, value):
                     if not await self.public_access(page, article):
                         return False
                     values = await page.evaluate(PUBLIC_EXTRACT, PUBLIC_CARD)
-                    if public_reply_proof(values, context, self.public_author_url, expected, before):
-                        return True
+            roots = public_root_candidates(values, context)
+            if len(roots) > 1:
+                print('DZEN_CONFIRM_DETAIL=PUBLIC_ROOT_AMBIGUOUS')
+                return False
+            detail = public_reply_status(values, context, self.public_author_url, expected, before)
+            if detail == 'VERIFIED':
+                return True
+            if len(roots) == 1 and expanded < 4:
+                if await self.expand_public_root(page, roots[0], context):
+                    expanded += 1
+                    continue
             if not values and not opened:
                 controls = page.get_by_role('button', name=re.compile(r'^(?:Открыть |Показать |Все )?комментарии(?:\s*\(?\d+\)?)?$', re.I))
                 visible = [controls.nth(i) for i in range(min(await controls.count(), 10)) if await controls.nth(i).is_visible()]
@@ -751,6 +859,7 @@ class Studio:
                   }
                 }""", PUBLIC_CARD)
                 await page.wait_for_timeout(700)
+        print('DZEN_CONFIRM_DETAIL='+detail)
         return False
 
     async def confirm_public_comments(self, expected, before, context):
@@ -763,8 +872,9 @@ class Studio:
         print('DZEN_CONFIRM=PUBLIC_ARTICLE_CHECK')
         page = await self.page.context.new_page()
         try:
-            return await asyncio.wait_for(self.read_public_comments(page, article, expected, before, context), timeout=32)
+            return await asyncio.wait_for(self.read_public_comments(page, article, expected, before, context), timeout=42)
         except asyncio.TimeoutError:
+            print('DZEN_CONFIRM_DETAIL=PUBLIC_TIMEOUT')
             return False
         finally:
             await page.close()
@@ -790,7 +900,7 @@ class Studio:
             for _ in range(20):
                 await self.assert_access()
                 try:
-                    after = await self.own_replies(thread, confirmed_only=True)
+                    after = await self.own_replies(thread, confirmed_only=True, fresh_only=True, author_url=self.public_author_url)
                     if appeared_reply(before, after, expected):
                         print('DZEN_CONFIRM=THREAD')
                         return 'sent', ''
@@ -798,9 +908,12 @@ class Studio:
                     pass
                 await self.page.wait_for_timeout(500)
             print('DZEN_CONFIRM=ALL_COMMENTS_CHECK')
-            if await self.confirm_all_comments(task['comment'], expected, before, context):
-                print('DZEN_CONFIRM=ALL_COMMENTS')
-                return 'sent', ''
+            try:
+                if await asyncio.wait_for(self.confirm_all_comments(task['comment'], expected, before, context), timeout=40):
+                    print('DZEN_CONFIRM=ALL_COMMENTS')
+                    return 'sent', ''
+            except asyncio.TimeoutError:
+                print('DZEN_CONFIRM_DETAIL=STUDIO_TIMEOUT')
             if await self.confirm_public_comments(expected, before, context):
                 print('DZEN_CONFIRM=PUBLIC_ARTICLE')
                 return 'sent', ''

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD, article_title, author_name, reply_value, all_comments_url, appeared_reply, same_root, recent_reply_label
-from agent import PUBLIC_EXTRACT, PUBLIC_CARD, PUBLIC_EXPAND, public_reply_proof, public_author_link, configure_public_author
+from agent import PUBLIC_EXTRACT, PUBLIC_CARD, PUBLIC_EXPAND, PUBLIC_CARD_DATA, public_reply_proof, public_author_link, configure_public_author, public_preview_matches, public_expansion_candidates, public_reply_status
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
 BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
@@ -228,7 +228,7 @@ class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
         page.evaluate.return_value=[raw]
         self.assertTrue(await studio.confirm_all_comments(item,{'Спасибо!'},[],raw))
         page.goto.assert_awaited_once_with(BASE,wait_until='domcontentloaded',timeout=25000)
-        studio.own_replies.assert_awaited_once_with(studio.pinned_confirmation_thread.return_value,confirmed_only=True,fresh_only=True)
+        studio.own_replies.assert_awaited_once_with(studio.pinned_confirmation_thread.return_value,confirmed_only=True,fresh_only=True,author_url='')
         studio.expand_confirmation_thread.assert_not_awaited()
         self.assertEqual(all_comments_url(CURRENT),BASE)
         self.assertFalse(appeared_reply(['Спасибо!'],['Спасибо!'],{'Спасибо!'}))
@@ -236,12 +236,20 @@ class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_identical_reply_after_reopening_does_not_confirm(self):
         thread=AsyncMock()
-        thread.evaluate.return_value=[{'text':'Старый ответ','age':'1 д','nameAge':'1 д'},{'text':'Новый ответ','age':'','nameAge':'автор · 1\u00a0м'}]
+        thread.evaluate.return_value=[{'text':'Старый ответ','age':'1 д','nameAge':'1 д','ownConfirmed':True},{'text':'Новый ответ','age':'','nameAge':'автор · 1\u00a0м','ownConfirmed':True}]
         self.assertEqual(await Studio.own_replies(thread,confirmed_only=True,fresh_only=True),['Новый ответ'])
         self.assertTrue(recent_reply_label('только что'))
         self.assertTrue(recent_reply_label('1 м'))
         self.assertFalse(recent_reply_label('3 м'))
         self.assertFalse(recent_reply_label(''))
+
+    async def test_studio_video_reply_matches_channel_profile_without_author_badge(self):
+        thread=AsyncMock()
+        own={'text':'Новый ответ','headerAge':'1 мин','authorUrl':'https://dzen.ru/example-channel','ownConfirmed':False,'isOwn':False}
+        thread.evaluate.return_value=[own,{**own,'text':'Чужой ответ','authorUrl':'https://dzen.ru/other-channel'},{**own,'text':'Старый ответ','headerAge':'58 мин'}]
+        self.assertEqual(await Studio.own_replies(thread,confirmed_only=True,fresh_only=True,author_url='https://dzen.ru/example-channel'),['Новый ответ'])
+        self.assertEqual(await Studio.own_replies(thread,confirmed_only=True,fresh_only=True),[])
+        self.assertEqual(await Studio.own_replies(thread,author_url='https://dzen.ru/example-channel'),['Новый ответ','Старый ответ'])
 
     async def test_duplicate_or_unrelated_target_cannot_confirm(self):
         studio,page,raw,item=self.setup()
@@ -302,6 +310,18 @@ class PublicConfirmationTests(unittest.TestCase):
         self.assertFalse(self.proof([self.root,target,reply],{**context,'publishedMention':''}))
         self.assertFalse(self.proof([self.root,target,reply,{**target,'index':3,'authorUrl':'https://dzen.ru/user/duplicate','text':'Другой вопрос'}],context))
 
+    def test_public_preview_is_only_used_to_select_expansion_not_confirm(self):
+        full={**self.root,'text':'Длинный исходный комментарий о работе на производстве.'}
+        preview={**full,'text':'Длинный исходный комментарий о работе... ещё','clamped':True}
+        context={**self.context,**full}
+        self.assertTrue(public_preview_matches(preview,full))
+        self.assertFalse(public_preview_matches({**preview,'clamped':False},full))
+        self.assertFalse(public_preview_matches({**preview,'authorUrl':'https://dzen.ru/user/other'},full))
+        self.assertFalse(self.proof([preview,self.reply],context))
+        self.assertEqual(public_reply_status([preview,self.reply],context,self.author,self.expected,[]),'PUBLIC_TEXT_COLLAPSED')
+        self.assertFalse(self.proof([full,{**preview,'index':2,'rootIndex':2},self.reply],context))
+        self.assertTrue(self.proof([full,self.reply],context))
+
     def test_profile_setting_preserves_private_existing_config(self):
         original={'hub':'https://example.test','studioUrl':CURRENT,'agentId':'id','token':'fixture-token'}
         with tempfile.TemporaryDirectory() as directory:
@@ -341,6 +361,24 @@ class PublicNavigationTests(unittest.IsolatedAsyncioTestCase):
         studio.expand_public_root.assert_awaited_once_with(page,fixture.root,fixture.context)
         page.close.assert_awaited_once()
 
+    async def test_expands_both_long_root_and_nested_target_before_confirmation(self):
+        studio,page,fixture=self.setup()
+        root={**fixture.root,'text':'Длинный исходный комментарий с подробным описанием ситуации.'}
+        root_preview={**root,'text':'Длинный исходный комментарий с подробным... ещё','clamped':True}
+        target={**root,'index':2,'isRoot':False,'isChild':True,'author':'Другой читатель','authorUrl':'https://dzen.ru/user/child','text':'Длинное уточнение от другого читателя о его опыте.'}
+        target_preview={**target,'text':'Длинное уточнение от другого читателя... ещё','clamped':True}
+        context={**fixture.context,**target,'parentPath':[root],'publishedText':'Другой читатель, Спасибо!','publishedMention':'Другой читатель,'}
+        reply={**fixture.reply,'text':context['publishedText']}
+        unrelated={**target_preview,'index':3,'author':'Третий','authorUrl':'https://dzen.ru/user/unrelated'}
+        page.evaluate.side_effect=[[root_preview],[root,target_preview,unrelated,reply],[root,target,unrelated,reply]]
+        studio.expand_public_text=AsyncMock(return_value=True)
+        self.assertEqual(public_expansion_candidates([root,target_preview,unrelated,reply],context,fixture.author),[target_preview])
+        self.assertTrue(await studio.confirm_public_comments({context['publishedText']},[],context))
+        self.assertEqual(studio.expand_public_text.await_count,2)
+        studio.expand_public_text.assert_any_await(page,root_preview)
+        studio.expand_public_text.assert_any_await(page,target_preview)
+        page.close.assert_awaited_once()
+
     async def test_redirect_and_access_restriction_never_confirm(self):
         studio,page,fixture=self.setup()
         page.url='https://dzen.ru/a/another'
@@ -362,6 +400,36 @@ class PublicNavigationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_more_control_expands_only_the_matching_reader_text(self):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.skipTest('Playwright not installed')
+        async with async_playwright() as pw:
+            if not Path(pw.chromium.executable_path).is_file():
+                self.skipTest('Chromium fixture runner not installed')
+            browser=await pw.chromium.launch(headless=True)
+            try:
+                page=await browser.new_page()
+                await page.set_content('''<div class="comments2--comment__wrapper-2Z comments2--comment__root-_K">
+                    <div class="comments2--comment__comment-2P">
+                      <div><a class="comments2--comment-header__nameLink-38" href="https://dzen.ru/user/reader">Читатель</a> <span>1 мин</span></div>
+                      <div class="comments2--comment-content__wrapper-32"><div class="comments2--comment-text__block-2s"><span>Длинный исходный комментарий...</span> <button data-test="read-more">ещё</button></div></div>
+                      <button>Ответить</button><button>Показать все</button>
+                    </div>
+                  </div>''')
+                await page.locator('[data-test="read-more"]').evaluate("button => button.addEventListener('click', () => {button.parentElement.textContent = 'Длинный исходный комментарий о производстве.'})")
+                values=await page.evaluate(PUBLIC_EXTRACT,PUBLIC_CARD)
+                self.assertTrue(values[0]['clamped'])
+                self.assertEqual(values[0]['age'],'1 мин')
+                self.assertTrue(await Studio.expand_public_text(page,values[0]))
+                raw=await page.locator(PUBLIC_CARD).evaluate(PUBLIC_CARD_DATA)
+                self.assertFalse(raw['clamped'])
+                self.assertEqual(raw['text'],'Длинный исходный комментарий о производстве.')
+                self.assertTrue(await page.get_by_role('button',name='Показать все').is_visible())
+            finally:
+                await browser.close()
+
     async def test_public_article_expanded_root_and_channel_reply(self):
         try:
             from playwright.async_api import async_playwright
