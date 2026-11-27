@@ -96,9 +96,8 @@ export function commentLink(value, fallback) {
       u.password
     )
       return fallback;
-    const comment = /^#comment_[A-Za-z0-9_-]{1,180}$/.test(u.hash)
-      ? u.hash
-      : "";
+    const comment =
+      u.hash.match(/^(#comment_[A-Za-z0-9_-]{1,180})(?:&[^#]*)?$/)?.[1] || "";
     u.search = "";
     u.hash = comment;
     return u.toString();
@@ -149,6 +148,18 @@ export function isOwn(item, settings) {
     ownNames(settings).includes(normalize(item.author).toLocaleLowerCase("ru"))
   );
 }
+export const isContextIdentity = (value) =>
+  String(value ?? "").startsWith("context_");
+function commentFingerprint(author, text, article, href) {
+  return digest(
+    [
+      normalize(author).toLocaleLowerCase("ru"),
+      normalize(text),
+      normalize(article),
+      href ?? "",
+    ].join("\n"),
+  );
+}
 export function parseComment(input, source, verified = false) {
   if (!input || typeof input !== "object")
     throw fail("Некорректный комментарий.");
@@ -158,21 +169,38 @@ export function parseComment(input, source, verified = false) {
     created = string(input.createdLabel ?? "", 140);
   const externalId =
     typeof input.commentId === "string" &&
-    /^[A-Za-z0-9_-]{1,180}$/.test(input.commentId)
+    /^[A-Za-z0-9_-]{1,180}$/.test(input.commentId) &&
+    (!isContextIdentity(input.commentId) ||
+      /^context_(?:ui_)?[a-f0-9]{64}$/.test(input.commentId))
       ? input.commentId
       : "";
   const href = commentLink(input.href, commentLink(source, ""));
-  const fingerprint = digest(
-    [
-      normalize(author).toLocaleLowerCase("ru"),
-      normalize(text),
-      normalize(article),
-      href ?? "",
-    ].join("\n"),
-  );
+  const fingerprint = commentFingerprint(author, text, article, href);
   const key = externalId ? `id:${externalId}` : `text:${fingerprint}`;
+  let legacyKey = "";
+  if (
+    verified &&
+    externalId &&
+    input.legacy &&
+    typeof input.legacy === "object"
+  ) {
+    const oldAuthor = string(input.legacy.author ?? "", 180),
+      oldArticle = string(input.legacy.articleTitle ?? "", 500);
+    const oldHref = commentLink(input.legacy.href, "");
+    if (
+      oldHref &&
+      (oldHref === commentLink(source, "") || oldHref === href) &&
+      (!oldAuthor ||
+        normalize(oldAuthor).toLocaleLowerCase("ru") ===
+          normalize(author).toLocaleLowerCase("ru")) &&
+      (!oldArticle || normalize(oldArticle) === normalize(article))
+    ) {
+      legacyKey = `text:${commentFingerprint(oldAuthor, text, oldArticle, oldHref)}`;
+    }
+  }
   return {
     key,
+    legacyKey,
     externalId,
     author,
     text,

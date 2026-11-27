@@ -8,6 +8,7 @@ import {
   hasUnansweredFilter,
   sameStudioChannel,
   parseComment,
+  isContextIdentity,
   isOwn,
   validateReply,
   automaticReplyAllowed,
@@ -51,6 +52,7 @@ export function createDzenStore(db, now = Date.now) {
     CREATE TABLE IF NOT EXISTS dzen_runtime (id INTEGER PRIMARY KEY CHECK(id=1), agent_id TEXT, studio_url TEXT, status TEXT NOT NULL DEFAULT 'offline', heartbeat INTEGER NOT NULL DEFAULT 0, last_scan INTEGER NOT NULL DEFAULT 0, next_scan INTEGER NOT NULL DEFAULT 0, scan_requested INTEGER NOT NULL DEFAULT 0, next_generate INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', verified INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS dzen_comments (id TEXT PRIMARY KEY, source_key TEXT UNIQUE NOT NULL, external_id TEXT NOT NULL, author TEXT NOT NULL, article TEXT NOT NULL, text TEXT NOT NULL, created_label TEXT NOT NULL, href TEXT NOT NULL, fingerprint TEXT NOT NULL, is_own INTEGER NOT NULL, eligible INTEGER NOT NULL, status TEXT NOT NULL, reply TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, prompt_version INTEGER, approval TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', discovered_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, answered_at INTEGER, origin TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS dzen_comments_status ON dzen_comments(status, discovered_at);
+    CREATE TABLE IF NOT EXISTS dzen_comment_aliases (legacy_key TEXT NOT NULL, comment_id TEXT NOT NULL, PRIMARY KEY(legacy_key,comment_id));
     CREATE TABLE IF NOT EXISTS dzen_tasks (id TEXT PRIMARY KEY, kind TEXT NOT NULL, comment_id TEXT, agent_id TEXT NOT NULL, phase TEXT NOT NULL, created_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, begun_at INTEGER, day TEXT, outcome TEXT NOT NULL DEFAULT '');
     CREATE INDEX IF NOT EXISTS dzen_tasks_phase ON dzen_tasks(phase, lease_until);
     CREATE INDEX IF NOT EXISTS dzen_tasks_day ON dzen_tasks(day);
@@ -349,13 +351,75 @@ export function createDzenStore(db, now = Date.now) {
       return { ok: true };
     });
   }
-  function ingest(item, source, origin, duplicate = false) {
+  function ingest(item, source, origin, duplicate = false, legacyCount = 0) {
     const s = settings();
     const existing = db
       .prepare("SELECT * FROM dzen_comments WHERE source_key=?")
       .get(item.key);
     const own = isOwn(item, s);
     const eligible = item.eligible && !own && !duplicate;
+    const rememberAlias = (id) => {
+      if (origin === "studio" && item.legacyKey)
+        db.prepare(
+          "INSERT OR IGNORE INTO dzen_comment_aliases(legacy_key,comment_id) VALUES(?,?)",
+        ).run(item.legacyKey, id);
+    };
+    if (origin === "studio" && item.legacyKey) {
+      const legacy = db
+        .prepare(
+          "SELECT * FROM dzen_comments WHERE source_key=? AND origin='studio' AND external_id='' ",
+        )
+        .get(item.legacyKey);
+      if (legacy) {
+        if (
+          existing ||
+          !eligible ||
+          legacyCount !== 1 ||
+          ["generating", "sending"].includes(legacy.status)
+        ) {
+          if (existing)
+            db.prepare("UPDATE dzen_comments SET eligible=0 WHERE id=?").run(
+              existing.id,
+            );
+          return false;
+        }
+        db.prepare(
+          "UPDATE dzen_comments SET source_key=?,external_id=?,author=?,article=?,href=?,fingerprint=?,is_own=?,eligible=?,created_label=?,last_seen=?,updated_at=?,version=version+1,approval='',status=CASE WHEN status='queued' THEN 'draft' ELSE status END WHERE id=?",
+        ).run(
+          item.key,
+          item.externalId,
+          item.author,
+          item.article,
+          item.href,
+          item.fingerprint,
+          Number(own),
+          Number(eligible),
+          item.created,
+          now(),
+          now(),
+          legacy.id,
+        );
+        rememberAlias(legacy.id);
+        event(
+          "binding",
+          legacy.id,
+          "Агент Дзена",
+          "Уточнена привязка; сохранены черновик и история. Проверьте статью и автора перед отправкой.",
+        );
+        return false;
+      }
+    }
+    if (
+      origin === "studio" &&
+      !item.externalId &&
+      !existing &&
+      db
+        .prepare(
+          "SELECT 1 FROM dzen_comment_aliases WHERE legacy_key=? LIMIT 1",
+        )
+        .get(item.key)
+    )
+      return false;
     if (existing) {
       if (existing.fingerprint !== item.fingerprint) {
         if (!["answered", "attention", "sending"].includes(existing.status))
@@ -367,6 +431,7 @@ export function createDzenStore(db, now = Date.now) {
       db.prepare(
         "UPDATE dzen_comments SET eligible=?,is_own=?,last_seen=?,created_label=? WHERE id=?",
       ).run(Number(eligible), Number(own), now(), item.created, existing.id);
+      rememberAlias(existing.id);
       return false;
     }
     const id = randomUUID();
@@ -391,6 +456,7 @@ export function createDzenStore(db, now = Date.now) {
       now(),
       origin,
     );
+    rememberAlias(id);
     return true;
   }
   function addManual(input, actor) {
@@ -544,6 +610,7 @@ export function createDzenStore(db, now = Date.now) {
             !row.reply ||
             (row.approval === "auto" &&
               (s.mode !== "auto" ||
+                isContextIdentity(row.external_id) ||
                 row.prompt_version !== s.promptVersion ||
                 !automaticReplyAllowed(row.reply)))
           ) {
@@ -598,6 +665,7 @@ export function createDzenStore(db, now = Date.now) {
         row.reply.length > s.maxChars ||
         (row.approval === "auto" &&
           (s.mode !== "auto" ||
+            isContextIdentity(row.external_id) ||
             row.prompt_version !== s.promptVersion ||
             !automaticReplyAllowed(row.reply)))
       )
@@ -633,16 +701,28 @@ export function createDzenStore(db, now = Date.now) {
           const parsed = input.comments.map((x) =>
               parseComment(x, r.studio_url, verified),
             ),
-            seen = new Map();
+            seen = new Map(),
+            legacySeen = new Map();
           for (const item of parsed) {
             seen.set(item.key, (seen.get(item.key) || 0) + 1);
+            const legacy = item.legacyKey || (!item.externalId ? item.key : "");
+            if (legacy)
+              legacySeen.set(legacy, (legacySeen.get(legacy) || 0) + 1);
           }
           let added = 0;
           db.prepare(
             "UPDATE dzen_comments SET eligible=0 WHERE origin='studio'",
           ).run();
           for (const item of parsed)
-            if (ingest(item, r.studio_url, "studio", seen.get(item.key) > 1))
+            if (
+              ingest(
+                item,
+                r.studio_url,
+                "studio",
+                seen.get(item.key) > 1,
+                legacySeen.get(item.legacyKey) || 0,
+              )
+            )
               added++;
           db.prepare(
             "UPDATE dzen_runtime SET last_scan=?,heartbeat=?,status='ready',verified=?,error='',next_scan=?,next_generate=0 WHERE id=1",
@@ -823,6 +903,7 @@ export function createDzenStore(db, now = Date.now) {
         s.mode === "auto" &&
         snapshot.version === s.version &&
         eligible(row, s, r) &&
+        !isContextIdentity(row.external_id) &&
         automaticReplyAllowed(reply) &&
         countToday() < s.dailyLimit
       ) {

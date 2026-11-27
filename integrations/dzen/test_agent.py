@@ -1,7 +1,8 @@
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel
+from agent import AgentError, Studio, make_comment, same_target, studio_url, hub_url, identity, unanswered_parameter, unanswered_studio_url, same_studio_channel, allowed_link, EXTRACT, CARD
 
 URL = 'https://dzen.ru/profile/editor/test/comments?comments_data=n_reply'
 BASE = 'https://dzen.ru/profile/editor/id/test/comments/'
@@ -9,6 +10,20 @@ CURRENT = BASE + '?answer=notReply'
 
 
 class IdentityTests(unittest.TestCase):
+    def test_context_binding_is_independent_of_relative_time_and_scoped_to_article_profile_and_parent(self):
+        raw={'author':'Читатель','authorUrl':'https://dzen.ru/id/test-profile','articleTitle':'Статья','articleUrl':'https://dzen.ru/a/test-article','parentPath':[],'text':'Вопрос','canReply':True,'href':CURRENT,'legacy':{'author':'','articleTitle':'','href':BASE}}
+        bound=make_comment(raw,CURRENT)
+        self.assertTrue(bound['commentId'].startswith('context_ui_'))
+        self.assertTrue(bound['canReply'])
+        self.assertEqual(bound['href'],'https://dzen.ru/a/test-article')
+        self.assertEqual(bound['legacy']['href'],BASE)
+        self.assertTrue(same_target(bound,make_comment({**raw,'createdLabel':'10 ч'},CURRENT)))
+        for changes in ({'articleUrl':'https://dzen.ru/a/different'}, {'authorUrl':'https://dzen.ru/id/different'}, {'parentPath':[{'authorUrl':'https://dzen.ru/id/parent','text':'Родитель'}]}):
+            self.assertFalse(same_target(bound,make_comment({**raw,**changes},CURRENT)))
+        for changes in ({'authorUrl':''}, {'articleUrl':''}, {'parentPath':None}, {'parentPath':[{'authorUrl':'','text':'Родитель'}]}):
+            self.assertFalse(make_comment({**raw,**changes},CURRENT)['canReply'])
+        self.assertEqual(allowed_link('https://dzen.ru/a/test?share_to=link#comment_3434268054&comments_data=n_new',''),'https://dzen.ru/a/test#comment_3434268054')
+
     def test_current_filter_and_existing_saved_url(self):
         self.assertEqual(studio_url(CURRENT+'&tracking=x'), CURRENT)
         self.assertEqual(unanswered_studio_url(BASE), CURRENT)
@@ -49,7 +64,8 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         studio.verified_filter=AsyncMock(return_value=True)
         send=AsyncMock();send.evaluate.return_value=True
         thread=AsyncMock()
-        studio.prepare=AsyncMock(return_value=(send,thread,{'Спасибо!'},[]))
+        studio.prepare=AsyncMock(return_value=(send,thread,{'Спасибо!'},[],AsyncMock()))
+        studio.assert_pinned=AsyncMock()
         studio.own_replies=AsyncMock(return_value=['Спасибо!'])
         hub=AsyncMock();hub.call.return_value={'ok':True}
         return studio,hub,send
@@ -87,6 +103,70 @@ class PublishingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('not_sent','interface_changed'))
         hub.call.assert_not_awaited()
         send.click.assert_not_awaited()
+
+    async def test_contextual_auto_task_cannot_click(self):
+        studio,hub,send=self.setup()
+        task={'id':'task','comment':{'commentId':'context_ui_'+'a'*64,'approval':'auto'}}
+        self.assertEqual(await studio.publish(task,hub),('not_sent','ambiguous'))
+        studio.prepare.assert_not_awaited()
+        hub.call.assert_not_awaited()
+        send.click.assert_not_awaited()
+
+    async def test_replaced_card_after_begin_refuses_click(self):
+        studio,hub,send=self.setup()
+        studio.assert_pinned.side_effect=[None,AgentError('ambiguous')]
+        self.assertEqual(await studio.publish({'id':'task','comment':{}},hub),('uncertain','ambiguous'))
+        hub.call.assert_awaited_once()
+        send.click.assert_not_awaited()
+
+
+class TargetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_contextual_target_detects_duplicate_in_later_snapshot(self):
+        page=Mock()
+        studio=Studio(page,CURRENT)
+        studio.open=AsyncMock();studio.verified_filter=AsyncMock(return_value=True);studio.scroll=AsyncMock()
+        item={'commentId':'context_ui_'+'a'*64,'text':'Вопрос','author':'Читатель','canReply':True,'isOwn':False}
+        studio.snapshots=AsyncMock(side_effect=[[(0,item)],[(1,item)]])
+        first=AsyncMock();first.evaluate.return_value=False
+        locator=Mock();locator.element_handle=AsyncMock(side_effect=[first,AsyncMock()])
+        page.locator.return_value.nth.return_value=locator
+        with self.assertRaisesRegex(AgentError,'ambiguous'):
+            await studio.target(item)
+        self.assertEqual(studio.snapshots.await_count,2)
+
+
+class DomFixtureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_observed_post_root_and_nested_structure(self):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.skipTest('Playwright not installed')
+        async with async_playwright() as pw:
+            if not Path(pw.chromium.executable_path).is_file():
+                self.skipTest('Chromium fixture runner not installed')
+            browser=await pw.chromium.launch(headless=True)
+            try:
+                page=await browser.new_page()
+                await page.set_content('''<div class="editor--comments-page__groupByPost-3D" data-testid="comment">
+                  <a href="https://dzen.ru/a/test-post">Тестовая статья</a>
+                  <div class="editor--comments-page__commentsContainer-12">
+                    <div class="editor--comments-page__commentNode-2f">
+                      <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/parent">Читатель</a><p aria-label="Текст комментария">Вопрос</p><button data-testid="reply-button">Ответить</button></div>
+                      <div class="editor--root-comment__commentsContainer-Ep"><div class="editor--root-comment__commentNode-14">
+                        <div class="editor--comment__block-1t"><a class="editor--comment__nameLink-1r" href="https://dzen.ru/id/child">Другой читатель</a><p aria-label="Текст комментария">Уточнение</p><button data-testid="reply-button">Ответить</button></div>
+                      </div></div>
+                    </div>
+                  </div>
+                </div>''')
+                raw=await page.evaluate(EXTRACT,CARD)
+                self.assertEqual(len(raw),2)
+                self.assertEqual(raw[0]['parentPath'],[])
+                self.assertEqual(raw[1]['parentPath'],[{'authorUrl':'https://dzen.ru/id/parent','text':'Вопрос'}])
+                self.assertEqual(raw[1]['articleTitle'],'Тестовая статья')
+                self.assertEqual(raw[1]['author'],'Другой читатель')
+                self.assertTrue(all(make_comment(value,CURRENT)['canReply'] for value in raw))
+            finally:
+                await browser.close()
 
 
 class FilterTests(unittest.IsolatedAsyncioTestCase):

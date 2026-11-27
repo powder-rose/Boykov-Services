@@ -160,6 +160,7 @@ const eventLabels: Record<string, string> = {
   scan: "Получены комментарии",
   scan_requested: "Запрошено обновление",
   filter_updated: "Фильтр обновлён",
+  binding: "Уточнена привязка",
   scan_error: "Обновление остановлено",
   generated: "Подготовлен черновик",
   auto_queue: "Автоматически поставлен в очередь",
@@ -267,6 +268,7 @@ function ReplyDetail({
     null,
   );
   const reply = local?.text ?? row.reply;
+  const contextual = row.commentId.startsWith("context_");
   const [copied, setCopied] = useState(false);
   const dirty = local !== null && reply !== row.reply;
   const stale = dirty && local.version !== row.version;
@@ -342,7 +344,8 @@ function ReplyDetail({
             target="_blank"
             rel="noopener noreferrer"
           >
-            Открыть в Дзене <ExternalLink size={14} />
+            {contextual ? "Открыть публикацию" : "Открыть в Дзене"}{" "}
+            <ExternalLink size={14} />
           </a>
         )}
       </div>
@@ -360,11 +363,20 @@ function ReplyDetail({
           {row.isOwn
             ? "Комментарий своего канала"
             : row.eligible && data.connection.verified
-              ? "Подтверждён в списке без ответа"
+              ? contextual
+                ? "Привязка по статье и тексту · с проверкой"
+                : "Подтверждён в списке без ответа"
               : "Для отправки нужна точная привязка к комментарию"}
         </span>
         {row.promptVersion && <span>Промпт v{row.promptVersion}</span>}
       </div>
+      {contextual && row.eligible && (
+        <Notice tone="info">
+          Дзен не показывает ID этого комментария. Перед отправкой сверьте
+          автора, статью и текст. Для такой привязки требуется подтверждение
+          сотрудника.
+        </Notice>
+      )}
       {row.error && (
         <Notice
           tone={

@@ -82,6 +82,104 @@ function fixture(t) {
   };
 }
 
+const contextual = (suffix, text, extra = {}) =>
+  data(`context_ui_${suffix.repeat(64)}`, text, {
+    href: "https://dzen.ru/a/article-test",
+    articleTitle: "Проверяемая статья",
+    legacy: { author: "", articleTitle: "", href: currentUrl },
+    ...extra,
+  });
+
+test("exact contextual binding upgrades the existing text-only row and preserves draft, history and identity", (t) => {
+  const f = fixture(t);
+  const old = data("", "Точный текст", {
+    author: "",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  f.scan([old], true, currentUrl);
+  const draft = f.draft(f.find(""));
+  const bound = contextual("a", old.text);
+  f.scan([bound], true, currentUrl);
+  assert.equal(f.store.state().total, 1);
+  const same = f.find(bound.commentId);
+  assert.equal(same.id, draft.id);
+  assert.equal(same.reply, draft.reply);
+  assert.equal(same.status, "draft");
+  assert.equal(same.eligible, true);
+  assert.equal(same.author, "Читатель");
+  assert.equal(same.article, "Проверяемая статья");
+  f.restart();
+  f.scan([old], true, currentUrl);
+  assert.equal(f.store.state().total, 1);
+  assert.equal(f.find(bound.commentId).eligible, false);
+  f.scan([bound], true, currentUrl);
+  assert.equal(f.find(bound.commentId).eligible, true);
+  assert.equal(f.find(bound.commentId).reply, draft.reply);
+});
+
+test("ambiguous legacy candidates keep the original draft and do not create sendable duplicates", (t) => {
+  const f = fixture(t);
+  const old = data("", "Одинаковый текст", {
+    author: "",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  f.scan([old], true, currentUrl);
+  const draft = f.draft(f.find(""));
+  f.scan(
+    [contextual("a", old.text), contextual("b", old.text)],
+    true,
+    currentUrl,
+  );
+  assert.equal(f.store.state().total, 1);
+  assert.equal(f.find("").id, draft.id);
+  assert.equal(f.find("").reply, draft.reply);
+  assert.equal(f.find("").eligible, false);
+});
+
+test("contextual candidates require employee approval even in automatic mode", (t) => {
+  const f = fixture(t);
+  const item = contextual("c", "Подскажите способ оформления");
+  f.settings({ mode: "review", ownNames: "Наш канал" });
+  f.scan([item], true, currentUrl);
+  f.settings({ mode: "auto", confirmAuto: true });
+  f.scan([item], true, currentUrl);
+  const job = f.store.startGeneration(f.find(item.commentId).id, null, true);
+  const draft = f.store.finishGeneration(
+    job.comment.id,
+    job.comment.version,
+    "Уточните ваш вопрос.",
+    job.settings,
+    true,
+    "Zenbot",
+  );
+  assert.equal(draft.status, "draft");
+  assert.equal(draft.approval, "");
+  f.action(draft, "queue");
+  const task = f.poll("ready", currentUrl);
+  assert.equal(task.kind, "publish");
+  assert.equal(task.comment.approval, "manual");
+  assert.deepEqual(f.store.begin({ agentId, taskId: task.id }), { ok: true });
+});
+
+test("a previously manually confirmed response remains answered after contextual rebinding", (t) => {
+  const f = fixture(t);
+  const old = data("", "Старый текст", {
+    author: "",
+    articleTitle: "",
+    href: currentUrl,
+  });
+  f.scan([old], true, currentUrl);
+  const draft = f.draft(f.find(""));
+  f.action(draft, "confirm", { confirm: true, reply: draft.reply });
+  const item = contextual("d", old.text);
+  f.scan([item], true, currentUrl);
+  assert.equal(f.find(item.commentId).status, "answered");
+  assert.equal(f.find(item.commentId).id, draft.id);
+  assert.equal(f.store.state().total, 1);
+});
+
 test("recognizes the current Studio unanswered URL without accepting conflicting filters", () => {
   assert.equal(studioUrl(currentUrl + "&tracking=x#ignored"), currentUrl);
   assert.equal(hasUnansweredFilter(currentUrl), true);

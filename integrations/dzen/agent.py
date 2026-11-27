@@ -78,10 +78,41 @@ def allowed_link(value, fallback):
         url = urlsplit(value or '')
         if url.scheme != 'https' or url.hostname not in HOSTS or url.username or url.password or url.port:
             return fallback
-        fragment = url.fragment if re.fullmatch(r'comment_[A-Za-z0-9_-]{1,180}', url.fragment) else ''
+        match = re.fullmatch(r'(comment_[A-Za-z0-9_-]{1,180})(?:&[^#]*)?', url.fragment)
+        fragment = match.group(1) if match else ''
         return urlunsplit(('https', url.hostname, url.path, '', fragment))
     except ValueError:
         return fallback
+
+
+def identity_link(value, article=False):
+    link = allowed_link(value, '')
+    if not link:
+        return ''
+    url = urlsplit(link)
+    is_article = bool(re.fullmatch(r'/(?:a|b|video/watch)/[^/]+/?', url.path))
+    if url.hostname not in ('dzen.ru', 'www.dzen.ru') or url.fragment or url.path in ('', '/'):
+        return ''
+    if article != is_article or (not article and url.path.startswith('/profile/editor')):
+        return ''
+    return urlunsplit(('https', 'dzen.ru', url.path.rstrip('/'), '', ''))
+
+
+def context_id(raw, text, author):
+    article = identity_link(raw.get('articleUrl'), article=True)
+    profile = identity_link(raw.get('authorUrl'))
+    parents = raw.get('parentPath')
+    if not article or not profile or not author or not isinstance(parents, list) or len(parents) > 12:
+        return ''
+    path = []
+    for parent in parents:
+        link = identity_link(parent.get('authorUrl'))
+        body = normalize(parent.get('text'))
+        if not link or not body:
+            return ''
+        path.append([link, body])
+    payload = json.dumps([article, profile, path, text], ensure_ascii=False, separators=(',', ':'))
+    return 'context_ui_' + hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
 def make_comment(raw, source):
@@ -94,17 +125,29 @@ def make_comment(raw, source):
         external = ''
     href = allowed_link(raw.get('href'), source)
     article = normalize(raw.get('articleTitle'))[:500]
-    # If a stable platform ID is not exposed, an exact article permalink,
-    # absolute timestamp, author and text can provide a stable context key.
-    # Relative times and ambiguous matches are never used for posting.
+    article_url = identity_link(raw.get('articleUrl'), article=True)
+    if not external:
+        external = context_id(raw, text, author)
+        if external:
+            href = article_url
     stamp = str(raw.get('absoluteTime') or '')
-    article_url = allowed_link(raw.get('articleUrl'), '')
     if not external and author and article_url and re.fullmatch(r'\d{4}-\d{2}-\d{2}T[0-9:+.Z-]+', stamp):
         identity = '\n'.join((article_url, stamp, author.casefold(), text))
         external = 'context_' + hashlib.sha256(identity.encode('utf-8')).hexdigest()
-    return {'commentId': external, 'text': text, 'author': author, 'articleTitle': article,
+    legacy = raw.get('legacy')
+    if isinstance(legacy, dict):
+        old = {'author': normalize(legacy.get('author'))[:180], 'articleTitle': normalize(legacy.get('articleTitle'))[:500],
+               'href': allowed_link(legacy.get('href'), source)}
+        if not external:
+            author, article, href = old['author'], old['articleTitle'], old['href']
+    else:
+        old = None
+    item = {'commentId': external, 'text': text, 'author': author, 'articleTitle': article,
             'href': href, 'createdLabel': normalize(raw.get('createdLabel'))[:140],
             'isOwn': raw.get('isOwn') is True, 'canReply': raw.get('canReply') is True and bool(external and author)}
+    if external and old is not None:
+        item['legacy'] = old
+    return item
 
 
 def identity(item):
@@ -157,23 +200,53 @@ class Hub:
 
 
 CARD_DATA = r"""(card, index=0) => {
-  if (!card.getClientRects().length) return null;
-  const p = card.querySelector('p[aria-label="Текст комментария"]');
+  const visible = el => Boolean(el && el.getClientRects().length);
+  const cardSelector = 'div[class*="editor--comment__block"]';
+  const postSelector = '[class*="comments-page__groupByPost"]';
+  const nodeSelector = '[class*="comments-page__commentNode"],[class*="root-comment__commentNode"]';
+  const textSelector = 'p[aria-label="Текст комментария"]';
+  const nameSelector = 'a[class*="comment__nameLink"]';
+  const local = (owner, selector) => Array.from(owner.querySelectorAll(selector)).filter(el => el.closest(cardSelector) === owner && visible(el));
+  if (!visible(card)) return null;
+  const p = local(card, textSelector)[0];
   if (!p || !p.getClientRects().length) return null;
   const lines = (card.innerText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
   const marker = lines.findIndex(x => /^(подписчик|автор)$/i.test(x));
-  const author = marker > 0 ? lines[marker-1] : '';
+  const legacyAuthor = marker > 0 ? lines[marker-1] : '';
+  const names = local(card, nameSelector);
+  const name = names.length === 1 ? names[0] : null;
+  const author = name?.innerText || legacyAuthor;
+  const visibleAuthorBadge = Boolean(name && local(card, 'span,div').some(el => !p.contains(el) && el.children.length === 0 && /^автор$/i.test(String(el.innerText || '').trim())));
   const created = marker >= 0 ? lines[marker+1] || '' : '';
-  const hrefs = Array.from(card.querySelectorAll('a[href]')).map(a => a.href);
-  const direct = hrefs.find(x => /#comment_[A-Za-z0-9_-]+$/.test(x));
-  const fromLink = direct?.match(/#comment_([A-Za-z0-9_-]+)$/)?.[1] || '';
+  const hrefs = local(card, 'a[href]').map(a => a.href);
+  const oldDirect = hrefs.find(x => /#comment_[A-Za-z0-9_-]+$/.test(x));
+  const direct = local(card, 'a[href]').filter(a => !p.contains(a)).map(a => a.href).find(x => { try { const u = new URL(x); return u.protocol === 'https:' && ['dzen.ru','www.dzen.ru'].includes(u.hostname) && /^\/(a|b|video\/watch)\//.test(u.pathname) && /^#comment_[A-Za-z0-9_-]+(?:&[^#]*)?$/.test(u.hash); } catch { return false; } });
+  const fromLink = direct?.match(/#comment_([A-Za-z0-9_-]+)(?:&[^#]*)?$/)?.[1] || '';
   const nodeId = card.getAttribute('data-comment-id') || card.id.match(/^comment_([A-Za-z0-9_-]+)$/)?.[1] || '';
   const row = card.closest('[class*="comments-page__commentNode"]') || card;
-  const article = Array.from(row.querySelectorAll('a[href]')).find(a => { try { const u = new URL(a.href); return ['dzen.ru','www.dzen.ru'].includes(u.hostname) && /^\/(a|video\/watch)\//.test(u.pathname) && !u.hash; } catch { return false; } });
-  const time = card.querySelector('time[datetime]');
-  const buttons = Array.from(card.querySelectorAll('button[data-testid="reply-button"]')).filter(x => x.getClientRects().length && !x.disabled);
-  return {index, text:p.innerText || '', author, createdLabel:created, isOwn:marker>=0 && /^автор$/i.test(lines[marker]), commentId:nodeId || fromLink,
-    href:direct || location.href, articleTitle:article?.innerText || '', articleUrl:article?.href || '', absoluteTime:time?.getAttribute('datetime') || '', canReply:buttons.length===1};
+  const articleLink = (a, pattern) => { try { const u = new URL(a.href); return u.protocol === 'https:' && ['dzen.ru','www.dzen.ru'].includes(u.hostname) && pattern.test(u.pathname) && !u.hash; } catch { return false; } };
+  const legacyArticle = Array.from(row.querySelectorAll('a[href]')).find(a => articleLink(a, /^\/(a|video\/watch)\//));
+  const group = card.closest(postSelector);
+  const links = group ? Array.from(group.querySelectorAll('a[href]')).filter(a => visible(a) && a.closest(postSelector) === group && !a.closest(nodeSelector) && String(a.innerText || '').trim() && articleLink(a, /^\/(a|b|video\/watch)\/[^/]+\/?$/)) : [];
+  const articles = new Map(links.map(a => [new URL(a.href).pathname.replace(/\/$/, ''), a]));
+  const article = articles.size === 1 ? articles.values().next().value : null;
+  const parentPath = [];
+  let complete = Boolean(group && card.parentElement?.matches(nodeSelector));
+  for (let el = card.parentElement?.parentElement; el && el !== group; el = el.parentElement) {
+    if (!el.matches(nodeSelector)) continue;
+    const parents = Array.from(el.children).filter(child => child.matches(cardSelector) && visible(child));
+    if (parents.length !== 1) { complete = false; break; }
+    const parentNames = local(parents[0], nameSelector);
+    const parentTexts = local(parents[0], textSelector);
+    if (parentNames.length !== 1 || parentTexts.length !== 1) { complete = false; break; }
+    parentPath.unshift({authorUrl: parentNames[0].href, text: parentTexts[0].innerText});
+  }
+  const time = local(card, 'time[datetime]')[0];
+  const buttons = local(card, 'button[data-testid="reply-button"]').filter(x => !x.disabled);
+  return {index, text:p.innerText || '', author, createdLabel:created, isOwn:visibleAuthorBadge || (marker>=0 && /^автор$/i.test(lines[marker])), commentId:nodeId || fromLink,
+    href:direct || location.href, articleTitle:article?.innerText || legacyArticle?.innerText || '', articleUrl:article?.href || legacyArticle?.href || '', authorUrl:name?.href || '', parentPath:complete && article ? parentPath : null,
+    absoluteTime:time?.getAttribute('datetime') || '', canReply:buttons.length===1,
+    legacy:{author:legacyAuthor, articleTitle:legacyArticle?.innerText || '', href:oldDirect || location.href}};
 }"""
 EXTRACT = '(selector) => Array.from(document.querySelectorAll(selector)).map(' + CARD_DATA + ').filter(Boolean)'
 
@@ -280,17 +353,33 @@ class Studio:
         await self.open()
         if not await self.verified_filter():
             raise AgentError('interface_changed')
+        contextual = item['commentId'].startswith('context_')
+        matched = None
         for step in range(MAX_SCROLLS + 1):
             candidates = [(ix, value) for ix, value in await self.snapshots() if same_target(value, item)]
+            if not await self.verified_filter():
+                raise AgentError('interface_changed')
             if len(candidates) > 1:
                 raise AgentError('ambiguous')
             if candidates:
                 index, value = candidates[0]
                 if not value['canReply'] or value['isOwn']:
                     raise AgentError('not_found')
-                return self.page.locator(CARD).nth(index)
+                candidate = await self.page.locator(CARD).nth(index).element_handle(timeout=5000)
+                if candidate is None:
+                    raise AgentError('not_found')
+                if not contextual:
+                    return candidate
+                if matched is not None and not await matched.evaluate('(el, other) => el.isConnected && el === other', candidate):
+                    raise AgentError('ambiguous')
+                matched = candidate
+            elif matched is not None:
+                # A virtualised or replaced card cannot be proven unique later.
+                raise AgentError('ambiguous')
             if step < MAX_SCROLLS:
                 await self.scroll()
+        if matched is not None:
+            return matched
         raise AgentError('not_found')
 
     async def prepare(self, item):
@@ -300,9 +389,9 @@ class Studio:
         candidates = [(ix, value) for ix, value in await self.snapshots() if same_target(value, item)]
         if len(candidates) != 1 or not candidates[0][1]['canReply']:
             raise AgentError('ambiguous')
-        card = await self.page.locator(CARD).nth(candidates[0][0]).element_handle(timeout=5000)
-        if card is None:
-            raise AgentError('not_found')
+        current = await self.page.locator(CARD).nth(candidates[0][0]).element_handle(timeout=5000)
+        if current is None or not await card.evaluate('(el, other) => el.isConnected && el === other', current):
+            raise AgentError('ambiguous')
         raw = await card.evaluate(CARD_DATA)
         pinned = make_comment(raw, self.source) if raw else None
         if not pinned or not same_target(pinned, item) or pinned['isOwn'] or not pinned['canReply']:
@@ -314,6 +403,8 @@ class Studio:
         if thread is None:
             raise AgentError('interface_changed')
         before = await self.own_replies(thread)
+        if item['commentId'].startswith('context_') and before:
+            raise AgentError('ambiguous')
         await buttons[0].click(timeout=7000)
         await card.wait_for_selector(COMPOSER, state='visible', timeout=5000)
         composers = await card.query_selector_all(COMPOSER)
@@ -335,7 +426,15 @@ class Studio:
         sends = await form.query_selector_all(SEND) if form else []
         if len(sends) != 1 or not await sends[0].is_visible() or not await sends[0].is_enabled():
             raise AgentError('interface_changed')
-        return sends[0], thread, expected, before
+        return sends[0], thread, expected, before, card
+
+    async def assert_pinned(self, card, send, item):
+        if not await card.evaluate('(el, send) => el.isConnected && el.contains(send) && send.isConnected', send):
+            raise AgentError('ambiguous')
+        raw = await card.evaluate(CARD_DATA)
+        pinned = make_comment(raw, self.source) if raw else None
+        if not pinned or not same_target(pinned, item) or pinned['isOwn']:
+            raise AgentError('ambiguous')
 
     @staticmethod
     async def own_replies(thread):
@@ -353,16 +452,20 @@ class Studio:
     async def publish(self, task, hub):
         begun = False
         try:
-            send, thread, expected, before = await self.prepare(task['comment'])
+            if task['comment'].get('commentId', '').startswith('context_') and task['comment'].get('approval') != 'manual':
+                raise AgentError('ambiguous')
+            send, thread, expected, before, card = await self.prepare(task['comment'])
             await self.assert_access()
             if not await self.verified_filter():
                 raise AgentError('interface_changed')
+            await self.assert_pinned(card, send, task['comment'])
             # The server must acknowledge the irreversible step exactly once.
             if (await hub.call('begin', {'taskId': task['id']})).get('ok') is not True:
                 raise AgentError('not_sent')
             begun = True
             if not await send.evaluate('(el) => el.isConnected'):
                 return 'uncertain', 'uncertain'
+            await self.assert_pinned(card, send, task['comment'])
             await send.click(timeout=7000)
             for _ in range(20):
                 await self.assert_access()
@@ -433,7 +536,9 @@ async def run(cfg, profile, login=False, headless=False):
                         comments, verified = await studio.scan()
                         await hub.report(task['id'], 'success', comments=comments, verifiedUnanswered=verified)
                         status = 'ready'
-                        print(f'DZEN_SCAN=OK COUNT={len(comments)} VERIFIED_FILTER={int(verified)}')
+                        bound = sum(bool(item['commentId']) for item in comments)
+                        ready = sum(bool(item['canReply'] and not item['isOwn']) for item in comments) if verified else 0
+                        print(f'DZEN_SCAN=OK COUNT={len(comments)} VERIFIED_FILTER={int(verified)} BOUND={bound} READY={ready}')
                     except AgentError as error:
                         if error.code.startswith('hub_'):
                             raise
